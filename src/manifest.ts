@@ -1,4 +1,6 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { githubBotWhoamiManifestTool } from "./shared/github-bot-whoami-tool.js";
+import { githubBotCreatePullRequestManifestTool } from "./shared/github-bot-create-pull-request-tool.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-github-bot-identity",
@@ -8,6 +10,37 @@ const manifest: PaperclipPluginManifestV1 = {
   description: "Per-agent GitHub bot identity and contribution tools for Paperclip",
   author: "Roshan Gautam",
   categories: ["connector"],
+  instanceConfigSchema: {
+    type: "object",
+    properties: {
+      identities: {
+        type: "object",
+        patternProperties: {
+          "^.+$": {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              githubUsername: { type: "string" },
+              tokenSecretRef: { type: "string" },
+              allowedOwnerPatterns: {
+                type: "array",
+                items: { type: "string" }
+              },
+              allowedRepos: {
+                type: "array",
+                items: { type: "string" }
+              },
+              commitName: { type: "string" },
+              commitEmail: { type: "string" }
+            },
+            required: ["label", "githubUsername", "tokenSecretRef"],
+            additionalProperties: false
+          }
+        }
+      }
+    },
+    additionalProperties: false
+  },
   capabilities: [
     "events.subscribe",
     "plugin.state.read",
@@ -19,6 +52,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.read-ref",
     "activity.log.write"
   ],
+  tools: [githubBotWhoamiManifestTool, githubBotCreatePullRequestManifestTool],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"

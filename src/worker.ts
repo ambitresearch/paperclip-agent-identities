@@ -1,6 +1,8 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
 import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 import type { BotIdentityConfig } from "./shared/types.js";
+import { githubBotWhoamiToolMetadata, githubBotWhoamiToolName } from "./shared/github-bot-whoami-tool.js";
 import { registerCreatePullRequestTool } from "./tools/create-pull-request.js";
 
 export type { BotIdentityConfig } from "./shared/types.js";
@@ -51,6 +53,31 @@ const plugin = definePlugin({
       await ctx.state.set(CONFIG_SCOPE, config);
       ctx.logger.info("Bot identity config saved", { agentId, label, githubUsername });
       return config;
+    });
+
+    ctx.tools.register(githubBotWhoamiToolName, githubBotWhoamiToolMetadata, async (_params, runCtx) => {
+      let resolved;
+      try {
+        resolved = resolveAgentIdentityFromToolRunContext(await ctx.config.get(), runCtx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown identity resolution failure";
+        return {
+          error: `github_bot_whoami failed closed for agent '${runCtx.agentId}' in company '${runCtx.companyId}': ${message}`
+        };
+      }
+
+      const { identity } = resolved;
+      return {
+        content: `Configured GitHub bot identity: ${identity.label} (@${identity.githubUsername}).`,
+        data: {
+          label: identity.label,
+          githubUsername: identity.githubUsername,
+          allowedOwners: identity.allowedOwnerPatterns,
+          allowedRepos: identity.allowedRepos ?? [],
+          hasCommitName: Boolean(identity.commitName),
+          hasCommitEmail: Boolean(identity.commitEmail)
+        }
+      };
     });
 
     registerCreatePullRequestTool(ctx);

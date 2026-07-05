@@ -19,12 +19,12 @@ export interface RequestContext {
 
 export interface ContributionAccess {
   allowed: boolean;
-  deniedTools: ContributionTool[];
+  deniedTools: readonly ContributionTool[];
   identity?: IdentityConfig;
   reason?: "identity_missing" | "company_context_missing" | "company_context_mismatch" | "company_not_allowed";
 }
 
-const CONTRIBUTION_TOOLS: ContributionTool[] = ["github.push", "github.pr.create"];
+const CONTRIBUTION_TOOLS: readonly ContributionTool[] = ["github.push", "github.pr.create"];
 
 function deniedContributionAccess(reason: NonNullable<ContributionAccess["reason"]>): ContributionAccess {
   return {

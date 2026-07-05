@@ -87,6 +87,15 @@ describe("Config resolution", () => {
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe("company_not_allowed");
   });
+
+  it("returns a fresh denied tools array for each denied result", () => {
+    const first = resolveContributionAccess({}, { companyId: "paperclip" });
+    const second = resolveContributionAccess({}, { companyId: "paperclip" });
+
+    expect(first.allowed).toBe(false);
+    expect(second.allowed).toBe(false);
+    expect(first.deniedTools).not.toBe(second.deniedTools);
+  });
 });
 
 describe("Redaction", () => {

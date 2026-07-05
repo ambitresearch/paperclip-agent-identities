@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 import { DEFAULT_BOT_IDENTITY_CONFIG } from "../shared/types.js";
 import type { BotIdentityConfig } from "../shared/types.js";
@@ -180,14 +180,14 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
   );
 }
 
-const inputStyle: React.CSSProperties = {
+const inputStyle: CSSProperties = {
   padding: "0.4rem 0.6rem",
   border: "1px solid #ccc",
   borderRadius: 4,
   fontSize: "0.9rem",
 };
 
-const hintStyle: React.CSSProperties = {
+const hintStyle: CSSProperties = {
   fontSize: "0.8rem",
   color: "#666",
 };

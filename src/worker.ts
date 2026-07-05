@@ -1,6 +1,7 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 import type { BotIdentityConfig } from "./shared/types.js";
+import { registerCreatePullRequestTool } from "./tools/create-pull-request.js";
 
 export type { BotIdentityConfig } from "./shared/types.js";
 export { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
@@ -51,6 +52,8 @@ const plugin = definePlugin({
       ctx.logger.info("Bot identity config saved", { agentId, label, githubUsername });
       return config;
     });
+
+    registerCreatePullRequestTool(ctx);
   },
 
   async onHealth() {

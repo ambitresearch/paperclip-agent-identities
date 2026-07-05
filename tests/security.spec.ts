@@ -36,11 +36,12 @@ describe("Policy enforcement", () => {
     expect(isRepoAllowed("NousResearch/hermes-agent", allowed)).toBe(false);
   });
 
-  it("supports owner wildcard entries while still denying other owners", () => {
+  it("covers owner/* policy branch while still denying other owners", () => {
     const allowed = ["roshangautam/*"];
 
     expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
     expect(isRepoAllowed("https://github.com/roshangautam/genie.git", allowed)).toBe(true);
+    expect(isRepoAllowed("github.com/roshangautam/another-repo", allowed)).toBe(true);
     expect(isRepoAllowed("roshangautam/another-repo", allowed)).toBe(true);
     expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
   });
@@ -84,7 +85,7 @@ describe("Config resolution", () => {
     expect(wrongContext.reason).toBe("company_context_mismatch");
   });
 
-  it("denies when company is not in allow list", () => {
+  it("covers company_not_allowed fail-closed branch when allow list excludes matching company", () => {
     const config = {
       defaultIdentityAlias: "genie",
       identities: {
@@ -101,6 +102,7 @@ describe("Config resolution", () => {
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe("company_not_allowed");
     expect(result.reason).not.toBe("company_context_mismatch");
+    expect(result.reason).not.toBe("identity_missing");
     expect(result.deniedTools).toEqual(["github.push", "github.pr.create"]);
   });
 
@@ -258,5 +260,17 @@ describe("Mocked subprocess push behavior", () => {
     await expect(pushBranch(runner, { remote: "origin", branch: "feature/branch" }, [fakeToken])).rejects.not.toThrowError(
       fakeToken,
     );
+  });
+
+  it("does not set askpass or token env when no token is provided", async () => {
+    const runner = {
+      run: vi.fn().mockResolvedValue({ code: 0, stdout: "ok", stderr: "" }),
+    };
+
+    await pushBranch(runner, { remote: "origin", branch: "feature/no-token" }, []);
+
+    const env = runner.run.mock.calls[0]?.[2]?.env as Record<string, string | undefined>;
+    expect(env.GIT_ASKPASS).toBeUndefined();
+    expect(env.PAPERCLIP_GIT_PUSH_TOKEN).toBeUndefined();
   });
 });

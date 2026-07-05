@@ -1,18 +1,27 @@
-/**
- * Shared types and config defaults for the GitHub Bot Identity plugin.
- */
-
-export interface BotIdentityConfig {
-  /** GitHub owner prefix for repository policy enforcement (e.g. "roshangautam"). */
-  allowedOwner: string;
-  /** Secret reference used to resolve the bot's GitHub token at call time. */
+export type BotIdentityConfig = {
+  agentId: string;
+  label: string;
+  githubUsername: string;
   tokenSecretRef: string;
-}
+  allowedOwnerPattern: string;
+  commitName?: string;
+  commitEmail?: string;
+};
+
+export const DEFAULT_ALLOWED_OWNER_PATTERN = "^roshangautam$";
 
 export const DEFAULT_BOT_IDENTITY_CONFIG: BotIdentityConfig = {
-  allowedOwner: "roshangautam",
-  tokenSecretRef: "GITHUB_BOT_TOKEN",
+  agentId: "",
+  label: "",
+  githubUsername: "",
+  tokenSecretRef: "",
+  allowedOwnerPattern: DEFAULT_ALLOWED_OWNER_PATTERN,
+  commitName: "",
+  commitEmail: "",
 };
+
+/** Allowed owner for the create-pull-request tool's simple policy check. */
+const TOOL_ALLOWED_OWNER = "roshangautam";
 
 /** Valid characters for an owner name (GitHub username format). */
 const OWNER_NAME_FORMAT = /^[a-zA-Z0-9_-]+$/;
@@ -23,7 +32,7 @@ const OWNER_NAME_FORMAT = /^[a-zA-Z0-9_-]+$/;
  */
 export function validateRepoPolicy(
   repository: string,
-  allowedOwner: string,
+  allowedOwner: string = TOOL_ALLOWED_OWNER,
 ): string | null {
   if (!repository || typeof repository !== "string") {
     return "repository is required and must be a non-empty string";

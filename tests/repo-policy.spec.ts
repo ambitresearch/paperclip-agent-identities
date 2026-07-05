@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { validateRepoPolicy, DEFAULT_BOT_IDENTITY_CONFIG } from "../src/shared/types.js";
+import { validateRepoPolicy } from "../src/shared/types.js";
 
 describe("validateRepoPolicy", () => {
-  const allowedOwner = DEFAULT_BOT_IDENTITY_CONFIG.allowedOwner;
+  const allowedOwner = "roshangautam";
 
   it("returns null for valid roshangautam/* repos", () => {
     expect(validateRepoPolicy("roshangautam/my-repo", allowedOwner)).toBeNull();

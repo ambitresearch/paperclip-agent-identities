@@ -4,7 +4,13 @@
  * any secrets.
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
-import { DEFAULT_BOT_IDENTITY_CONFIG, validateRepoPolicy } from "../shared/types.js";
+import { validateRepoPolicy } from "../shared/types.js";
+
+/** The owner used for simple policy checks in this tool. */
+const ALLOWED_OWNER = "roshangautam";
+
+/** Secret ref for the bot's GitHub token. */
+const TOKEN_SECRET_REF = "GITHUB_BOT_TOKEN";
 
 export interface CreatePullRequestParams {
   repository: string;
@@ -107,7 +113,7 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
       // Enforce repo owner policy BEFORE resolving any secrets
       const policyError = validateRepoPolicy(
         validated.repository,
-        DEFAULT_BOT_IDENTITY_CONFIG.allowedOwner,
+        ALLOWED_OWNER,
       );
       if (policyError) {
         return { error: policyError };
@@ -116,7 +122,7 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
       // Resolve token just-in-time
       let token: string;
       try {
-        token = await ctx.secrets.resolve(DEFAULT_BOT_IDENTITY_CONFIG.tokenSecretRef);
+        token = await ctx.secrets.resolve(TOKEN_SECRET_REF);
       } catch (err) {
         ctx.logger.error("Failed to resolve bot token", {
           agentId: runCtx.agentId,

@@ -62,6 +62,7 @@ Run the same validation locally:
 
 ```bash
 corepack enable
+corepack prepare pnpm@10.17.1 --activate
 pnpm install --frozen-lockfile
 pnpm typecheck
 pnpm test

@@ -1,9 +1,9 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
-import { createGithubBotPushBranchTool } from "./githubBotPushBranch.js";
+import { createGithubBotPushBranchTool } from "./github-bot-push-branch.js";
 import {
   GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
   githubBotPushBranchToolDefinition
-} from "./githubBotPushBranchToolDefinition.js";
+} from "./github-bot-push-branch-tool-definition.js";
 import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 import type { BotIdentityConfig } from "./shared/types.js";
 import { registerCreatePullRequestTool } from "./tools/create-pull-request.js";

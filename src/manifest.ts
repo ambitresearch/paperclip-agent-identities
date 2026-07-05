@@ -2,7 +2,7 @@ import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import {
   GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
   githubBotPushBranchToolDefinition
-} from "./githubBotPushBranchToolDefinition.js";
+} from "./github-bot-push-branch-tool-definition.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-github-bot-identity",

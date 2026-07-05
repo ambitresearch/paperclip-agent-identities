@@ -3,7 +3,7 @@ import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin, { DEFAULT_ALLOWED_OWNER_PATTERN } from "../src/worker.js";
 import type { BotIdentityConfig } from "../src/worker.js";
-import { __resetGitCommandRunnerForTests, __setGitCommandRunnerForTests } from "../src/githubBotPushBranch.js";
+import { __resetGitCommandRunnerForTests, __setGitCommandRunnerForTests } from "../src/github-bot-push-branch.js";
 
 afterEach(() => {
   __resetGitCommandRunnerForTests();
@@ -167,6 +167,49 @@ describe("plugin scaffold", () => {
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
     expect(result.error).toContain("Invalid GitHub bot identity config");
+  });
+
+  it("returns a stable error and logs outcome when secret resolution fails", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: pushToolConfig("github-token-ref")
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const activityLogs: Array<Record<string, unknown>> = [];
+    const originalLog = harness.ctx.activity.log;
+    harness.ctx.activity.log = async (entry) => {
+      activityLogs.push(entry as unknown as Record<string, unknown>);
+      await originalLog(entry);
+    };
+
+    harness.ctx.secrets.resolve = async () => {
+      throw new Error("invalid secret ref");
+    };
+
+    __setGitCommandRunnerForTests(async ({ args }) => {
+      if (args[0] === "remote" && args[1] === "get-url") {
+        return {
+          exitCode: 0,
+          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stderr: ""
+        };
+      }
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    });
+
+    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+
+    const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
+
+    expect(result.error).toBe("Failed to resolve bot authentication credentials.");
+    expect(activityLogs).toContainEqual(expect.objectContaining({
+      message: "github_bot_push_branch failed: secret resolution",
+      metadata: expect.objectContaining({
+        outcome: "secret_resolution_failed"
+      })
+    }));
   });
 
 

@@ -318,7 +318,26 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       }
     }
 
-    const token = await ctx.secrets.resolve(resolvedIdentity.identity.tokenSecretRef);
+    let token: string;
+    try {
+      token = await ctx.secrets.resolve(resolvedIdentity.identity.tokenSecretRef);
+    } catch {
+      await ctx.activity.log({
+        companyId: runCtx.companyId,
+        entityType: "run",
+        entityId: runCtx.runId,
+        message: "github_bot_push_branch failed: secret resolution",
+        metadata: {
+          agentId: runCtx.agentId,
+          runId: runCtx.runId,
+          repository: repository.fullName,
+          branch,
+          remote,
+          outcome: "secret_resolution_failed"
+        }
+      });
+      return { error: "Failed to resolve bot authentication credentials." };
+    }
     let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>>;
 
     try {

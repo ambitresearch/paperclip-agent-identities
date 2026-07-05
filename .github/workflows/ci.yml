@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pack tarball
+        run: pnpm pack --pack-destination .
+
+      - name: Verify packaged plugin output
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(ls -t ./*.tgz | head -n1)"
+          tar -tzf "$TARBALL" | grep -q '^package/dist/worker.js$'
+          tar -tzf "$TARBALL" | grep -q '^package/dist/manifest.js$'
+          tar -tzf "$TARBALL" | grep -q '^package/dist/ui/index.js$'
+          tar -tzf "$TARBALL" | grep -q '^package/package.json$'
+          tar -tzf "$TARBALL" | grep -q '^package/pnpm-lock.yaml$'
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package-tarball
+          path: ./*.tgz
+          if-no-files-found: error

@@ -2,8 +2,13 @@
   "name": "@roshangautam/paperclip-github-bot-identity",
   "version": "0.1.0",
   "type": "module",
-  "private": true,
+  "private": false,
   "description": "Per-agent GitHub bot identity and contribution tools for Paperclip",
+  "files": [
+    "dist",
+    "README.md",
+    "pnpm-lock.yaml"
+  ],
   "scripts": {
     "build": "node ./esbuild.config.mjs",
     "build:rollup": "rollup -c",

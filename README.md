@@ -8,7 +8,10 @@ Per-agent GitHub bot identity and contribution tools for Paperclip
 pnpm install
 pnpm dev            # watch builds
 pnpm dev:ui         # local dev server with hot-reload events
+pnpm typecheck
 pnpm test
+pnpm build
+pnpm pack --pack-destination .
 ```
 
 `pnpm dev` rebuilds the worker, manifest, and UI bundles into `dist/`.
@@ -42,3 +45,71 @@ MVP repo policy hard-denies any repository outside `roshangautam/*`, even if oth
 
 - `pnpm build` uses esbuild presets from `@paperclipai/plugin-sdk/bundlers`.
 - `pnpm build:rollup` uses rollup presets from the same SDK.
+
+## CI
+
+GitHub Actions workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+
+Runs on pull requests and pushes to `main`:
+
+- `pnpm typecheck`
+- `pnpm test`
+- `pnpm build`
+- `pnpm pack --pack-destination .`
+- Uploads `*.tgz` as workflow artifact `npm-package-tarball`
+
+Run the same validation locally:
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm pack --pack-destination .
+```
+
+Inspect package contents locally:
+
+```bash
+TARBALL="$(ls -t ./*.tgz | head -n1)"
+tar -tzf "$TARBALL"
+```
+
+Download CI artifact from GitHub:
+
+1. Open the workflow run in the Actions tab.
+2. In the `Artifacts` section, download `npm-package-tarball`.
+3. Extract the `.tgz` and verify `dist/manifest.js`, `dist/worker.js`, and `dist/ui/index.js` are present.
+
+## Publish
+
+GitHub Actions workflow: [`.github/workflows/publish.yml`](.github/workflows/publish.yml)
+
+Publish is only available through explicit release paths:
+
+- GitHub Release `published` event: performs real npm publish.
+- Manual `workflow_dispatch`: supports safe dry-run by default.
+
+Required GitHub secret:
+
+- `NPM_TOKEN`: npm automation token with publish permissions.
+
+Manual dry-run publish in GitHub Actions:
+
+1. Open `Publish` workflow in Actions.
+2. Click `Run workflow`.
+3. Keep `dry_run=true` to validate publish packaging without uploading to npm.
+
+Manual real publish in GitHub Actions:
+
+1. Open `Publish` workflow in Actions.
+2. Click `Run workflow`.
+3. Set `dry_run=false`.
+4. Optionally set `ref` to a release tag (for example `v0.1.1`).
+
+Test install of a published version in Paperclip:
+
+```bash
+paperclipai plugin install @roshangautam/paperclip-github-bot-identity@<version>
+```

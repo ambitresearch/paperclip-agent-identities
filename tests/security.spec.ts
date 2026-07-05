@@ -47,6 +47,13 @@ describe("Policy enforcement", () => {
     expect(isRepoAllowed("openai/plugins", allowed)).toBe(false);
   });
 
+  it("regression: owner wildcard roshangautam/* allows owner repos and denies others", () => {
+    const allowed = ["roshangautam/*"];
+
+    expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
+    expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
+  });
+
   it("matches owner wildcard entries case-insensitively across URL forms", () => {
     const allowed = ["RoshanGautam/*"];
 
@@ -121,6 +128,23 @@ describe("Config resolution", () => {
 
     const result = resolveContributionAccess(config, { companyId: "paperclip" });
     expect(result.allowed).toBe(false);
+    expect(result.reason).toBe("company_not_allowed");
+  });
+
+  it("regression: denied with reason company_not_allowed when allow list excludes matching company", () => {
+    const config = {
+      defaultIdentityAlias: "genie",
+      identities: {
+        genie: {
+          companyId: "paperclip",
+          githubUsername: "paperclip-genie",
+          githubToken: "fake_token_for_tests",
+        },
+      },
+      allowedCompanyIds: ["another-company"],
+    };
+
+    const result = resolveContributionAccess(config, { companyId: "paperclip" });
     expect(result.reason).toBe("company_not_allowed");
   });
 

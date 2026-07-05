@@ -40,6 +40,13 @@ describe("Policy enforcement", () => {
     expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
   });
 
+  it("covers owner/* policy branch explicitly", () => {
+    const allowed = ["roshangautam/*"];
+
+    expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
+    expect(isRepoAllowed("openai/plugins", allowed)).toBe(false);
+  });
+
   it("matches owner wildcard entries case-insensitively across URL forms", () => {
     const allowed = ["RoshanGautam/*"];
 
@@ -97,6 +104,24 @@ describe("Config resolution", () => {
     expect(result.reason).toBe("company_not_allowed");
     expect(result.reason).not.toBe("company_context_mismatch");
     expect(result.deniedTools).toEqual(["github.push", "github.pr.create"]);
+  });
+
+  it("covers company_not_allowed fail-closed branch explicitly", () => {
+    const config = {
+      defaultIdentityAlias: "genie",
+      identities: {
+        genie: {
+          companyId: "paperclip",
+          githubUsername: "paperclip-genie",
+          githubToken: "fake_token_for_tests",
+        },
+      },
+      allowedCompanyIds: ["other-company"],
+    };
+
+    const result = resolveContributionAccess(config, { companyId: "paperclip" });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe("company_not_allowed");
   });
 
   it("returns a fresh denied tools array for each denied result", () => {

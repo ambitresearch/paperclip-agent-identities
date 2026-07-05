@@ -1,4 +1,5 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { githubBotWhoamiToolMetadata, githubBotWhoamiToolName } from "./shared/github-bot-whoami-tool.js";
 
 type AgentIdentityConfig = {
   companyId: string;
@@ -89,15 +90,7 @@ const plugin = definePlugin({
       return { pong: true, at: new Date().toISOString() };
     });
 
-    ctx.tools.register("github_bot_whoami", {
-      displayName: "GitHub Bot Who Am I",
-      description: "Returns the calling agent's configured GitHub bot identity metadata.",
-      parametersSchema: {
-        type: "object",
-        properties: {},
-        additionalProperties: false
-      }
-    }, async (_params, runCtx) => {
+    ctx.tools.register(githubBotWhoamiToolName, githubBotWhoamiToolMetadata, async (_params, runCtx) => {
       const identities = resolveAgentIdentities(await ctx.config.get());
       const identity = identities.find((entry) => entry.agentId === runCtx.agentId && entry.companyId === runCtx.companyId);
 

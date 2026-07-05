@@ -1,4 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import { githubBotWhoamiManifestTool } from "./shared/github-bot-whoami-tool.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-github-bot-identity",
@@ -46,18 +47,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.dashboardWidget.register",
     "agent.tools.register"
   ],
-  tools: [
-    {
-      name: "github_bot_whoami",
-      displayName: "GitHub Bot Who Am I",
-      description: "Returns the calling agent's configured GitHub bot identity metadata.",
-      parametersSchema: {
-        type: "object",
-        properties: {},
-        additionalProperties: false
-      }
-    }
-  ],
+  tools: [githubBotWhoamiManifestTool],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"

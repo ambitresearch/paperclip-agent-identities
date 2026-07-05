@@ -96,6 +96,13 @@ describe("Config resolution", () => {
     expect(second.allowed).toBe(false);
     expect(first.deniedTools).not.toBe(second.deniedTools);
   });
+
+  it("returns a frozen denied tools array", () => {
+    const result = resolveContributionAccess({}, { companyId: "paperclip" });
+
+    expect(result.allowed).toBe(false);
+    expect(Object.isFrozen(result.deniedTools)).toBe(true);
+  });
 });
 
 describe("Redaction", () => {

@@ -29,7 +29,7 @@ const CONTRIBUTION_TOOLS: readonly ContributionTool[] = ["github.push", "github.
 function deniedContributionAccess(reason: NonNullable<ContributionAccess["reason"]>): ContributionAccess {
   return {
     allowed: false,
-    deniedTools: [...CONTRIBUTION_TOOLS],
+    deniedTools: Object.freeze([...CONTRIBUTION_TOOLS]),
     reason,
   };
 }

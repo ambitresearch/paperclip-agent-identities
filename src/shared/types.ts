@@ -14,8 +14,8 @@ export const DEFAULT_BOT_IDENTITY_CONFIG: BotIdentityConfig = {
   tokenSecretRef: "GITHUB_BOT_TOKEN",
 };
 
-/** Allowed owner pattern for repo policy. Repos must be under this owner. */
-const ALLOWED_OWNER_PATTERN = /^[a-zA-Z0-9_-]+$/;
+/** Valid characters for an owner name (GitHub username format). */
+const OWNER_NAME_FORMAT = /^[a-zA-Z0-9_-]+$/;
 
 /**
  * Validate that a repository string matches the allowed owner policy.
@@ -28,7 +28,7 @@ export function validateRepoPolicy(
   if (!repository || typeof repository !== "string") {
     return "repository is required and must be a non-empty string";
   }
-  if (!ALLOWED_OWNER_PATTERN.test(allowedOwner)) {
+  if (!OWNER_NAME_FORMAT.test(allowedOwner)) {
     return `allowedOwner "${allowedOwner}" contains invalid characters`;
   }
   const parts = repository.split("/");

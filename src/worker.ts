@@ -1,4 +1,5 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { registerCreatePullRequestTool } from "./tools/create-pull-request.js";
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -16,6 +17,8 @@ const plugin = definePlugin({
       ctx.logger.info("Ping action invoked");
       return { pong: true, at: new Date().toISOString() };
     });
+
+    registerCreatePullRequestTool(ctx);
   },
 
   async onHealth() {

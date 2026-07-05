@@ -12,7 +12,11 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "plugin.state.read",
     "plugin.state.write",
-    "ui.dashboardWidget.register"
+    "ui.dashboardWidget.register",
+    "agent.tools.register",
+    "http.outbound",
+    "secrets.read-ref",
+    "activity.log.write"
   ],
   entrypoints: {
     worker: "./dist/worker.js",

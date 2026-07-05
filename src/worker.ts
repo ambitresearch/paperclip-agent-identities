@@ -1,14 +1,9 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
+import type { BotIdentityConfig } from "./shared/types.js";
 
-export type BotIdentityConfig = {
-  agentId: string;
-  label: string;
-  githubUsername: string;
-  tokenSecretRef: string;
-  allowedOwnerPattern: string;
-  commitName?: string;
-  commitEmail?: string;
-};
+export type { BotIdentityConfig } from "./shared/types.js";
+export { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 
 const CONFIG_STATE_KEY = "bot-identity-config";
 const CONFIG_SCOPE = { scopeKind: "instance" as const, stateKey: CONFIG_STATE_KEY };
@@ -47,7 +42,7 @@ const plugin = definePlugin({
         label,
         githubUsername,
         tokenSecretRef,
-        allowedOwnerPattern: allowedOwnerPattern || "^roshangautam$",
+        allowedOwnerPattern: allowedOwnerPattern || DEFAULT_ALLOWED_OWNER_PATTERN,
         commitName: commitName || undefined,
         commitEmail: commitEmail || undefined,
       };

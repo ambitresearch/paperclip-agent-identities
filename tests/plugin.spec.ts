@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
-import plugin from "../src/worker.js";
+import plugin, { DEFAULT_ALLOWED_OWNER_PATTERN } from "../src/worker.js";
+import type { BotIdentityConfig } from "../src/worker.js";
 
 describe("plugin scaffold", () => {
   it("declares capabilities for its manifest features", () => {
@@ -44,33 +45,21 @@ describe("bot identity settings", () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
 
-    const saved = await harness.performAction<{
-      agentId: string;
-      label: string;
-      githubUsername: string;
-      tokenSecretRef: string;
-      allowedOwnerPattern: string;
-    }>("save-bot-identity-config", {
+    const saved = await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
       agentId: "agent-uuid-123",
       label: "QA Bot",
       githubUsername: "paperclip-qa-bot",
       tokenSecretRef: "GITHUB_QA_BOT_TOKEN",
-      allowedOwnerPattern: "^roshangautam$",
+      allowedOwnerPattern: DEFAULT_ALLOWED_OWNER_PATTERN,
     });
 
     expect(saved.agentId).toBe("agent-uuid-123");
     expect(saved.label).toBe("QA Bot");
     expect(saved.githubUsername).toBe("paperclip-qa-bot");
     expect(saved.tokenSecretRef).toBe("GITHUB_QA_BOT_TOKEN");
-    expect(saved.allowedOwnerPattern).toBe("^roshangautam$");
+    expect(saved.allowedOwnerPattern).toBe(DEFAULT_ALLOWED_OWNER_PATTERN);
 
-    const config = await harness.getData<{
-      agentId: string;
-      label: string;
-      githubUsername: string;
-      tokenSecretRef: string;
-      allowedOwnerPattern: string;
-    }>("bot-identity-config");
+    const config = await harness.getData<BotIdentityConfig>("bot-identity-config");
     expect(config.agentId).toBe("agent-uuid-123");
     expect(config.githubUsername).toBe("paperclip-qa-bot");
   });
@@ -104,22 +93,19 @@ describe("bot identity settings", () => {
       }
     );
 
-    expect(saved.allowedOwnerPattern).toBe("^roshangautam$");
+    expect(saved.allowedOwnerPattern).toBe(DEFAULT_ALLOWED_OWNER_PATTERN);
   });
 
   it("stores optional commit identity fields", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
 
-    const saved = await harness.performAction<{
-      commitName?: string;
-      commitEmail?: string;
-    }>("save-bot-identity-config", {
+    const saved = await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
       agentId: "agent-1",
       label: "Deploy Bot",
       githubUsername: "paperclip-deploy",
       tokenSecretRef: "DEPLOY_TOKEN",
-      allowedOwnerPattern: "^roshangautam$",
+      allowedOwnerPattern: DEFAULT_ALLOWED_OWNER_PATTERN,
       commitName: "Paperclip Deploy",
       commitEmail: "deploy@paperclip.ai",
     });

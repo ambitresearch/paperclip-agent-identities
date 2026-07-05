@@ -1,15 +1,7 @@
 import { useState } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
-
-type BotIdentityConfig = {
-  agentId: string;
-  label: string;
-  githubUsername: string;
-  tokenSecretRef: string;
-  allowedOwnerPattern: string;
-  commitName?: string;
-  commitEmail?: string;
-};
+import { DEFAULT_BOT_IDENTITY_CONFIG } from "../shared/types.js";
+import type { BotIdentityConfig } from "../shared/types.js";
 
 export function SettingsPage(_props: PluginSettingsPageProps) {
   const { data, loading, error, refresh } = usePluginData<BotIdentityConfig | null>("bot-identity-config");
@@ -20,30 +12,14 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  const config = formState ?? data ?? {
-    agentId: "",
-    label: "",
-    githubUsername: "",
-    tokenSecretRef: "",
-    allowedOwnerPattern: "^roshangautam$",
-    commitName: "",
-    commitEmail: "",
-  };
+  const config = formState ?? data ?? DEFAULT_BOT_IDENTITY_CONFIG;
 
   if (loading) return <div>Loading settings...</div>;
   if (error) return <div>Error loading settings: {error.message}</div>;
 
   function updateField(field: keyof BotIdentityConfig, value: string) {
     setFormState((prev) => ({
-      ...(prev ?? data ?? {
-        agentId: "",
-        label: "",
-        githubUsername: "",
-        tokenSecretRef: "",
-        allowedOwnerPattern: "^roshangautam$",
-        commitName: "",
-        commitEmail: "",
-      }),
+      ...(prev ?? data ?? DEFAULT_BOT_IDENTITY_CONFIG),
       [field]: value,
     }));
     setSaveSuccess(false);

@@ -46,11 +46,14 @@ jobs:
         run: |
           set -euo pipefail
           TARBALL="$(ls -t ./*.tgz | head -n1)"
-          tar -tzf "$TARBALL" | grep -q '^package/dist/worker.js$'
-          tar -tzf "$TARBALL" | grep -q '^package/dist/manifest.js$'
-          tar -tzf "$TARBALL" | grep -q '^package/dist/ui/index.js$'
-          tar -tzf "$TARBALL" | grep -q '^package/package.json$'
-          tar -tzf "$TARBALL" | grep -q '^package/pnpm-lock.yaml$'
+          CONTENTS_FILE="$(mktemp)"
+          tar -tzf "$TARBALL" > "$CONTENTS_FILE"
+          grep -q '^package/dist/worker.js$' "$CONTENTS_FILE"
+          grep -q '^package/dist/manifest.js$' "$CONTENTS_FILE"
+          grep -q '^package/dist/ui/index.js$' "$CONTENTS_FILE"
+          grep -q '^package/package.json$' "$CONTENTS_FILE"
+          grep -q '^package/pnpm-lock.yaml$' "$CONTENTS_FILE"
+          rm -f "$CONTENTS_FILE"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4

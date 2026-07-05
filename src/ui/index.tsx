@@ -21,3 +21,5 @@ export function DashboardWidget(_props: PluginWidgetProps) {
     </div>
   );
 }
+
+export { SettingsPage } from "./SettingsPage.js";

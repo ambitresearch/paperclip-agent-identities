@@ -121,6 +121,7 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
         ctx.logger.error("Failed to resolve bot token", {
           agentId: runCtx.agentId,
           repository: validated.repository,
+          reason: err instanceof Error ? err.message : String(err),
         });
         return { error: "Failed to resolve bot authentication credentials" };
       }
@@ -151,12 +152,10 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
         ctx.logger.error("GitHub API request failed", {
           agentId: runCtx.agentId,
           repository: validated.repository,
+          reason: err instanceof Error ? err.message : String(err),
         });
         return { error: "GitHub API request failed. Check network connectivity." };
       }
-
-      // Ensure token is not leaked in any error path
-      token = "";
 
       if (!response.ok) {
         let errorDetail: string;

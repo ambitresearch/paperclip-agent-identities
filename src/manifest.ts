@@ -1,5 +1,6 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { githubBotWhoamiManifestTool } from "./shared/github-bot-whoami-tool.js";
+import { githubBotCreatePullRequestManifestTool } from "./shared/github-bot-create-pull-request-tool.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-github-bot-identity",
@@ -51,7 +52,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.read-ref",
     "activity.log.write"
   ],
-  tools: [githubBotWhoamiManifestTool],
+  tools: [githubBotWhoamiManifestTool, githubBotCreatePullRequestManifestTool],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"

@@ -26,6 +26,14 @@ export interface ContributionAccess {
 
 const CONTRIBUTION_TOOLS: ContributionTool[] = ["github.push", "github.pr.create"];
 
+function deniedContributionAccess(reason: NonNullable<ContributionAccess["reason"]>): ContributionAccess {
+  return {
+    allowed: false,
+    deniedTools: [...CONTRIBUTION_TOOLS],
+    reason,
+  };
+}
+
 export function resolveContributionAccess(
   config: BotIdentityPluginConfig,
   context: RequestContext,
@@ -34,35 +42,19 @@ export function resolveContributionAccess(
   const identity = alias ? config.identities?.[alias] : undefined;
 
   if (!identity) {
-    return {
-      allowed: false,
-      deniedTools: CONTRIBUTION_TOOLS,
-      reason: "identity_missing",
-    };
+    return deniedContributionAccess("identity_missing");
   }
 
   if (!context.companyId) {
-    return {
-      allowed: false,
-      deniedTools: CONTRIBUTION_TOOLS,
-      reason: "company_context_missing",
-    };
+    return deniedContributionAccess("company_context_missing");
   }
 
   if (identity.companyId !== context.companyId) {
-    return {
-      allowed: false,
-      deniedTools: CONTRIBUTION_TOOLS,
-      reason: "company_context_mismatch",
-    };
+    return deniedContributionAccess("company_context_mismatch");
   }
 
   if (config.allowedCompanyIds && !config.allowedCompanyIds.includes(context.companyId)) {
-    return {
-      allowed: false,
-      deniedTools: CONTRIBUTION_TOOLS,
-      reason: "company_not_allowed",
-    };
+    return deniedContributionAccess("company_not_allowed");
   }
 
   return {

@@ -30,6 +30,14 @@ describe("Policy enforcement", () => {
     expect(isRepoAllowed("openai/plugins", allowed)).toBe(false);
     expect(isRepoAllowed("NousResearch/hermes-agent", allowed)).toBe(false);
   });
+
+  it("supports owner wildcard entries while still denying other owners", () => {
+    const allowed = ["roshangautam/*"];
+
+    expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
+    expect(isRepoAllowed("roshangautam/another-repo", allowed)).toBe(true);
+    expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
+  });
 });
 
 describe("Config resolution", () => {
@@ -60,6 +68,24 @@ describe("Config resolution", () => {
     const wrongContext = resolveContributionAccess(config, { companyId: "other-company" });
     expect(wrongContext.allowed).toBe(false);
     expect(wrongContext.reason).toBe("company_context_mismatch");
+  });
+
+  it("denies when company is not in allow list", () => {
+    const config = {
+      defaultIdentityAlias: "genie",
+      identities: {
+        genie: {
+          companyId: "paperclip",
+          githubUsername: "paperclip-genie",
+          githubToken: "fake_token_for_tests",
+        },
+      },
+      allowedCompanyIds: ["another-company"],
+    };
+
+    const result = resolveContributionAccess(config, { companyId: "paperclip" });
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toBe("company_not_allowed");
   });
 });
 

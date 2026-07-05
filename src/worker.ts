@@ -3,6 +3,7 @@ import { resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
 import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 import type { BotIdentityConfig } from "./shared/types.js";
 import { githubBotWhoamiToolMetadata, githubBotWhoamiToolName } from "./shared/github-bot-whoami-tool.js";
+import { registerCreatePullRequestTool } from "./tools/create-pull-request.js";
 
 export type { BotIdentityConfig } from "./shared/types.js";
 export { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
@@ -78,6 +79,8 @@ const plugin = definePlugin({
         }
       };
     });
+
+    registerCreatePullRequestTool(ctx);
   },
 
   async onHealth() {

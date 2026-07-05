@@ -12,29 +12,29 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema: {
     type: "object",
     properties: {
-      agentIdentities: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            companyId: { type: "string" },
-            agentId: { type: "string" },
-            label: { type: "string" },
-            githubUsername: { type: "string" },
-            allowedOwners: {
-              type: "array",
-              items: { type: "string" }
+      identities: {
+        type: "object",
+        patternProperties: {
+          "^.+$": {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              githubUsername: { type: "string" },
+              tokenSecretRef: { type: "string" },
+              allowedOwnerPatterns: {
+                type: "array",
+                items: { type: "string" }
+              },
+              allowedRepos: {
+                type: "array",
+                items: { type: "string" }
+              },
+              commitName: { type: "string" },
+              commitEmail: { type: "string" }
             },
-            allowedRepos: {
-              type: "array",
-              items: { type: "string" }
-            },
-            commitName: { type: "string" },
-            commitEmail: { type: "string" },
-            tokenSecretRef: { type: "string" }
-          },
-          required: ["companyId", "agentId", "label", "githubUsername", "allowedOwners", "allowedRepos"],
-          additionalProperties: false
+            required: ["label", "githubUsername", "tokenSecretRef"],
+            additionalProperties: false
+          }
         }
       }
     },

@@ -31,19 +31,17 @@ describe("plugin scaffold", () => {
       manifest,
       capabilities: [...manifest.capabilities],
       config: {
-        agentIdentities: [
-          {
-            companyId: "company_1",
-            agentId: "agent_1",
+        identities: {
+          agent_1: {
             label: "Droidshop CTO",
             githubUsername: "paperclip-kiln-lathe",
-            allowedOwners: ["roshangautam"],
-            allowedRepos: ["paperclip-github-bot-identity-plugin"],
+            tokenSecretRef: "secret://github/bot/token",
+            allowedOwnerPatterns: ["^roshangautam$"],
+            allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"],
             commitName: "Kiln Lathe",
-            commitEmail: "kiln@example.com",
-            tokenSecretRef: "secret://github/bot/token"
+            commitEmail: "kiln@example.com"
           }
-        ]
+        }
       }
     });
     await plugin.definition.setup(harness.ctx);
@@ -58,8 +56,8 @@ describe("plugin scaffold", () => {
     expect(whoami.data).toEqual({
       label: "Droidshop CTO",
       githubUsername: "paperclip-kiln-lathe",
-      allowedOwners: ["roshangautam"],
-      allowedRepos: ["paperclip-github-bot-identity-plugin"],
+      allowedOwners: ["^roshangautam$"],
+      allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"],
       hasCommitName: true,
       hasCommitEmail: true
     });
@@ -74,16 +72,15 @@ describe("plugin scaffold", () => {
       manifest,
       capabilities: [...manifest.capabilities],
       config: {
-        agentIdentities: [
-          {
-            companyId: "company_1",
-            agentId: "agent_1",
+        identities: {
+          agent_1: {
             label: "Droidshop CTO",
             githubUsername: "paperclip-kiln-lathe",
-            allowedOwners: ["roshangautam"],
-            allowedRepos: ["paperclip-github-bot-identity-plugin"]
+            tokenSecretRef: "secret://github/bot/token",
+            allowedOwnerPatterns: ["^roshangautam$"],
+            allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"]
           }
-        ]
+        }
       }
     });
     await plugin.definition.setup(harness.ctx);
@@ -94,7 +91,8 @@ describe("plugin scaffold", () => {
       { companyId: "company_1", agentId: "agent_missing" }
     );
 
-    expect(whoami.error).toContain("not configured");
+    expect(whoami.error).toContain("failed closed");
+    expect(whoami.error).toContain("Missing GitHub bot identity config");
     expect(whoami.data).toBeUndefined();
     expect(whoami.content).toBeUndefined();
   });

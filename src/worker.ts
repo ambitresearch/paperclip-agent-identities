@@ -1,82 +1,11 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
 import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 import type { BotIdentityConfig } from "./shared/types.js";
 import { githubBotWhoamiToolMetadata, githubBotWhoamiToolName } from "./shared/github-bot-whoami-tool.js";
 
 export type { BotIdentityConfig } from "./shared/types.js";
 export { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
-
-type AgentIdentityConfig = {
-  companyId: string;
-  agentId: string;
-  label: string;
-  githubUsername: string;
-  allowedOwners: string[];
-  allowedRepos: string[];
-  commitName?: string;
-  commitEmail?: string;
-};
-
-const asString = (value: unknown): string | undefined => {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-};
-
-const asStringArray = (value: unknown): string[] | undefined => {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  const normalized = value.map(asString).filter((entry): entry is string => Boolean(entry));
-  return normalized.length === value.length ? normalized : undefined;
-};
-
-const resolveAgentIdentities = (config: unknown): AgentIdentityConfig[] => {
-  if (!config || typeof config !== "object") {
-    return [];
-  }
-
-  const identitiesRaw = (config as { agentIdentities?: unknown }).agentIdentities;
-  if (!Array.isArray(identitiesRaw)) {
-    return [];
-  }
-
-  const identities: AgentIdentityConfig[] = [];
-  for (const entry of identitiesRaw) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-
-    const record = entry as Record<string, unknown>;
-    const companyId = asString(record.companyId);
-    const agentId = asString(record.agentId);
-    const label = asString(record.label);
-    const githubUsername = asString(record.githubUsername);
-    const allowedOwners = asStringArray(record.allowedOwners);
-    const allowedRepos = asStringArray(record.allowedRepos);
-
-    if (!companyId || !agentId || !label || !githubUsername || !allowedOwners || !allowedRepos) {
-      continue;
-    }
-
-    identities.push({
-      companyId,
-      agentId,
-      label,
-      githubUsername,
-      allowedOwners,
-      allowedRepos,
-      commitName: asString(record.commitName),
-      commitEmail: asString(record.commitEmail),
-    });
-  }
-
-  return identities;
-};
 
 const CONFIG_STATE_KEY = "bot-identity-config";
 const CONFIG_SCOPE = { scopeKind: "instance" as const, stateKey: CONFIG_STATE_KEY };
@@ -126,25 +55,27 @@ const plugin = definePlugin({
     });
 
     ctx.tools.register(githubBotWhoamiToolName, githubBotWhoamiToolMetadata, async (_params, runCtx) => {
-      const identities = resolveAgentIdentities(await ctx.config.get());
-      const identity = identities.find((entry) => entry.agentId === runCtx.agentId && entry.companyId === runCtx.companyId);
-
-      if (!identity) {
+      let resolved;
+      try {
+        resolved = resolveAgentIdentityFromToolRunContext(await ctx.config.get(), runCtx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown identity resolution failure";
         return {
-          error: `github_bot_whoami is not configured for agent ${runCtx.agentId} in company ${runCtx.companyId}.`,
+          error: `github_bot_whoami failed closed for agent '${runCtx.agentId}' in company '${runCtx.companyId}': ${message}`
         };
       }
 
+      const { identity } = resolved;
       return {
         content: `Configured GitHub bot identity: ${identity.label} (@${identity.githubUsername}).`,
         data: {
           label: identity.label,
           githubUsername: identity.githubUsername,
-          allowedOwners: identity.allowedOwners,
-          allowedRepos: identity.allowedRepos,
+          allowedOwners: identity.allowedOwnerPatterns,
+          allowedRepos: identity.allowedRepos ?? [],
           hasCommitName: Boolean(identity.commitName),
-          hasCommitEmail: Boolean(identity.commitEmail),
-        },
+          hasCommitEmail: Boolean(identity.commitEmail)
+        }
       };
     });
   },

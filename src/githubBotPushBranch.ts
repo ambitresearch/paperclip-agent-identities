@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
@@ -120,7 +120,6 @@ esac
 
   try {
     await writeFile(askPassPath, script, { encoding: "utf8", mode: 0o700 });
-    await chmod(askPassPath, 0o700);
   } catch (error) {
     await rm(tempDir, { recursive: true, force: true });
     throw error;
@@ -320,11 +319,30 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
     }
 
     const token = await ctx.secrets.resolve(resolvedIdentity.identity.tokenSecretRef);
-
-    let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>> | null = null;
+    let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>>;
 
     try {
       authEnv = await buildGitAuthEnvironment(token);
+    } catch (error) {
+      const message = redactSecretText(error instanceof Error ? error.message : String(error), [token]);
+      await ctx.activity.log({
+        companyId: runCtx.companyId,
+        entityType: "run",
+        entityId: runCtx.runId,
+        message: "github_bot_push_branch failed: execution exception",
+        metadata: {
+          agentId: runCtx.agentId,
+          runId: runCtx.runId,
+          repository: repository.fullName,
+          branch,
+          remote,
+          outcome: "auth_setup_exception"
+        }
+      });
+      return { error: `git auth setup failed: ${message}` };
+    }
+
+    try {
       const pushArgs = ["push"];
       if (dryRun) {
         pushArgs.push("--dry-run");
@@ -411,9 +429,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       });
       return { error: `git push failed: ${message}` };
     } finally {
-      if (authEnv) {
-        await authEnv.cleanup();
-      }
+      await authEnv.cleanup();
     }
   };
 }

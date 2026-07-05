@@ -17,7 +17,7 @@ The important distinction is that there are two different goals:
 
 ### Summary of findings
 
-Claude, Codex, and GitHub Copilot coding agents appear in GitHub as **Bot-type actors backed by GitHub Apps** that have been registered through GitHub's **"agent apps" program** (public preview, June 2026). They are **not** normal GitHub user accounts, machine users, or simple OAuth apps. They use a special assignment code path that differs from the standard REST assignees API.
+Claude, Codex, and GitHub Copilot coding agents appear in GitHub as **Bot-type actors backed by GitHub Apps** that have been registered through GitHub's **"agent apps" program** (partner waitlist, June 2026). They are **not** normal GitHub user accounts, machine users, or simple OAuth apps. They use a special assignment code path that differs from the standard REST assignees API.
 
 ### Evidence from this repository
 
@@ -99,20 +99,16 @@ query {
 
 This query (with the feature header) returns both human collaborators and registered agent app bots that can be assigned in that repository.
 
-#### 6. Self-assignment mechanism for GitHub App bots
+#### 6. Standard REST self-assignment does NOT work for GitHub App bots
 
-A GitHub App bot can assign itself to an issue using:
-```
-POST /repos/{owner}/{repo}/issues/{issue_number}/assignees
-{ "assignees": ["<app-slug>[bot]"] }
-```
+The REST `POST /repos/{owner}/{repo}/issues/{issue_number}/assignees` endpoint **does not accept GitHub App bot logins** (e.g., `"<app-slug>[bot]"`). Attempting this returns a `Validation Failed: Could not add assignee` error, because the REST assignees endpoint only recognizes human users with push access (collaborators/org members).
 
-This works when:
-- The app is installed on the repository
-- The app has `issues:write` permission
-- The app authenticates via its installation access token
+Agent app assignment **requires** the GraphQL path described above (Section 2) with the `issues_copilot_assignment_api_support` feature header. There is no REST-based self-assignment mechanism available for GitHub App bots.
 
-However, **this alone does not make the bot appear in the assignee picker for humans**. The agent apps program registration is what enables UI-level discoverability.
+A GitHub App can signal it is "working on" an issue through alternative means:
+- Adding a label (e.g., `paperclip:status/in-progress`)
+- Posting a comment with status information
+- Using the GraphQL assignment path (only if registered in the agent apps program)
 
 ### Why the standard REST assignees endpoint returns 404
 
@@ -133,7 +129,7 @@ It does **not** recognize agent app bot users, even though those bots can hold a
 | Standard GitHub App (not in agent apps program) | **No** - will not appear in assignee dropdown | Available now |
 | GitHub App registered as agent app (partner program) | **Yes** - appears in assignee dropdown and Agents tab | Waitlist/partner program only (June 2026) |
 | Machine user added as collaborator | **Yes** - appears in standard assignee dropdown | Available now, operational overhead |
-| GitHub App bot self-assigning via API | **Partially** - can hold assignment, but not discoverable in picker | Available now |
+| GitHub App bot signaling via labels/comments | **No** - cannot self-assign, but can signal status via labels/comments | Available now |
 
 ### What Paperclip would need to do
 
@@ -355,16 +351,15 @@ Build a GitHub App gateway that supports:
 
 This requires no machine users, no agent apps program membership, and no Copilot subscription.
 
-### Milestone M3.2: GitHub App self-assignment
+### Milestone M3.2: GitHub App status signaling via labels and comments
 
-Once the GitHub App is operational, have it self-assign to issues it is actively working on:
+Once the GitHub App is operational, have it signal "working on it" status on issues it is actively processing:
 
-```
-POST /repos/{owner}/{repo}/issues/{issue_number}/assignees
-{ "assignees": ["paperclip-agents[bot]"] }
-```
+- Add a label such as `paperclip:status/in-progress` when an agent picks up work
+- Post a status comment with agent name, run ID, and progress
+- Remove the label and post a completion comment when done
 
-This makes the App visible as an assignee on active issues (showing "working on it" status) without needing the agent apps program. The bot won't appear in the picker, but will show on issues after assignment.
+This provides visibility without requiring the agent apps program. Note: the REST `POST /assignees` endpoint does **not** accept App bot logins (e.g., `paperclip-agents[bot]`), so true self-assignment is not possible through this path. Native assignee visibility requires agent apps program registration (M3.3).
 
 ### Milestone M3.3: agent apps program registration
 
@@ -448,7 +443,7 @@ They are using **GitHub Apps registered through the agent apps partner program**
 ### Recommended path for Paperclip
 
 1. **Now**: Build the GitHub App gateway with labels and slash commands (M3.1). No external dependencies.
-2. **Soon**: Have the app self-assign to issues it is actively processing (M3.2). Partial visibility without program membership.
+2. **Soon**: Signal "working on it" status via labels and comments (M3.2). Provides visibility without program membership, though not true assignee status.
 3. **When available**: Register for GitHub's agent apps program to get native picker presence (M3.3). This is the path that matches Claude/Codex.
 4. **Only if needed**: Pilot a machine user for one agent if native picker UX is critical before M3.3 becomes available (M3.4).
 

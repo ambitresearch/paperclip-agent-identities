@@ -38,6 +38,14 @@ describe("Policy enforcement", () => {
     expect(isRepoAllowed("roshangautam/another-repo", allowed)).toBe(true);
     expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
   });
+
+  it("matches owner wildcard entries case-insensitively across URL forms", () => {
+    const allowed = ["RoshanGautam/*"];
+
+    expect(isRepoAllowed("https://github.com/roshangautam/genie.git", allowed)).toBe(true);
+    expect(isRepoAllowed("git@github.com:ROSHANGAUTAM/another-repo.git", allowed)).toBe(true);
+    expect(isRepoAllowed("https://github.com/openai/plugins", allowed)).toBe(false);
+  });
 });
 
 describe("Config resolution", () => {
@@ -86,6 +94,7 @@ describe("Config resolution", () => {
     const result = resolveContributionAccess(config, { companyId: "paperclip" });
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe("company_not_allowed");
+    expect(result.reason).not.toBe("company_context_mismatch");
   });
 
   it("returns a fresh denied tools array for each denied result", () => {

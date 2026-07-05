@@ -12,7 +12,11 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "plugin.state.read",
     "plugin.state.write",
-    "ui.dashboardWidget.register"
+    "ui.dashboardWidget.register",
+    "project.workspaces.read",
+    "agent.tools.register",
+    "secrets.read-ref",
+    "activity.log.write"
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -27,7 +31,37 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "DashboardWidget"
       }
     ]
-  }
+  },
+  instanceConfigSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      githubTokenSecretRef: {
+        type: "string",
+        minLength: 1,
+        title: "GitHub token secret reference",
+        description: "Secret reference resolved at runtime for mediated git push operations."
+      }
+    }
+  },
+  tools: [
+    {
+      name: "github_bot_push_branch",
+      displayName: "Push Branch",
+      description: "Push HEAD to a branch in an allowed roshangautam/* GitHub repository.",
+      parametersSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["branch"],
+        properties: {
+          branch: { type: "string", minLength: 1 },
+          remote: { type: "string" },
+          expectedRepository: { type: "string" },
+          dryRun: { type: "boolean" }
+        }
+      }
+    }
+  ]
 };
 
 export default manifest;

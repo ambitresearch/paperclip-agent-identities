@@ -47,12 +47,31 @@ const manifest: PaperclipPluginManifestV1 = {
   instanceConfigSchema: {
     type: "object",
     additionalProperties: false,
+    required: ["identities"],
     properties: {
-      githubTokenSecretRef: {
-        type: "string",
-        minLength: 1,
-        title: "GitHub token secret reference",
-        description: "Secret reference resolved at runtime for mediated git push operations."
+      identities: {
+        type: "object",
+        minProperties: 1,
+        additionalProperties: {
+          type: "object",
+          additionalProperties: false,
+          required: ["label", "githubUsername", "tokenSecretRef"],
+          properties: {
+            label: { type: "string", minLength: 1 },
+            githubUsername: { type: "string", minLength: 1 },
+            tokenSecretRef: { type: "string", minLength: 1 },
+            allowedOwnerPatterns: {
+              type: "array",
+              items: { type: "string", minLength: 1 }
+            },
+            allowedRepos: {
+              type: "array",
+              items: { type: "string", minLength: 1 }
+            },
+            commitName: { type: "string", minLength: 1 },
+            commitEmail: { type: "string", minLength: 1 }
+          }
+        }
       }
     }
   },

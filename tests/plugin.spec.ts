@@ -9,6 +9,20 @@ afterEach(() => {
   __resetGitCommandRunnerForTests();
 });
 
+const TOOL_AGENT_ID = "agent-test";
+
+function pushToolConfig(tokenSecretRef: string) {
+  return {
+    identities: {
+      [TOOL_AGENT_ID]: {
+        label: "Push Bot",
+        githubUsername: "roshan-bot",
+        tokenSecretRef
+      }
+    }
+  };
+}
+
 function seedPrimaryWorkspace(harness: ReturnType<typeof createTestHarness>, repoUrl: string): void {
   harness.seed({
     projects: [{ id: "project-test", companyId: "company-test" } as never],
@@ -54,7 +68,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: { githubTokenSecretRef: "github-token-ref" }
+      config: pushToolConfig("github-token-ref")
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -80,10 +94,14 @@ describe("plugin scaffold", () => {
 
     seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
 
-    const result = await harness.executeTool("github_bot_push_branch", {
-      branch: "feature/tool",
-      expectedRepository: "roshangautam/paperclip-github-bot-identity-plugin"
-    });
+    const result = await harness.executeTool(
+      "github_bot_push_branch",
+      {
+        branch: "feature/tool",
+        expectedRepository: "roshangautam/paperclip-github-bot-identity-plugin"
+      },
+      { agentId: TOOL_AGENT_ID }
+    );
 
     expect(result.error).toBeUndefined();
     expect(result.content).toContain("Push succeeded");
@@ -98,7 +116,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: { githubTokenSecretRef: "github-token-ref" }
+      config: pushToolConfig("github-token-ref")
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -121,13 +139,13 @@ describe("plugin scaffold", () => {
 
     seedPrimaryWorkspace(harness, "https://github.com/paperclipai/paperclip.git");
 
-    const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" });
+    const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
     expect(result.error).toContain("Push denied");
     expect(secretResolveCalls).toBe(0);
   });
 
-  it("fails when githubTokenSecretRef config is missing", async () => {
+  it("fails when calling agent identity config is missing", async () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities]
@@ -147,15 +165,50 @@ describe("plugin scaffold", () => {
 
     seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
 
-    const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" });
-    expect(result.error).toContain("githubTokenSecretRef");
+    const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
+    expect(result.error).toContain("Invalid GitHub bot identity config");
+  });
+
+
+  it("normalizes ssh protocol remotes via shared repo parser", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: pushToolConfig("github-token-ref")
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    __setGitCommandRunnerForTests(async ({ args }) => {
+      if (args[0] === "remote" && args[1] === "get-url") {
+        return {
+          exitCode: 0,
+          stdout: "ssh://git@github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stderr: ""
+        };
+      }
+      if (args[0] === "push") {
+        return {
+          exitCode: 0,
+          stdout: "pushed\n",
+          stderr: ""
+        };
+      }
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    });
+
+    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+
+    const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
+
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("Push succeeded");
   });
 
   it("redacts resolved token from tool-visible output on push failure", async () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: { githubTokenSecretRef: "token-ref" }
+      config: pushToolConfig("token-ref")
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -181,7 +234,7 @@ describe("plugin scaffold", () => {
 
     seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
 
-    const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" });
+    const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
     expect(result.error).toContain("git push failed");
     expect(String(result.error)).not.toContain("super-secret-token");

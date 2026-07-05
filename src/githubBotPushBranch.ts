@@ -3,8 +3,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
-
-const ALLOWED_OWNER = "roshangautam";
+import { evaluateRepoPolicy, normalizeGitHubRepoRef, resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
 
 type GitCommandResult = {
   exitCode: number;
@@ -20,11 +19,6 @@ type GitCommandRunnerInput = {
 
 type GitCommandRunner = (input: GitCommandRunnerInput) => Promise<GitCommandResult>;
 
-type GitHubRepository = {
-  owner: string;
-  repo: string;
-  fullName: string;
-};
 
 type GithubBotPushBranchParams = {
   branch: string;
@@ -91,38 +85,8 @@ function redactSecretText(input: string, secretValues: string[]): string {
   return output;
 }
 
-function normalizeGitHubRepositoryFromRemote(url: string): GitHubRepository | null {
-  const trimmed = url.trim();
-  const patterns = [
-    /^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i,
-    /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i,
-    /^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i,
-    /^git:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i
-  ];
-
-  for (const pattern of patterns) {
-    const match = trimmed.match(pattern);
-    if (!match) {
-      continue;
-    }
-    const owner = match[1].toLowerCase();
-    const repo = match[2].toLowerCase();
-    return { owner, repo, fullName: `${owner}/${repo}` };
-  }
-  return null;
-}
-
 function normalizeExpectedRepository(input: string): string | null {
-  const trimmed = input.trim();
-  const parsed = normalizeGitHubRepositoryFromRemote(trimmed);
-  if (parsed) {
-    return parsed.fullName;
-  }
-  const match = trimmed.match(/^([^/\s]+)\/([^/\s]+?)(?:\.git)?$/);
-  if (!match) {
-    return null;
-  }
-  return `${match[1].toLowerCase()}/${match[2].toLowerCase()}`;
+  return normalizeGitHubRepoRef(input)?.fullName ?? null;
 }
 
 function validateBranchName(branch: string): string | null {
@@ -154,8 +118,13 @@ case "$1" in
 esac
 `;
 
-  await writeFile(askPassPath, script, { encoding: "utf8", mode: 0o700 });
-  await chmod(askPassPath, 0o700);
+  try {
+    await writeFile(askPassPath, script, { encoding: "utf8", mode: 0o700 });
+    await chmod(askPassPath, 0o700);
+  } catch (error) {
+    await rm(tempDir, { recursive: true, force: true });
+    throw error;
+  }
 
   return {
     env: {
@@ -250,7 +219,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       return { error: `Unable to resolve git remote '${remote}'.` };
     }
 
-    const repository = normalizeGitHubRepositoryFromRemote(remoteResolution.stdout);
+    const repository = normalizeGitHubRepoRef(remoteResolution.stdout);
     if (!repository) {
       await ctx.activity.log({
         companyId: runCtx.companyId,
@@ -268,7 +237,32 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       return { error: "Push denied: remote must be a GitHub repository URL." };
     }
 
-    if (repository.owner !== ALLOWED_OWNER) {
+    const config = await ctx.config.get();
+
+    let resolvedIdentity: ReturnType<typeof resolveAgentIdentityFromToolRunContext>;
+    try {
+      resolvedIdentity = resolveAgentIdentityFromToolRunContext(config, runCtx);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      await ctx.activity.log({
+        companyId: runCtx.companyId,
+        entityType: "run",
+        entityId: runCtx.runId,
+        message: "github_bot_push_branch failed: missing config",
+        metadata: {
+          agentId: runCtx.agentId,
+          runId: runCtx.runId,
+          repository: repository.fullName,
+          branch,
+          remote,
+          outcome: "missing_config"
+        }
+      });
+      return { error: reason };
+    }
+
+    const policyDecision = evaluateRepoPolicy(resolvedIdentity.identity, repository.fullName);
+    if (!policyDecision.allowed) {
       await ctx.activity.log({
         companyId: runCtx.companyId,
         entityType: "run",
@@ -283,7 +277,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
           outcome: "denied_owner_policy"
         }
       });
-      return { error: `Push denied for '${repository.fullName}'. Only '${ALLOWED_OWNER}/*' is allowed.` };
+      return { error: `Push denied for '${repository.fullName}': ${policyDecision.reason}.` };
     }
 
     if (expectedRepository) {
@@ -325,34 +319,12 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       }
     }
 
-    const config = await ctx.config.get();
-    const tokenSecretRef =
-      typeof config.githubTokenSecretRef === "string" && config.githubTokenSecretRef.trim()
-        ? config.githubTokenSecretRef.trim()
-        : null;
+    const token = await ctx.secrets.resolve(resolvedIdentity.identity.tokenSecretRef);
 
-    if (!tokenSecretRef) {
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
-        message: "github_bot_push_branch failed: missing config",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          repository: repository.fullName,
-          branch,
-          remote,
-          outcome: "missing_config"
-        }
-      });
-      return { error: "Missing required config: githubTokenSecretRef." };
-    }
-
-    const token = await ctx.secrets.resolve(tokenSecretRef);
-    const authEnv = await buildGitAuthEnvironment(token);
+    let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>> | null = null;
 
     try {
+      authEnv = await buildGitAuthEnvironment(token);
       const pushArgs = ["push"];
       if (dryRun) {
         pushArgs.push("--dry-run");
@@ -439,7 +411,9 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       });
       return { error: `git push failed: ${message}` };
     } finally {
-      await authEnv.cleanup();
+      if (authEnv) {
+        await authEnv.cleanup();
+      }
     }
   };
 }

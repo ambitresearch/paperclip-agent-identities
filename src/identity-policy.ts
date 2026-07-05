@@ -73,6 +73,16 @@ export function normalizeGitHubRepoRef(input: string): GitHubRepoRef | null {
     return buildRepoRef(scpMatch[1], scpMatch[2]);
   }
 
+  const sshUrlMatch = trimmed.match(/^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (sshUrlMatch) {
+    return buildRepoRef(sshUrlMatch[1], sshUrlMatch[2]);
+  }
+
+  const gitProtocolMatch = trimmed.match(/^git:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (gitProtocolMatch) {
+    return buildRepoRef(gitProtocolMatch[1], gitProtocolMatch[2]);
+  }
+
   const asUrl = parseGithubUrl(trimmed);
   if (asUrl) {
     return asUrl;

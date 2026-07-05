@@ -11,94 +11,213 @@ The important distinction is that there are two different goals:
 1. **GitHub-native visibility**: an actor appears in GitHub UI affordances such as assignees, reviewers, mentions, and audit logs.
 2. **Paperclip-native routing**: GitHub events are mapped to Paperclip companies, agents, issues, projects, runs, and policy.
 
-The MVP should prioritize Paperclip-native routing first, because it is safer and does not require creating broad GitHub user accounts for every Paperclip agent. Full GitHub-native assignee/reviewer presence can come later for selected agents.
+---
 
-## Findings
+## Deep research: how Claude, Codex, and Copilot coding agents appear in GitHub
 
-### GitHub issue assignees are users/collaborators, not arbitrary app identities
+### Summary of findings
 
-GitHub's REST docs define issue/pull-request assignees as managed through the issue assignees API. In this repo, the live assignable-users endpoint currently returns only `roshangautam`:
+Claude, Codex, and GitHub Copilot coding agents appear in GitHub as **Bot-type actors backed by GitHub Apps** that have been registered through GitHub's **"agent apps" program** (public preview, June 2026). They are **not** normal GitHub user accounts, machine users, or simple OAuth apps. They use a special assignment code path that differs from the standard REST assignees API.
 
-```sh
-gh api repos/roshangautam/paperclip-github-bot-identity-plugin/assignees --paginate
-# roshangautam User
+### Evidence from this repository
+
+Issues #1 and #2 in this repo carry live coding-agent assignments:
+
+| Issue | Assignee display name | REST `type` | `html_url` | GraphQL `assignedActors` login |
+|-------|----------------------|-------------|------------|-------------------------------|
+| #1 | Codex | Bot | `https://github.com/apps/openai-code-agent` | `openai-code-agent` |
+| #2 | Claude | Bot | `https://github.com/apps/anthropic-code-agent` | `anthropic-code-agent` |
+
+Key observations:
+
+1. **Only `roshangautam` appears in `GET /repos/{owner}/{repo}/assignees`** (the standard assignable-users endpoint). The Bot actors do not appear there.
+2. **`GET /repos/{owner}/{repo}/assignees/{assignee}` returns 404** for `Codex`, `Claude`, `openai-code-agent`, and `anthropic-code-agent`. The standard REST assignability check does not recognize them.
+3. **`gh issue edit --add-assignee Codex` (or Claude) does not persist** when attempted via CLI on other issues (#3-#8), confirming the standard assignment path cannot add these actors.
+4. **Yet issues #1 and #2 hold these Bot actors as assignees.** This proves a different code path was used to create these assignments.
+
+### The mechanism: GitHub's coding agent assignment system
+
+Based on research of GitHub's APIs, documentation, and changelogs:
+
+#### 1. These are GitHub App bot users, not regular users
+
+Each coding agent is backed by a registered GitHub App:
+- `anthropic-code-agent` is the bot user for the Anthropic Claude GitHub App
+- `openai-code-agent` is the bot user for the OpenAI Codex GitHub App
+- `copilot-swe-agent` is the bot user for GitHub's own Copilot coding agent
+
+These appear with `type: "Bot"` in REST responses and resolve to `https://github.com/apps/<slug>`.
+
+#### 2. Assignment uses a special GraphQL path, not the REST assignees endpoint
+
+GitHub's December 2025 changelog ("Assign issues to Copilot using the API") introduced:
+
+- GraphQL mutations: `addAssigneesToAssignable`, `replaceActorsForAssignable`, `updateIssue`, `createIssue`
+- **Required header**: `GraphQL-Features: issues_copilot_assignment_api_support`
+- A `suggestedActors(capabilities: [CAN_BE_ASSIGNED])` query on repositories to discover assignable agents
+
+The `replaceActorsForAssignable` mutation uses an **actor abstraction** rather than the classic user-only assignee model. It can assign Bot-type actors that would fail validation through the REST `/assignees` endpoint. This is a different internal code path with looser validation for recognized agent apps.
+
+#### 3. The "agent apps" program gates who can appear
+
+GitHub's "Extend GitHub with agent apps" (June 2, 2026 changelog) established:
+
+- **Agent apps** are GitHub Apps registered through a partner program (currently waitlist-based)
+- Once registered and installed, they appear in the **assignee dropdown/picker** in GitHub's UI
+- Users can assign issues to them, mention them in PR comments, or select them in the Agents tab
+- First partners: Anthropic (Claude), OpenAI (Codex), plus Amplitude, Bright Security, Endor Labs, LaunchDarkly, Miro, Sonar, PagerDuty, Packfiles, Octopus Deploy
+- GitHub stated they will "open up access for anyone to build agent apps" over the coming months
+
+#### 4. Requirements for an agent app to be assignable
+
+| Requirement | Details |
+|------------|---------|
+| GitHub App registration | Must be a registered GitHub App with agent app capabilities |
+| Agent apps program membership | Currently requires partner waitlist approval |
+| Copilot subscription | Repository owner needs Copilot Pro, Pro+, Business, or Enterprise |
+| Repository/org enablement | Admin must enable "Partner Agents" or specific agents in Settings > Copilot > Coding Agent |
+| Enterprise policy (if applicable) | Enterprise admin must enable "Agent apps" in Copilot enterprise settings |
+| OAuth authorization | User must authorize the agent app via OAuth on first use |
+| App installation | App must be installed on the repository or organization |
+
+#### 5. The `suggestedActors` GraphQL query reveals assignable agents
+
+```graphql
+query {
+  repository(owner: "OWNER", name: "REPO") {
+    suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
+      nodes {
+        login
+        __typename
+        ... on Bot { id }
+        ... on User { id }
+      }
+    }
+  }
+}
 ```
 
-Checking non-collaborator user accounts such as `claude` or `codex` through `GET /repos/{owner}/{repo}/assignees/{assignee}` returns `404 Not Found`, which is GitHub's documented response shape for a user who cannot be assigned.
+This query (with the feature header) returns both human collaborators and registered agent app bots that can be assigned in that repository.
 
-Evidence:
+#### 6. Self-assignment mechanism for GitHub App bots
 
-- GitHub REST docs, issue assignees: https://docs.github.com/en/rest/issues/assignees
-- Live API evidence from this repo: only `roshangautam` is currently assignable.
-- Live API evidence from this repo: `GET /repos/roshangautam/paperclip-github-bot-identity-plugin/assignees/{assignee}` returns 204 for `roshangautam`, and 404 for `claude`, `codex`, and `renovate` unless they are added as collaborators or otherwise granted repository access.
+A GitHub App bot can assign itself to an issue using:
+```
+POST /repos/{owner}/{repo}/issues/{issue_number}/assignees
+{ "assignees": ["<app-slug>[bot]"] }
+```
 
-Conclusion: a GitHub App installation identity alone is not enough to appear in the issue assignee picker as a normal assignable user. To be truly selectable as an assignee, a Paperclip agent likely needs either:
+This works when:
+- The app is installed on the repository
+- The app has `issues:write` permission
+- The app authenticates via its installation access token
 
-- a real GitHub user or machine account added as a collaborator/org member, or
-- a GitHub-native special integration that GitHub itself exposes, as Copilot does.
+However, **this alone does not make the bot appear in the assignee picker for humans**. The agent apps program registration is what enables UI-level discoverability.
 
-We cannot assume a custom third-party GitHub App can add arbitrary pseudo-users to the assignee dropdown.
+### Why the standard REST assignees endpoint returns 404
 
-### Pull request reviewers require write access
+The REST `GET /repos/{owner}/{repo}/assignees/{assignee}` endpoint uses the **legacy validation model** that only recognizes:
+- Repository collaborators (users with explicit access)
+- Organization members (for org-owned repos)
 
-GitHub's review-request docs state: "Pull request authors and repository owners and collaborators can request a pull request review from anyone with write access to the repository." Each requested reviewer receives a notification.
+It does **not** recognize agent app bot users, even though those bots can hold assignments created through the GraphQL coding-agent path. This is a deliberate design split: the older REST endpoint predates the agent model.
 
-Evidence:
+---
 
-- GitHub REST docs, review requests: https://docs.github.com/en/rest/pulls/review-requests
+## Can per-agent Paperclip GitHub Apps appear in the assignee/reviewer picker?
 
-Conclusion: for a Paperclip agent to be directly requested as a reviewer in GitHub's reviewer picker, it needs to be represented by a GitHub user/account with write access, or by a team if using team review requests. A GitHub App can receive `pull_request` webhooks and act on PRs, but that is not the same UX as a reviewer account in the reviewer dropdown.
+### Answer: Not yet through self-service, but the path is opening
 
-### GitHub Apps are the right integration substrate, but not full user stand-ins
+| Approach | Can appear in picker? | Status |
+|----------|----------------------|--------|
+| Standard GitHub App (not in agent apps program) | **No** - will not appear in assignee dropdown | Available now |
+| GitHub App registered as agent app (partner program) | **Yes** - appears in assignee dropdown and Agents tab | Waitlist/partner program only (June 2026) |
+| Machine user added as collaborator | **Yes** - appears in standard assignee dropdown | Available now, operational overhead |
+| GitHub App bot self-assigning via API | **Partially** - can hold assignment, but not discoverable in picker | Available now |
 
-GitHub's App docs say GitHub Apps can:
+### What Paperclip would need to do
 
-- be installed on organizations, users, or repositories,
-- have narrow permissions,
-- receive built-in webhooks,
-- act independently of a user via installation access tokens,
-- act on behalf of a user via user access tokens.
+**Option 1 (Recommended near-term): Single GitHub App + Paperclip-side routing**
+- Does not require agent apps program membership
+- Uses labels, slash commands, and app comments for routing
+- Paperclip agents do NOT appear in GitHub's native assignee picker
+- Fastest to implement, safest, no account sprawl
 
-GitHub also says Apps are intended to reduce friction "without needing to sign in a user or create a service account," and can act independently of users. That is exactly right for webhook routing and mediated automation. However, acting independently as an app is not equivalent to becoming a selectable human-style assignee/reviewer.
+**Option 2 (Medium-term): Register as a GitHub agent app**
+- Join the agent apps waitlist/partner program
+- Once approved, Paperclip's GitHub App would appear in the assignee picker
+- Users could assign issues directly to "Paperclip" from the dropdown
+- Internal routing would map the single app assignment to specific Paperclip agents
+- Requires Copilot subscription on the repository owner side
 
-Evidence:
+**Option 3 (Future): Per-agent agent apps**
+- Register multiple GitHub Apps (one per Paperclip agent) in the agent apps program
+- Each would appear individually in the picker (e.g., "Kiln Lathe", "Zara Thorn")
+- Maximum native UX fidelity
+- Highest operational overhead and program membership complexity
+- May not be feasible until GitHub opens agent apps to all developers
 
-- GitHub App docs, about creating GitHub Apps: https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/about-creating-github-apps
-- GitHub App docs, choosing permissions: https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app
-- GitHub App docs, authentication: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/about-authentication-with-a-github-app
+**Option 4 (Available now but costly): Machine users per agent**
+- Create GitHub user accounts for selected agents
+- Add them as repository collaborators
+- They appear in the standard assignee/reviewer picker immediately
+- High account lifecycle cost (2FA, billing, PATs, offboarding)
+- Each account needs explicit repository access grants
 
-Conclusion: use a GitHub App for install, permissions, webhooks, comments, labels, statuses, and token vending. Use machine users only where GitHub UI selectability is required.
+---
 
-### Webhooks can wake Paperclip reliably
+## Detailed architecture: how coding agents integrate
 
-GitHub webhooks include issue assignment events, issue comments, pull request events, review-request events, labels, and other repository events. GitHub webhook payloads include the `installation` object when delivered to a GitHub App, and include repository/organization/sender context.
+```text
+GitHub UI / API
+  │
+  ├─ User assigns issue to agent via picker or GraphQL mutation
+  │   (requires: agent apps program + Copilot subscription + repo enablement)
+  │
+  ├─ GraphQL: replaceActorsForAssignable / addAssigneesToAssignable
+  │   (header: GraphQL-Features: issues_copilot_assignment_api_support)
+  │
+  └─ GitHub dispatches webhook to agent app
+      │
+      ├─ issues.assigned event (payload includes Bot actor)
+      ├─ issue_comment.created event (if @mentioned)
+      └─ pull_request events
+          │
+          └─ Agent app backend (Anthropic/OpenAI/Copilot infra)
+              │
+              ├─ Receives task, creates sandbox environment
+              ├─ Reads issue context, plans work
+              ├─ Creates branch, makes changes, opens PR
+              └─ Reports back via comments/status checks
+```
 
-Evidence:
+For Paperclip, the equivalent flow would be:
 
-- GitHub webhook docs: https://docs.github.com/en/webhooks/webhook-events-and-payloads
-- GitHub App permissions docs point webhook availability and required permissions back to webhook documentation.
+```text
+GitHub UI event (assignment, label, slash command, or @mention)
+  │
+  └─ Paperclip GitHub App webhook
+      │
+      ├─ Verify webhook signature
+      ├─ Check repo allow-list
+      ├─ Map GitHub event to Paperclip agent identity
+      │   (via agent registry: label/command/assignee → agent ID)
+      │
+      └─ Paperclip agent identity registry
+          │
+          ├─ Create/link Paperclip issue
+          ├─ Wake target agent with context
+          ├─ Agent executes via bot identity plugin (mediated writes)
+          └─ Comments/PR updates posted back through GitHub App
+```
 
-Useful webhook events for the MVP are `issue_comment.created`, `issues.labeled`, `pull_request.labeled`, and later `issues.assigned` / `pull_request.review_requested` if a machine-user pilot is enabled.
-
-Conclusion: Paperclip can wake agents from GitHub events without making every Paperclip agent a GitHub account. The GitHub App should receive events, verify signatures, map the event to a Paperclip company/project/agent, and create/wake a Paperclip issue or run.
+---
 
 ## Recommended architecture
 
-Use a two-layer model.
+### Layer 1: GitHub App gateway (implement now)
 
-```text
-GitHub UI event
-  -> Paperclip GitHub App webhook
-  -> GitHub routing adapter
-  -> Paperclip agent identity registry
-  -> Paperclip issue/run wakeup
-  -> GitHub bot identity plugin for writes
-  -> GitHub comment/status/PR updates
-```
-
-### Layer 1: GitHub App gateway
-
-A single GitHub App, for example `Paperclip Agents`, should own the GitHub integration boundary.
+A single GitHub App, for example `Paperclip Agents`, owns the GitHub integration boundary.
 
 Responsibilities:
 
@@ -125,7 +244,7 @@ Store a mapping like:
 type GitHubAgentRoute = {
   companyId: string;
   paperclipAgentId: string;
-  githubHandle?: string;       // machine user, optional
+  githubHandle?: string;       // machine user or agent app slug, optional
   commandAliases: string[];    // e.g. ["kiln-lathe", "cto"]
   labels: string[];            // e.g. ["paperclip:agent/kiln-lathe"]
   allowedRepos: string[];      // e.g. ["roshangautam/*"]
@@ -137,9 +256,21 @@ type GitHubAgentRoute = {
 
 This registry can live first in plugin config. Later it can become a shared identity broker table.
 
+### Layer 3: Agent apps program registration (when available)
+
+Once GitHub opens the agent apps program beyond partner waitlist:
+
+1. Register the Paperclip GitHub App as an agent app
+2. Configure OAuth authorization flow
+3. Implement the coding-agent task reception protocol
+4. Handle `issues.assigned` webhooks where the assignee is the Paperclip bot
+5. Map internal Paperclip agents via configuration (single app → multiple internal agents)
+
+---
+
 ## UX options
 
-### Option A, safest MVP: labels and slash commands
+### Option A, safest MVP: labels and slash commands (implement first)
 
 A human routes work with labels or comments:
 
@@ -155,14 +286,13 @@ Pros:
 - No need for each agent to be a GitHub collaborator.
 - Works with one GitHub App installation.
 - Easy to audit and revoke.
+- No dependency on agent apps program or Copilot subscription.
 - Safe default for Droidshop/Paperclip dogfooding.
 
 Cons:
 
 - Agents do not appear in GitHub's native assignee/reviewer picker.
 - Users need to learn a label/comment command convention.
-
-Recommendation: this should be the first implementation.
 
 ### Option B, hybrid: one visible GitHub App plus Paperclip-side agent routing
 
@@ -176,68 +306,41 @@ Status: queued
 
 For reviewer-like flows, humans request the GitHub App by command/comment rather than through native reviewer picker.
 
-Pros:
+### Option C, agent app registration: native assignee picker (when program opens)
 
-- Lowest GitHub account management overhead.
-- Clear app-level audit trail.
-- Still preserves per-agent identity inside Paperclip.
+Register Paperclip's GitHub App as an agent app. Once approved:
 
-Cons:
+- "Paperclip" appears in the issue assignee dropdown
+- Users assign issues to Paperclip directly from the picker
+- Paperclip's webhook receives `issues.assigned` with its Bot actor
+- Internal routing maps the assignment to the correct Paperclip agent based on issue labels, project, or explicit configuration
 
-- Native GitHub UI shows the app, not each internal agent.
+This is how Claude and Codex work today. The key insight is that they appear as a **single bot identity per provider** (not one per internal agent), with internal routing handled server-side.
 
-Recommendation: pair this with Option A.
+### Option D, true per-agent native assignees: machine users or multiple agent apps
 
-### Option C, true native assignee/reviewer: machine users per agent
+Create separate identities for each Paperclip agent visible in GitHub. Two sub-paths:
 
-Create GitHub machine users for selected Paperclip agents and add them as collaborators or org members with appropriate repository access. Examples:
+**D1: Machine users (available now)**
+- Create GitHub accounts like `paperclip-kiln-lathe`, `paperclip-zara-thorn`
+- Add as repo collaborators
+- Appear in standard assignee picker immediately
+- High lifecycle cost
 
-- `paperclip-kiln-lathe`
-- `paperclip-zara-thorn`
-- `paperclip-rhea-corvus`
+**D2: Multiple agent apps (future, when program opens widely)**
+- Register separate GitHub Apps per agent
+- Each appears in the agent picker
+- Maximum fidelity but highest operational complexity
 
-Those users can be native assignees/reviewers if they have the required repository access. Paperclip can map webhook payloads mentioning those GitHub logins back to internal agents.
+### Option E, team-based routing
 
-Pros:
+Create GitHub teams such as `@org/paperclip-agents`. Humans mention teams or request team reviews. The GitHub App routes team events to Paperclip agents based on team slug.
 
-- Best native GitHub UX.
-- Agents can appear in assignee/reviewer pickers.
-- GitHub notifications and audit logs point at distinct bot accounts.
-
-Cons:
-
-- Operational overhead: accounts, 2FA, recovery, org membership, billing/seats, PAT/app authorization, lifecycle.
-- Higher blast radius if each account gets write access.
-- Review request requires write access, which may be too much for QA-only or read-only agents.
-- Harder offboarding and rotation story.
-
-Recommendation: use only for a few high-value external-facing agents after the GitHub App gateway and bot identity plugin are working.
-
-### Option D, team-based routing
-
-Create GitHub teams such as:
-
-- `@roshangautam/paperclip-agents`
-- `@roshangautam/paperclip-reviewers`
-- `@roshangautam/droidshop-cto-agent`
-
-Humans request team reviews or mention teams. The GitHub App routes team review/comment events to Paperclip agents based on team slug.
-
-Pros:
-
-- Better native reviewer flow than labels in org-owned repos.
-- Fewer accounts than one machine user per agent.
-
-Cons:
-
-- Works best in org-owned repos, less useful for user-owned repos.
-- Still does not make individual Paperclip agents appear as individual GitHub users.
-
-Recommendation: consider later if repos move into an org.
+---
 
 ## MVP path
 
-### Milestone M3.1: routing-only GitHub App
+### Milestone M3.1: routing-only GitHub App (implement now)
 
 Build a GitHub App gateway that supports:
 
@@ -250,28 +353,41 @@ Build a GitHub App gateway that supports:
 - Creates/links a Paperclip issue and wakes the agent.
 - Comments back with route status.
 
-This requires no machine users and no raw agent GitHub tokens.
+This requires no machine users, no agent apps program membership, and no Copilot subscription.
 
-### Milestone M3.2: review-request style flows
+### Milestone M3.2: GitHub App self-assignment
 
-Add PR-specific routing:
+Once the GitHub App is operational, have it self-assign to issues it is actively working on:
 
-- `/paperclip review <agent-alias>` comments on PRs.
-- Optional `paperclip:review/<agent-alias>` label.
-- Create Paperclip review issue assigned to that agent.
-- Agent posts review outcome back through mediated GitHub tool comments.
+```
+POST /repos/{owner}/{repo}/issues/{issue_number}/assignees
+{ "assignees": ["paperclip-agents[bot]"] }
+```
 
-### Milestone M3.3: selected machine-user pilot
+This makes the App visible as an assignee on active issues (showing "working on it" status) without needing the agent apps program. The bot won't appear in the picker, but will show on issues after assignment.
 
-Pick one agent, likely a QA/reviewer agent, and create a machine user only for that agent.
+### Milestone M3.3: agent apps program registration
 
-Pilot requirements:
+When GitHub opens the agent apps program beyond the current partner waitlist:
 
-- Machine user has least privilege repo access.
-- GitHub login maps to exactly one Paperclip agent.
-- Webhooks for assignment/review request wake that Paperclip agent.
-- The bot identity plugin handles all writes, or the machine user's token is used only through the plugin, never in the agent shell.
-- Deprovisioning checklist exists.
+1. Apply for agent apps program membership
+2. Register the Paperclip GitHub App as an agent app
+3. Implement OAuth authorization flow
+4. Appear in the native assignee/agent picker
+5. Handle direct issue assignments from the picker
+6. Map single-app assignment to internal Paperclip agents
+
+### Milestone M3.4: selected machine-user pilot (only if M3.3 is delayed)
+
+If the agent apps program remains closed:
+
+- Pick one agent (likely a QA/reviewer agent)
+- Create a machine user with least-privilege repo access
+- Map webhook payloads to internal agent
+- Use bot identity plugin for all writes
+- Document deprovisioning checklist
+
+---
 
 ## Security rules
 
@@ -282,27 +398,58 @@ Pilot requirements:
 5. **Record audit mapping.** Every GitHub event should record GitHub actor, event ID, repo, issue/PR, Paperclip company, agent, run, and decision.
 6. **Separate GitHub visibility from provider credential.** A machine user being assignable does not imply its token should be available to the agent.
 7. **Use explicit commands for destructive actions.** `/paperclip assign` is routing. `/paperclip approve` or merge actions should remain separate and permissioned.
+8. **OAuth scope minimization.** If using agent apps program, request only necessary OAuth scopes for the authorization flow.
+9. **Agent apps program compliance.** Follow GitHub's security review and integration quality requirements for agent app registration.
+
+---
+
+## Key technical references
+
+| Source | URL | Key fact |
+|--------|-----|----------|
+| GitHub Changelog: Assign issues to Copilot using the API | https://github.blog/changelog/2025-12-03-assign-issues-to-copilot-using-the-api/ | GraphQL mutations + `GraphQL-Features: issues_copilot_assignment_api_support` header |
+| GitHub Changelog: Extend GitHub with agent apps | https://github.blog/changelog/2026-06-02-extend-github-with-agent-apps/ | Agent apps program, partner waitlist, third-party agents in picker |
+| GitHub Changelog: Claude and Codex public preview | https://github.blog/changelog/2026-02-04-claude-and-codex-are-now-available-in-public-preview-on-github/ | Claude/Codex as partner agents, enabled per repo |
+| GitHub Docs: About agent apps | https://docs.github.com/en/copilot/concepts/agents/agent-apps | Agent app architecture, OAuth, installation |
+| GitHub Docs: About third-party coding agents | https://docs.github.com/en/copilot/concepts/agents/about-third-party-coding-agents | Partner agent enablement, subscription requirements |
+| GitHub Docs: Using agent apps | https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/use-agent-apps | Usage flow, assignment, authorization |
+| GitHub CLI issue: Assigning @copilot errors | https://github.com/cli/cli/issues/11362 | REST CLI cannot assign coding agents, needs GraphQL path |
+| GitHub Community discussion | https://github.com/orgs/community/discussions/197310 | Community feedback on agent apps |
+
+---
 
 ## Open questions
 
-- Should the first GitHub App live under the user account or a new organization that owns Paperclip-related repos?
+- When will GitHub open the agent apps program beyond the partner waitlist? ("Over the coming months" per June 2026 announcement)
+- Can a single agent app internally route to multiple Paperclip agents, or does GitHub expect 1:1 app-to-agent mapping?
+- Does the agent apps program require the repository owner to have a Copilot paid subscription, or can the app work on free-tier repos?
+- Should the first GitHub App live under the user account or a new organization?
 - Should Droidshop repos eventually move from `roshangautam/*` into an org to unlock team-based review routing?
-- Which one agent should pilot machine-user assignability if we test Option C?
 - Should Paperclip issue keys be mirrored into GitHub labels/comments, or should GitHub issue links remain only in plugin metadata?
 - Do we want Paperclip to support GitHub App commands as a separate plugin, or fold routing into this bot-identity plugin?
 
-## Recommendation
+---
 
-Do **not** try to make every Paperclip agent a native GitHub assignee/reviewer in the first pass. It creates account sprawl and write-access pressure before the mediated identity path is proven.
+## Conclusion
 
-Build the GitHub App gateway first with labels and slash commands. This gets the working dogfood loop:
+### Direct answer to the core question
 
-```text
-GitHub issue comment or label
-  -> Paperclip route
-  -> Paperclip agent wakes
-  -> bot identity plugin pushes/opens PR/comments
-  -> GitHub shows auditable app/bot output
-```
+**Per-agent GitHub Apps would NOT make Paperclip agents appear in GitHub's assignee/reviewer picker lists** through any currently available self-service mechanism. The native assignee picker for coding agents is gated behind GitHub's **agent apps program** (partner waitlist, launched June 2026).
 
-Then pilot one machine-user-backed agent only if native assignee/reviewer UX proves valuable enough to justify the account lifecycle cost.
+### What Claude/Codex/Copilot are using
+
+They are using **GitHub Apps registered through the agent apps partner program**. These apps:
+- Have `type: Bot` in API responses
+- Are backed by GitHub App slugs (e.g., `anthropic-code-agent`, `openai-code-agent`)
+- Are assigned via GraphQL mutations with the `issues_copilot_assignment_api_support` feature header
+- Appear in the UI assignee picker only because they are registered agent apps on repos where the feature is enabled
+- Cannot be assigned through the standard REST assignees endpoint (returns 404)
+
+### Recommended path for Paperclip
+
+1. **Now**: Build the GitHub App gateway with labels and slash commands (M3.1). No external dependencies.
+2. **Soon**: Have the app self-assign to issues it is actively processing (M3.2). Partial visibility without program membership.
+3. **When available**: Register for GitHub's agent apps program to get native picker presence (M3.3). This is the path that matches Claude/Codex.
+4. **Only if needed**: Pilot a machine user for one agent if native picker UX is critical before M3.3 becomes available (M3.4).
+
+The gap between "Paperclip app can process commands and labels" and "Paperclip appears in the assignee dropdown" is entirely controlled by GitHub's agent apps program access. There is no workaround that provides the same UX without either that program or machine user accounts.

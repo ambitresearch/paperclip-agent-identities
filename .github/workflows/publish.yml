@@ -1,0 +1,60 @@
+name: Publish
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Publish with --dry-run only"
+        required: true
+        default: true
+        type: boolean
+      ref:
+        description: "Git ref to publish (branch, tag, or SHA)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.17.1 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release build
+        run: |
+          pnpm typecheck
+          pnpm test
+          pnpm build
+
+      - name: Dry-run npm publish
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: npm publish --dry-run --access public
+
+      - name: Publish to npm
+        if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public

@@ -1,4 +1,8 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import {
+  GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+  githubBotPushBranchToolDefinition
+} from "./githubBotPushBranchToolDefinition.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-github-bot-identity",
@@ -46,20 +50,8 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   tools: [
     {
-      name: "github_bot_push_branch",
-      displayName: "Push Branch",
-      description: "Push HEAD to a branch in an allowed roshangautam/* GitHub repository.",
-      parametersSchema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["branch"],
-        properties: {
-          branch: { type: "string", minLength: 1 },
-          remote: { type: "string" },
-          expectedRepository: { type: "string" },
-          dryRun: { type: "boolean" }
-        }
-      }
+      name: GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+      ...githubBotPushBranchToolDefinition
     }
   ]
 };

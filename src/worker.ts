@@ -1,5 +1,9 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
 import { createGithubBotPushBranchTool } from "./githubBotPushBranch.js";
+import {
+  GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+  githubBotPushBranchToolDefinition
+} from "./githubBotPushBranchToolDefinition.js";
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -18,25 +22,7 @@ const plugin = definePlugin({
       return { pong: true, at: new Date().toISOString() };
     });
 
-    ctx.tools.register(
-      "github_bot_push_branch",
-      {
-        displayName: "Push Branch",
-        description: "Push HEAD to a branch on an allowed GitHub repository through mediated credentials.",
-        parametersSchema: {
-          type: "object",
-          additionalProperties: false,
-          required: ["branch"],
-          properties: {
-            branch: { type: "string", minLength: 1 },
-            remote: { type: "string" },
-            expectedRepository: { type: "string" },
-            dryRun: { type: "boolean" }
-          }
-        }
-      },
-      createGithubBotPushBranchTool(ctx)
-    );
+    ctx.tools.register(GITHUB_BOT_PUSH_BRANCH_TOOL_NAME, githubBotPushBranchToolDefinition, createGithubBotPushBranchTool(ctx));
   },
 
   async onHealth() {

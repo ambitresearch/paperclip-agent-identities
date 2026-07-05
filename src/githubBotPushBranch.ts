@@ -160,7 +160,6 @@ esac
   return {
     env: {
       GIT_TERMINAL_PROMPT: "0",
-      GIT_ASKPASS_REQUIRE: "force",
       GIT_ASKPASS: askPassPath,
       GITHUB_TOKEN: token
     },

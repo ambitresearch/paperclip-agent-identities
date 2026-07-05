@@ -1,5 +1,10 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
+import type { BotIdentityConfig } from "./shared/types.js";
 import { githubBotWhoamiToolMetadata, githubBotWhoamiToolName } from "./shared/github-bot-whoami-tool.js";
+
+export type { BotIdentityConfig } from "./shared/types.js";
+export { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 
 type AgentIdentityConfig = {
   companyId: string;
@@ -66,12 +71,15 @@ const resolveAgentIdentities = (config: unknown): AgentIdentityConfig[] => {
       allowedOwners,
       allowedRepos,
       commitName: asString(record.commitName),
-      commitEmail: asString(record.commitEmail)
+      commitEmail: asString(record.commitEmail),
     });
   }
 
   return identities;
 };
+
+const CONFIG_STATE_KEY = "bot-identity-config";
+const CONFIG_SCOPE = { scopeKind: "instance" as const, stateKey: CONFIG_STATE_KEY };
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -85,9 +93,36 @@ const plugin = definePlugin({
       return { status: "ok", checkedAt: new Date().toISOString() };
     });
 
+    ctx.data.register("bot-identity-config", async () => {
+      const config = await ctx.state.get(CONFIG_SCOPE);
+      return (config as BotIdentityConfig | null) ?? null;
+    });
+
     ctx.actions.register("ping", async () => {
       ctx.logger.info("Ping action invoked");
       return { pong: true, at: new Date().toISOString() };
+    });
+
+    ctx.actions.register("save-bot-identity-config", async (params) => {
+      const { agentId, label, githubUsername, tokenSecretRef, allowedOwnerPattern, commitName, commitEmail } = params as BotIdentityConfig;
+
+      if (!agentId || !label || !githubUsername || !tokenSecretRef) {
+        throw new Error("Required fields: agentId, label, githubUsername, tokenSecretRef");
+      }
+
+      const config: BotIdentityConfig = {
+        agentId,
+        label,
+        githubUsername,
+        tokenSecretRef,
+        allowedOwnerPattern: allowedOwnerPattern || DEFAULT_ALLOWED_OWNER_PATTERN,
+        commitName: commitName || undefined,
+        commitEmail: commitEmail || undefined,
+      };
+
+      await ctx.state.set(CONFIG_SCOPE, config);
+      ctx.logger.info("Bot identity config saved", { agentId, label, githubUsername });
+      return config;
     });
 
     ctx.tools.register(githubBotWhoamiToolName, githubBotWhoamiToolMetadata, async (_params, runCtx) => {
@@ -96,22 +131,20 @@ const plugin = definePlugin({
 
       if (!identity) {
         return {
-          error: `github_bot_whoami is not configured for agent ${runCtx.agentId} in company ${runCtx.companyId}.`
+          error: `github_bot_whoami is not configured for agent ${runCtx.agentId} in company ${runCtx.companyId}.`,
         };
       }
 
-      const safeSummary = {
-        label: identity.label,
-        githubUsername: identity.githubUsername,
-        allowedOwners: identity.allowedOwners,
-        allowedRepos: identity.allowedRepos,
-        hasCommitName: Boolean(identity.commitName),
-        hasCommitEmail: Boolean(identity.commitEmail)
-      };
-
       return {
         content: `Configured GitHub bot identity: ${identity.label} (@${identity.githubUsername}).`,
-        data: safeSummary
+        data: {
+          label: identity.label,
+          githubUsername: identity.githubUsername,
+          allowedOwners: identity.allowedOwners,
+          allowedRepos: identity.allowedRepos,
+          hasCommitName: Boolean(identity.commitName),
+          hasCommitEmail: Boolean(identity.commitEmail),
+        },
       };
     });
   },

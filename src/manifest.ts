@@ -45,7 +45,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.read",
     "plugin.state.write",
     "ui.dashboardWidget.register",
-    "agent.tools.register"
+    "agent.tools.register",
+    "instance.settings.register"
   ],
   tools: [githubBotWhoamiManifestTool],
   entrypoints: {
@@ -59,6 +60,12 @@ const manifest: PaperclipPluginManifestV1 = {
         id: "health-widget",
         displayName: "GitHub Bot Identity Health",
         exportName: "DashboardWidget"
+      },
+      {
+        type: "settingsPage",
+        id: "bot-identity-settings",
+        displayName: "Bot Identity Settings",
+        exportName: "SettingsPage"
       }
     ]
   }

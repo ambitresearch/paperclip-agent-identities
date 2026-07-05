@@ -24,6 +24,20 @@ folder on your machine.
 paperclipai plugin install /Users/roshan.gautam/Developer/projects/paperclip-github-bot-identity-plugin
 ```
 
+## Identity Config Model
+
+The worker now includes a typed per-agent identity configuration core:
+
+- `identities[agentId].label`
+- `identities[agentId].githubUsername`
+- `identities[agentId].tokenSecretRef`
+- `identities[agentId].allowedOwnerPatterns` (defaults to `["^roshangautam$"]`)
+- Optional `identities[agentId].allowedRepos`
+- Optional `identities[agentId].commitName`
+- Optional `identities[agentId].commitEmail`
+
+MVP repo policy hard-denies any repository outside `roshangautam/*`, even if other patterns are configured.
+
 ## Build Options
 
 - `pnpm build` uses esbuild presets from `@paperclipai/plugin-sdk/bundlers`.

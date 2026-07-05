@@ -1,26 +1,4 @@
-const GITHUB_HOST = "github.com";
-
-function splitOwnerRepo(ownerAndRepo: string): { owner: string; repo: string } | null {
-  const segments = ownerAndRepo
-    .split("/")
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  if (segments.length !== 2) {
-    return null;
-  }
-
-  const [owner, repo] = segments;
-  if (!owner || !repo) {
-    return null;
-  }
-
-  return { owner: owner.toLowerCase(), repo: repo.toLowerCase() };
-}
-
-function stripGitSuffix(value: string): string {
-  return value.endsWith(".git") ? value.slice(0, -4) : value;
-}
+import { normalizeGitHubRepoRef } from "../identity-policy.js";
 
 export function normalizeGitHubRepo(input: string): string | null {
   const trimmed = input.trim();
@@ -28,33 +6,29 @@ export function normalizeGitHubRepo(input: string): string | null {
     return null;
   }
 
-  const sshMatch = /^git@github\.com:(.+)$/i.exec(trimmed);
-  if (sshMatch) {
-    const parsed = splitOwnerRepo(stripGitSuffix(sshMatch[1].replace(/\/+$/, "")));
-    return parsed ? `${parsed.owner}/${parsed.repo}` : null;
-  }
-
-  const likelyOwnerRepo = !trimmed.includes("://") && !trimmed.startsWith("git@");
-  if (likelyOwnerRepo) {
-    const parsed = splitOwnerRepo(stripGitSuffix(trimmed.replace(/\/+$/, "")));
-    return parsed ? `${parsed.owner}/${parsed.repo}` : null;
-  }
-
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(trimmed);
-  } catch {
+  if (/^git@/i.test(trimmed) && !/^git@github\.com:/i.test(trimmed)) {
     return null;
   }
 
-  const hostname = parsedUrl.hostname.toLowerCase();
-  if (hostname !== GITHUB_HOST) {
-    return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.hostname.toLowerCase() !== "github.com") {
+        return null;
+      }
+      const pathParts = parsed.pathname
+        .split("/")
+        .map((part) => part.trim())
+        .filter(Boolean);
+      if (pathParts.length < 2) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
   }
 
-  const path = stripGitSuffix(parsedUrl.pathname.replace(/\/+$/, ""));
-  const parsed = splitOwnerRepo(path);
-  return parsed ? `${parsed.owner}/${parsed.repo}` : null;
+  return normalizeGitHubRepoRef(trimmed)?.fullName ?? null;
 }
 
 function normalizePolicyEntry(input: string): string | null {

@@ -13,6 +13,11 @@ describe("GitHub repository normalization", () => {
     expect(normalizeGitHubRepo("roshangautam/genie")).toBe("roshangautam/genie");
   });
 
+  it("normalizes scheme-less and path-suffixed GitHub URLs", () => {
+    expect(normalizeGitHubRepo("github.com/roshangautam/genie")).toBe("roshangautam/genie");
+    expect(normalizeGitHubRepo("https://github.com/roshangautam/genie/tree/main")).toBe("roshangautam/genie");
+  });
+
   it("rejects non-GitHub or malformed repository input", () => {
     expect(normalizeGitHubRepo("https://gitlab.com/roshangautam/genie")).toBeNull();
     expect(normalizeGitHubRepo("https://github.com/roshangautam")).toBeNull();
@@ -37,20 +42,6 @@ describe("Policy enforcement", () => {
     expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
     expect(isRepoAllowed("https://github.com/roshangautam/genie.git", allowed)).toBe(true);
     expect(isRepoAllowed("roshangautam/another-repo", allowed)).toBe(true);
-    expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
-  });
-
-  it("covers owner/* policy branch explicitly", () => {
-    const allowed = ["roshangautam/*"];
-
-    expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
-    expect(isRepoAllowed("openai/plugins", allowed)).toBe(false);
-  });
-
-  it("regression: owner wildcard roshangautam/* allows owner repos and denies others", () => {
-    const allowed = ["roshangautam/*"];
-
-    expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
     expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
   });
 
@@ -111,41 +102,6 @@ describe("Config resolution", () => {
     expect(result.reason).toBe("company_not_allowed");
     expect(result.reason).not.toBe("company_context_mismatch");
     expect(result.deniedTools).toEqual(["github.push", "github.pr.create"]);
-  });
-
-  it("covers company_not_allowed fail-closed branch explicitly", () => {
-    const config = {
-      defaultIdentityAlias: "genie",
-      identities: {
-        genie: {
-          companyId: "paperclip",
-          githubUsername: "paperclip-genie",
-          githubToken: "fake_token_for_tests",
-        },
-      },
-      allowedCompanyIds: ["other-company"],
-    };
-
-    const result = resolveContributionAccess(config, { companyId: "paperclip" });
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toBe("company_not_allowed");
-  });
-
-  it("regression: denied with reason company_not_allowed when allow list excludes matching company", () => {
-    const config = {
-      defaultIdentityAlias: "genie",
-      identities: {
-        genie: {
-          companyId: "paperclip",
-          githubUsername: "paperclip-genie",
-          githubToken: "fake_token_for_tests",
-        },
-      },
-      allowedCompanyIds: ["another-company"],
-    };
-
-    const result = resolveContributionAccess(config, { companyId: "paperclip" });
-    expect(result.reason).toBe("company_not_allowed");
   });
 
   it("returns a fresh denied tools array for each denied result", () => {
@@ -263,7 +219,7 @@ describe("Mocked GitHub API PR creation", () => {
 });
 
 describe("Mocked subprocess push behavior", () => {
-  it("uses git push with expected args and environment", async () => {
+  it("uses git askpass with expected args and environment", async () => {
     const fakeToken = "fake_token_abc";
     const runner = {
       run: vi.fn().mockResolvedValue({ code: 0, stdout: "ok", stderr: "" }),
@@ -274,8 +230,16 @@ describe("Mocked subprocess push behavior", () => {
     expect(runner.run).toHaveBeenCalledWith(
       "git",
       ["push", "origin", "HEAD:feature/branch"],
-      expect.objectContaining({ env: expect.objectContaining({ GITHUB_TOKEN: fakeToken }) }),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          GIT_ASKPASS: expect.stringContaining("paperclip-git-askpass-"),
+          GIT_TERMINAL_PROMPT: "0",
+          PAPERCLIP_GIT_PUSH_TOKEN: fakeToken,
+        }),
+      }),
     );
+    const env = runner.run.mock.calls[0]?.[2]?.env as Record<string, string | undefined>;
+    expect(env.GITHUB_TOKEN).toBeUndefined();
   });
 
   it("throws a redacted error when git push fails", async () => {

@@ -12,7 +12,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "plugin.state.read",
     "plugin.state.write",
-    "ui.dashboardWidget.register"
+    "ui.dashboardWidget.register",
+    "ui.page.register"
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -25,6 +26,12 @@ const manifest: PaperclipPluginManifestV1 = {
         id: "health-widget",
         displayName: "GitHub Bot Identity Health",
         exportName: "DashboardWidget"
+      },
+      {
+        type: "settingsPage",
+        id: "bot-identity-settings",
+        displayName: "Bot Identity Settings",
+        exportName: "SettingsPage"
       }
     ]
   }

@@ -439,7 +439,7 @@ If the agent apps program remains closed:
 ### What Claude/Codex/Copilot are using
 
 They are using **GitHub Apps registered through the agent apps partner program**. These apps:
-- Have `type: Bot` in API responses
+- Have `type: "Bot"` in API responses
 - Are backed by GitHub App slugs (e.g., `anthropic-code-agent`, `openai-code-agent`)
 - Are assigned via GraphQL mutations with the `issues_copilot_assignment_api_support` feature header
 - Appear in the UI assignee picker only because they are registered agent apps on repos where the feature is enabled

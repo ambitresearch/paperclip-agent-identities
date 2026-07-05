@@ -8,6 +8,7 @@ describe("plugin scaffold", () => {
   it("declares capabilities for its manifest features", () => {
     expect(manifest.capabilities).toContain("events.subscribe");
     expect(manifest.capabilities).toContain("ui.dashboardWidget.register");
+    expect(manifest.capabilities).toContain("instance.settings.register");
   });
 
   it("registers data + actions and handles events", async () => {

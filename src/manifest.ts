@@ -13,7 +13,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.read",
     "plugin.state.write",
     "ui.dashboardWidget.register",
-    "ui.page.register"
+    "instance.settings.register"
   ],
   entrypoints: {
     worker: "./dist/worker.js",

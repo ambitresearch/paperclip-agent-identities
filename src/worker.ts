@@ -6,6 +6,7 @@ import {
 } from "./githubBotPushBranchToolDefinition.js";
 import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 import type { BotIdentityConfig } from "./shared/types.js";
+import { registerCreatePullRequestTool } from "./tools/create-pull-request.js";
 
 export type { BotIdentityConfig } from "./shared/types.js";
 export { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
@@ -58,6 +59,7 @@ const plugin = definePlugin({
       return config;
     });
 
+    registerCreatePullRequestTool(ctx);
   },
 
   async onHealth() {

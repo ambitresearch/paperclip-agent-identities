@@ -95,10 +95,7 @@ export function evaluateRepoPolicy(identity: GitHubAgentIdentity, repoInput: str
     };
   }
 
-  const ownerPatterns =
-    identity.allowedOwnerPatterns.length > 0
-      ? identity.allowedOwnerPatterns
-      : [...DEFAULT_ALLOWED_OWNER_PATTERNS];
+  const ownerPatterns = identity.allowedOwnerPatterns;
 
   let ownerAllowed = false;
   for (const pattern of ownerPatterns) {

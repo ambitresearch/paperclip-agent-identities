@@ -101,4 +101,11 @@ describe("github repo policy", () => {
     expect(evaluateRepoPolicy(identity, "openai/plugins").allowed).toBe(false);
     expect(evaluateRepoPolicy(identity, "NousResearch/hermes-agent").allowed).toBe(false);
   });
+
+  it("fails closed when allowedOwnerPatterns is explicitly empty", () => {
+    const denyAllIdentity = { ...identity, allowedOwnerPatterns: [] as string[] };
+    expect(evaluateRepoPolicy(denyAllIdentity, "roshangautam/paperclip-github-bot-identity-plugin").allowed).toBe(
+      false
+    );
+  });
 });

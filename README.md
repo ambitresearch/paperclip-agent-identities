@@ -26,7 +26,7 @@ paperclipai plugin install /Users/roshan.gautam/Developer/projects/paperclip-git
 
 ## Identity Config Model
 
-The worker now includes a typed per-agent identity configuration core:
+This repository defines a typed per-agent identity configuration core:
 
 - `identities[agentId].label`
 - `identities[agentId].githubUsername`

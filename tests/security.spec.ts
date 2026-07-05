@@ -35,6 +35,7 @@ describe("Policy enforcement", () => {
     const allowed = ["roshangautam/*"];
 
     expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
+    expect(isRepoAllowed("https://github.com/roshangautam/genie.git", allowed)).toBe(true);
     expect(isRepoAllowed("roshangautam/another-repo", allowed)).toBe(true);
     expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
   });
@@ -95,6 +96,7 @@ describe("Config resolution", () => {
     expect(result.allowed).toBe(false);
     expect(result.reason).toBe("company_not_allowed");
     expect(result.reason).not.toBe("company_context_mismatch");
+    expect(result.deniedTools).toEqual(["github.push", "github.pr.create"]);
   });
 
   it("returns a fresh denied tools array for each denied result", () => {

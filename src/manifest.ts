@@ -3,6 +3,8 @@ import {
   GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
   githubBotPushBranchToolDefinition
 } from "./github-bot-push-branch-tool-definition.js";
+import { githubBotWhoamiManifestTool } from "./shared/github-bot-whoami-tool.js";
+import { githubBotCreatePullRequestManifestTool } from "./shared/github-bot-create-pull-request-tool.js";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-github-bot-identity",
@@ -12,6 +14,37 @@ const manifest: PaperclipPluginManifestV1 = {
   description: "Per-agent GitHub bot identity and contribution tools for Paperclip",
   author: "Roshan Gautam",
   categories: ["connector"],
+  instanceConfigSchema: {
+    type: "object",
+    properties: {
+      identities: {
+        type: "object",
+        patternProperties: {
+          "^.+$": {
+            type: "object",
+            properties: {
+              label: { type: "string" },
+              githubUsername: { type: "string" },
+              tokenSecretRef: { type: "string" },
+              allowedOwnerPatterns: {
+                type: "array",
+                items: { type: "string" }
+              },
+              allowedRepos: {
+                type: "array",
+                items: { type: "string" }
+              },
+              commitName: { type: "string" },
+              commitEmail: { type: "string" }
+            },
+            required: ["label", "githubUsername", "tokenSecretRef"],
+            additionalProperties: false
+          }
+        }
+      }
+    },
+    additionalProperties: false
+  },
   capabilities: [
     "events.subscribe",
     "plugin.state.read",
@@ -23,6 +56,14 @@ const manifest: PaperclipPluginManifestV1 = {
     "http.outbound",
     "secrets.read-ref",
     "activity.log.write"
+  ],
+  tools: [
+    githubBotWhoamiManifestTool,
+    githubBotCreatePullRequestManifestTool,
+    {
+      name: GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+      ...githubBotPushBranchToolDefinition
+    }
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -43,44 +84,7 @@ const manifest: PaperclipPluginManifestV1 = {
         exportName: "SettingsPage"
       }
     ]
-  },
-  instanceConfigSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["identities"],
-    properties: {
-      identities: {
-        type: "object",
-        minProperties: 1,
-        additionalProperties: {
-          type: "object",
-          additionalProperties: false,
-          required: ["label", "githubUsername", "tokenSecretRef"],
-          properties: {
-            label: { type: "string", minLength: 1 },
-            githubUsername: { type: "string", minLength: 1 },
-            tokenSecretRef: { type: "string", minLength: 1 },
-            allowedOwnerPatterns: {
-              type: "array",
-              items: { type: "string", minLength: 1 }
-            },
-            allowedRepos: {
-              type: "array",
-              items: { type: "string", minLength: 1 }
-            },
-            commitName: { type: "string", minLength: 1 },
-            commitEmail: { type: "string", minLength: 1 }
-          }
-        }
-      }
-    }
-  },
-  tools: [
-    {
-      name: GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
-      ...githubBotPushBranchToolDefinition
-    }
-  ]
+  }
 };
 
 export default manifest;

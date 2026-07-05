@@ -47,6 +47,7 @@ describe("plugin scaffold", () => {
   it("declares capabilities for its manifest features", () => {
     expect(manifest.capabilities).toContain("events.subscribe");
     expect(manifest.capabilities).toContain("ui.dashboardWidget.register");
+    expect(manifest.capabilities).toContain("agent.tools.register");
     expect(manifest.capabilities).toContain("instance.settings.register");
   });
 
@@ -62,6 +63,77 @@ describe("plugin scaffold", () => {
 
     const action = await harness.performAction<{ pong: boolean }>("ping");
     expect(action.pong).toBe(true);
+  });
+
+  it("returns a safe identity summary for configured agents", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {
+        identities: {
+          agent_1: {
+            label: "Droidshop CTO",
+            githubUsername: "paperclip-kiln-lathe",
+            tokenSecretRef: "secret://github/bot/token",
+            allowedOwnerPatterns: ["^roshangautam$"],
+            allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"],
+            commitName: "Kiln Lathe",
+            commitEmail: "kiln@example.com"
+          }
+        }
+      }
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const whoami = await harness.executeTool<{
+      content?: string;
+      error?: string;
+      data?: Record<string, unknown>;
+    }>("github_bot_whoami", {}, { companyId: "company_1", agentId: "agent_1" });
+
+    expect(whoami.error).toBeUndefined();
+    expect(whoami.data).toEqual({
+      label: "Droidshop CTO",
+      githubUsername: "paperclip-kiln-lathe",
+      allowedOwners: ["^roshangautam$"],
+      allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"],
+      hasCommitName: true,
+      hasCommitEmail: true
+    });
+    expect(whoami.content).toContain("Droidshop CTO");
+    expect(whoami.content).toContain("@paperclip-kiln-lathe");
+    expect(whoami.data?.tokenSecretRef).toBeUndefined();
+    expect(whoami.data?.token).toBeUndefined();
+  });
+
+  it("fails closed for unconfigured agents", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {
+        identities: {
+          agent_1: {
+            label: "Droidshop CTO",
+            githubUsername: "paperclip-kiln-lathe",
+            tokenSecretRef: "secret://github/bot/token",
+            allowedOwnerPatterns: ["^roshangautam$"],
+            allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"]
+          }
+        }
+      }
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const whoami = await harness.executeTool<{ content?: string; error?: string; data?: unknown }>(
+      "github_bot_whoami",
+      {},
+      { companyId: "company_1", agentId: "agent_missing" }
+    );
+
+    expect(whoami.error).toContain("failed closed");
+    expect(whoami.error).toContain("Missing GitHub bot identity config");
+    expect(whoami.data).toBeUndefined();
+    expect(whoami.content).toBeUndefined();
   });
 
   it("allows mediated push for roshangautam repository", async () => {
@@ -211,7 +283,6 @@ describe("plugin scaffold", () => {
       })
     }));
   });
-
 
   it("normalizes ssh protocol remotes via shared repo parser", async () => {
     const harness = createTestHarness({

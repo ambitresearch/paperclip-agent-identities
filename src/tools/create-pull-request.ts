@@ -5,6 +5,7 @@
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
 import { validateRepoPolicy } from "../shared/types.js";
+import { githubBotCreatePullRequestToolMetadata, githubBotCreatePullRequestToolName } from "../shared/github-bot-create-pull-request-tool.js";
 
 /** The owner used for simple policy checks in this tool. */
 const ALLOWED_OWNER = "roshangautam";
@@ -63,47 +64,8 @@ function validateParams(params: unknown): CreatePullRequestParams | string {
 
 export function registerCreatePullRequestTool(ctx: PluginContext): void {
   ctx.tools.register(
-    "github_bot_create_pull_request",
-    {
-      displayName: "Create Pull Request (Bot Identity)",
-      description:
-        "Creates a GitHub pull request using the configured bot identity. " +
-        "Only repositories under the allowed owner (roshangautam/*) are permitted.",
-      parametersSchema: {
-        type: "object",
-        properties: {
-          repository: {
-            type: "string",
-            description: "Target repository in owner/repo format (e.g. \"roshangautam/my-repo\")",
-          },
-          head: {
-            type: "string",
-            description: "The name of the branch where your changes are implemented",
-          },
-          base: {
-            type: "string",
-            description: "The name of the branch you want the changes pulled into",
-          },
-          title: {
-            type: "string",
-            description: "The title of the pull request",
-          },
-          body: {
-            type: "string",
-            description: "The body/description of the pull request",
-          },
-          draft: {
-            type: "boolean",
-            description: "Whether to create the pull request as a draft",
-          },
-          paperclipIssueId: {
-            type: "string",
-            description: "Optional Paperclip issue ID to associate with this PR",
-          },
-        },
-        required: ["repository", "head", "base", "title"],
-      },
-    },
+    githubBotCreatePullRequestToolName,
+    githubBotCreatePullRequestToolMetadata,
     async (params: unknown, runCtx: ToolRunContext): Promise<ToolResult> => {
       const validated = validateParams(params);
       if (typeof validated === "string") {

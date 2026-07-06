@@ -4,7 +4,7 @@ import {
   GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
   githubBotPushBranchToolDefinition
 } from "./github-bot-push-branch-tool-definition.js";
-import { resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
+import { CONFIG_SCOPE, resolveAgentIdentityFromPluginSettings } from "./config-source.js";
 import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 import type { BotIdentityConfig, PaperclipAgentOption, PaperclipAgentsData } from "./shared/types.js";
 import { githubBotWhoamiToolMetadata, githubBotWhoamiToolName } from "./shared/github-bot-whoami-tool.js";
@@ -13,8 +13,6 @@ import { registerCreatePullRequestTool } from "./tools/create-pull-request.js";
 export type { BotIdentityConfig } from "./shared/types.js";
 export { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 
-const CONFIG_STATE_KEY = "bot-identity-config";
-const CONFIG_SCOPE = { scopeKind: "instance" as const, stateKey: CONFIG_STATE_KEY };
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -84,7 +82,7 @@ const plugin = definePlugin({
     ctx.tools.register(githubBotWhoamiToolName, githubBotWhoamiToolMetadata, async (_params, runCtx) => {
       let resolved;
       try {
-        resolved = resolveAgentIdentityFromToolRunContext(await ctx.config.get(), runCtx);
+        resolved = await resolveAgentIdentityFromPluginSettings(ctx, runCtx);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown identity resolution failure";
         return {

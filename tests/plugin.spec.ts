@@ -621,6 +621,31 @@ describe("bot identity settings", () => {
     expect(config.githubUsername).toBe("paperclip-qa-bot");
   });
 
+  it("uses settings-page state for agent tools when instance config is empty", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      agentId: "agent-from-settings",
+      label: "Settings Bot",
+      githubUsername: "paperclip-settings-bot",
+      allowedOwnerPattern: DEFAULT_ALLOWED_OWNER_PATTERN,
+    });
+
+    const whoami = await harness.executeTool<{ data?: Record<string, unknown>; error?: string }>(
+      "github_bot_whoami",
+      {},
+      { agentId: "agent-from-settings" }
+    );
+
+    expect(whoami.error).toBeUndefined();
+    expect(whoami.data).toEqual(expect.objectContaining({
+      label: "Settings Bot",
+      githubUsername: "paperclip-settings-bot",
+      allowedOwners: [DEFAULT_ALLOWED_OWNER_PATTERN]
+    }));
+  });
+
   it("rejects save when required fields are missing", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);

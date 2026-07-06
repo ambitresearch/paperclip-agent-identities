@@ -3,7 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { evaluateRepoPolicy, normalizeGitHubRepoRef, resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
+import { evaluateRepoPolicy, normalizeGitHubRepoRef } from "./identity-policy.js";
+import { resolveAgentIdentityFromPluginSettings } from "./config-source.js";
 import { resolveIdentityToken } from "./credential-sidecar.js";
 
 type GitCommandResult = {
@@ -287,11 +288,9 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       return { error: "Push denied: remote must be a GitHub repository URL." };
     }
 
-    const config = await ctx.config.get();
-
-    let resolvedIdentity: ReturnType<typeof resolveAgentIdentityFromToolRunContext>;
+    let resolvedIdentity: Awaited<ReturnType<typeof resolveAgentIdentityFromPluginSettings>>;
     try {
-      resolvedIdentity = resolveAgentIdentityFromToolRunContext(config, runCtx);
+      resolvedIdentity = await resolveAgentIdentityFromPluginSettings(ctx, runCtx);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       await logPushBranchOutcome(ctx, runCtx, {

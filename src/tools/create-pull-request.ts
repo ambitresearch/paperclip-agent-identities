@@ -4,7 +4,8 @@
  * any secrets.
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
-import { evaluateRepoPolicy, resolveAgentIdentityFromToolRunContext } from "../identity-policy.js";
+import { evaluateRepoPolicy } from "../identity-policy.js";
+import { resolveAgentIdentityFromPluginSettings } from "../config-source.js";
 import { resolveIdentityToken } from "../credential-sidecar.js";
 import { githubBotCreatePullRequestToolMetadata, githubBotCreatePullRequestToolName } from "../shared/github-bot-create-pull-request-tool.js";
 
@@ -67,9 +68,9 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
         return { error: validated };
       }
 
-      let resolvedIdentity: ReturnType<typeof resolveAgentIdentityFromToolRunContext>;
+      let resolvedIdentity: Awaited<ReturnType<typeof resolveAgentIdentityFromPluginSettings>>;
       try {
-        resolvedIdentity = resolveAgentIdentityFromToolRunContext(await ctx.config.get(), runCtx);
+        resolvedIdentity = await resolveAgentIdentityFromPluginSettings(ctx, runCtx);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
         return { error: reason };

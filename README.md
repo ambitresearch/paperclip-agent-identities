@@ -112,5 +112,5 @@ Manual real publish in GitHub Actions:
 Test install of a published version in Paperclip:
 
 ```bash
-paperclipai plugin install @roshangautam/paperclip-github-bot-identity@<version>
+paperclipai plugin install @gautamroshan/paperclip-github-bot-identity@<version>
 ```

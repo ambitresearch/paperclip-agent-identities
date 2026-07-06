@@ -52,6 +52,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "instance.settings.register",
     "project.workspaces.read",
     "agent.tools.register",
+    "agents.read",
     "http.outbound",
     "secrets.read-ref",
     "activity.log.write"

@@ -6,7 +6,7 @@ import {
 } from "./github-bot-push-branch-tool-definition.js";
 import { resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
 import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
-import type { BotIdentityConfig } from "./shared/types.js";
+import type { BotIdentityConfig, PaperclipAgentOption, PaperclipAgentsData } from "./shared/types.js";
 import { githubBotWhoamiToolMetadata, githubBotWhoamiToolName } from "./shared/github-bot-whoami-tool.js";
 import { registerCreatePullRequestTool } from "./tools/create-pull-request.js";
 
@@ -31,6 +31,26 @@ const plugin = definePlugin({
     ctx.data.register("bot-identity-config", async () => {
       const config = await ctx.state.get(CONFIG_SCOPE);
       return (config as BotIdentityConfig | null) ?? null;
+    });
+
+    ctx.data.register("paperclip-agents", async (params) => {
+      const companyId = typeof params.companyId === "string" ? params.companyId.trim() : "";
+      if (!companyId) {
+        return { agents: [] } satisfies PaperclipAgentsData;
+      }
+
+      const agents = await ctx.agents.list({ companyId });
+      const options: PaperclipAgentOption[] = agents
+        .map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          role: agent.role ?? null,
+          title: agent.title ?? null,
+          status: agent.status ?? null,
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name));
+
+      return { agents: options } satisfies PaperclipAgentsData;
     });
 
     ctx.actions.register("ping", async () => {

@@ -76,6 +76,7 @@ describe("plugin scaffold", () => {
     expect(manifest.capabilities).toContain("events.subscribe");
     expect(manifest.capabilities).toContain("ui.dashboardWidget.register");
     expect(manifest.capabilities).toContain("agent.tools.register");
+    expect(manifest.capabilities).toContain("agents.read");
     expect(manifest.capabilities).toContain("instance.settings.register");
   });
 
@@ -91,6 +92,49 @@ describe("plugin scaffold", () => {
 
     const action = await harness.performAction<{ pong: boolean }>("ping");
     expect(action.pong).toBe(true);
+  });
+
+  it("lists Paperclip agents for the settings dropdown", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
+    harness.seed({
+      agents: [
+        {
+          id: "agent-2",
+          companyId: "company_1",
+          name: "Zulu Bot",
+          role: "Engineer",
+          title: null,
+          status: "idle"
+        } as never,
+        {
+          id: "agent-1",
+          companyId: "company_1",
+          name: "Alpha Bot",
+          role: "QA",
+          title: "Quality Pilot",
+          status: "paused"
+        } as never,
+        {
+          id: "agent-other-company",
+          companyId: "company_2",
+          name: "Other Company Bot",
+          role: "Ops",
+          title: null,
+          status: "idle"
+        } as never
+      ]
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const data = await harness.getData<{ agents: Array<{ id: string; name: string; title?: string | null }> }>(
+      "paperclip-agents",
+      { companyId: "company_1" }
+    );
+
+    expect(data.agents).toEqual([
+      expect.objectContaining({ id: "agent-1", name: "Alpha Bot", title: "Quality Pilot" }),
+      expect.objectContaining({ id: "agent-2", name: "Zulu Bot" })
+    ]);
   });
 
   it("returns a safe identity summary for configured agents", async () => {

@@ -1,10 +1,12 @@
 import { useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 import { DEFAULT_BOT_IDENTITY_CONFIG } from "../shared/types.js";
-import type { BotIdentityConfig } from "../shared/types.js";
+import type { BotIdentityConfig, PaperclipAgentOption, PaperclipAgentsData } from "../shared/types.js";
 
-export function SettingsPage(_props: PluginSettingsPageProps) {
+export function SettingsPage(props: PluginSettingsPageProps) {
+  const companyId = props.context.companyId ?? "";
   const { data, loading, error, refresh } = usePluginData<BotIdentityConfig | null>("bot-identity-config");
+  const { data: agentsData, loading: agentsLoading, error: agentsError } = usePluginData<PaperclipAgentsData>("paperclip-agents", { companyId });
   const saveConfig = usePluginAction("save-bot-identity-config");
 
   const [formState, setFormState] = useState<BotIdentityConfig | null>(null);
@@ -13,6 +15,11 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   const config = formState ?? data ?? DEFAULT_BOT_IDENTITY_CONFIG;
+  const agentOptions = agentsData?.agents ?? [];
+  const hasAgentOptions = agentOptions.length > 0;
+  const hasSavedAgentOutsideOptions = Boolean(
+    config.agentId && !agentOptions.some((agent) => agent.id === config.agentId)
+  );
 
   if (loading) return <div>Loading settings...</div>;
   if (error) return <div>Error loading settings: {error.message}</div>;
@@ -59,15 +66,29 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
         <legend style={{ fontWeight: 600 }}>Identity</legend>
 
         <label style={{ display: "grid", gap: "0.25rem" }}>
-          <span>Agent ID <span style={requiredStyle}>*</span></span>
-          <input
-            type="text"
-            value={config.agentId}
-            onChange={(e) => updateField("agentId", e.target.value)}
-            placeholder="UUID of the pilot Paperclip agent"
-            style={inputStyle}
-          />
-          <span style={hintStyle}>The Paperclip agent that will use this bot identity.</span>
+          <span>Agent <span style={requiredStyle}>*</span></span>
+          {hasAgentOptions ? (
+            <select
+              value={config.agentId}
+              onChange={(e) => updateField("agentId", e.target.value)}
+              style={inputStyle}
+            >
+              <option value="" disabled>Select a Paperclip agent</option>
+              {hasSavedAgentOutsideOptions && <option value={config.agentId}>{config.agentId} (saved)</option>}
+              {agentOptions.map((agent) => (
+                <option key={agent.id} value={agent.id}>{formatAgentOption(agent)}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={config.agentId}
+              onChange={(e) => updateField("agentId", e.target.value)}
+              placeholder="UUID of the pilot Paperclip agent"
+              style={inputStyle}
+            />
+          )}
+          <span style={hintStyle}>{getAgentFieldHint({ companyId, agentsLoading, agentsError, hasAgentOptions })}</span>
         </label>
 
         <label style={{ display: "grid", gap: "0.25rem" }}>
@@ -163,6 +184,32 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
       </div>
     </div>
   );
+}
+
+function formatAgentOption(agent: PaperclipAgentOption): string {
+  const detail = agent.title || agent.role || agent.status;
+  return detail ? `${agent.name} - ${detail}` : agent.name;
+}
+
+function getAgentFieldHint(input: {
+  companyId: string;
+  agentsLoading: boolean;
+  agentsError: unknown;
+  hasAgentOptions: boolean;
+}): string {
+  if (!input.companyId) {
+    return "No company context is available, so paste the Paperclip agent UUID manually.";
+  }
+  if (input.agentsLoading) {
+    return "Loading Paperclip agents...";
+  }
+  if (input.agentsError) {
+    return "Could not load Paperclip agents; paste the agent UUID manually.";
+  }
+  if (!input.hasAgentOptions) {
+    return "No Paperclip agents were found for this company; paste the agent UUID manually.";
+  }
+  return "The Paperclip agent that will use this bot identity.";
 }
 
 const pageStyle: CSSProperties = {

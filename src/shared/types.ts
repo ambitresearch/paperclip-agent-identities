@@ -9,6 +9,18 @@ export type BotIdentityConfig = {
 
 export const DEFAULT_ALLOWED_OWNER_PATTERN = "^roshangautam$";
 
+export type PaperclipAgentOption = {
+  id: string;
+  name: string;
+  role?: string | null;
+  title?: string | null;
+  status?: string | null;
+};
+
+export type PaperclipAgentsData = {
+  agents: PaperclipAgentOption[];
+};
+
 export const DEFAULT_BOT_IDENTITY_CONFIG: BotIdentityConfig = {
   agentId: "",
   label: "",

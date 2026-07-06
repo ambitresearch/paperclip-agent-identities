@@ -409,9 +409,9 @@ describe("plugin scaffold", () => {
 
     expect(result.error).toBe("Failed to resolve bot authentication credentials.");
     expect(activityLogs).toContainEqual(expect.objectContaining({
-      message: "github_bot_push_branch failed: secret resolution",
+      message: "github_bot_push_branch failed: credential resolution",
       metadata: expect.objectContaining({
-        outcome: "secret_resolution_failed"
+        outcome: "credential_resolution_failed"
       })
     }));
   });

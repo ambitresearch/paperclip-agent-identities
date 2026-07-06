@@ -9,7 +9,7 @@ import { githubBotCreatePullRequestManifestTool } from "./shared/github-bot-crea
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-github-bot-identity",
   apiVersion: 1,
-  version: "0.1.2",
+  version: "0.1.3",
   displayName: "GitHub Bot Identity",
   description: "Per-agent GitHub bot identity and contribution tools for Paperclip",
   author: "Roshan Gautam",

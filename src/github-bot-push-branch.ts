@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { evaluateRepoPolicy, normalizeGitHubRepoRef, resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
-import { resolveIdentitySecretRef } from "./credential-sidecar.js";
+import { resolveIdentityToken } from "./credential-sidecar.js";
 
 type GitCommandResult = {
   exitCode: number;
@@ -341,33 +341,19 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       }
     }
 
-    let secretRef: string;
+    let token: string;
     try {
-      secretRef = await resolveIdentitySecretRef(resolvedIdentity);
+      ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets)));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       await logPushBranchOutcome(ctx, runCtx, {
-        message: "github_bot_push_branch failed: credential mapping",
-        outcome: "credential_mapping_failed",
+        message: "github_bot_push_branch failed: credential resolution",
+        outcome: "credential_resolution_failed",
         repository: repository.fullName,
         branch,
         remote
       });
-      return { error: reason };
-    }
-
-    let token: string;
-    try {
-      token = await ctx.secrets.resolve(secretRef);
-    } catch {
-      await logPushBranchOutcome(ctx, runCtx, {
-        message: "github_bot_push_branch failed: secret resolution",
-        outcome: "secret_resolution_failed",
-        repository: repository.fullName,
-        branch,
-        remote
-      });
-      return { error: "Failed to resolve bot authentication credentials." };
+      return { error: reason || "Failed to resolve bot authentication credentials." };
     }
     let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>>;
 

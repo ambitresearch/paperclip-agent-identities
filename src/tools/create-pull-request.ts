@@ -5,7 +5,7 @@
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
 import { evaluateRepoPolicy, resolveAgentIdentityFromToolRunContext } from "../identity-policy.js";
-import { resolveIdentitySecretRef } from "../credential-sidecar.js";
+import { resolveIdentityToken } from "../credential-sidecar.js";
 import { githubBotCreatePullRequestToolMetadata, githubBotCreatePullRequestToolName } from "../shared/github-bot-create-pull-request-tool.js";
 
 export interface CreatePullRequestParams {
@@ -81,22 +81,10 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
         return { error: policyDecision.reason };
       }
 
-      let secretRef: string;
-      try {
-        secretRef = await resolveIdentitySecretRef(resolvedIdentity);
-      } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        ctx.logger.error("Failed to resolve bot credential mapping", {
-          agentId: runCtx.agentId,
-          repository: validated.repository,
-        });
-        return { error: reason };
-      }
-
       // Resolve token just-in-time.
       let token: string;
       try {
-        token = await ctx.secrets.resolve(secretRef);
+        ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets)));
       } catch (err) {
         ctx.logger.error("Failed to resolve bot token", {
           agentId: runCtx.agentId,

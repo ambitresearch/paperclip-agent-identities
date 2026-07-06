@@ -12,7 +12,8 @@ import {
 import {
   CREDENTIAL_SIDECAR_PATH_ENV,
   parseCredentialSidecar,
-  resolveIdentitySecretRef
+  resolveIdentitySecretRef,
+  resolveIdentityToken
 } from "../src/credential-sidecar.js";
 
 const baseRunCtx: ToolRunContext = {
@@ -84,6 +85,26 @@ describe("github credential sidecar", () => {
     });
 
     expect(parsed.identities["agent-1"].secretId).toBe("00000000-0000-4000-8000-000000000001");
+  });
+
+  it("parses tokenFile-only fallback mappings", () => {
+    const parsed = parseCredentialSidecar({
+      version: 1,
+      identities: {
+        "agent-1": { tokenFile: "/run/paperclip/github-bot.token" }
+      }
+    });
+
+    expect(parsed.identities["agent-1"].tokenFile).toBe("/run/paperclip/github-bot.token");
+  });
+
+  it("rejects entries without secretId or tokenFile", () => {
+    expect(() => parseCredentialSidecar({
+      version: 1,
+      identities: {
+        "agent-1": {}
+      }
+    })).toThrow();
   });
 
   it("rejects non-UUID sidecar secret ids", () => {
@@ -270,4 +291,85 @@ describe("resolveIdentitySecretRef", () => {
     const secretRef = await resolveIdentitySecretRef(resolvedIdentity);
     expect(secretRef).toBe("00000000-0000-4000-8000-000000000002");
   });
+
+  it("resolves token via sidecar tokenFile when plugin secret resolution is unavailable", async () => {
+    const sidecarPath = join(sidecarDir!, "credentials.json");
+    const tokenPath = join(sidecarDir!, "token.txt");
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+    await writeFile(tokenPath, "file-token\n", "utf8");
+    await writeFile(sidecarPath, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1": {
+          secretId: "00000000-0000-4000-8000-000000000003",
+          tokenFile: tokenPath
+        }
+      }
+    }), "utf8");
+
+    const resolvedIdentity = {
+      agentId: "agent-1",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot",
+        allowedOwnerPatterns: ["^roshangautam$"]
+      }
+    };
+
+    const resolved = await resolveIdentityToken(resolvedIdentity, async () => {
+      throw new Error("Plugin secret references are disabled until company-scoped plugin config lands");
+    });
+
+    expect(resolved).toEqual({ token: "file-token", source: "token-file" });
+  });
+
+  it("prefers plugin secret resolution when secretId succeeds even if tokenFile is present", async () => {
+    const sidecarPath = join(sidecarDir!, "credentials.json");
+    const tokenPath = join(sidecarDir!, "token.txt");
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+    await writeFile(tokenPath, "file-token\n", "utf8");
+    await writeFile(sidecarPath, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1": {
+          secretId: "00000000-0000-4000-8000-000000000004",
+          tokenFile: tokenPath
+        }
+      }
+    }), "utf8");
+
+    const resolvedIdentity = {
+      agentId: "agent-1",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot",
+        allowedOwnerPatterns: ["^roshangautam$"]
+      }
+    };
+
+    const resolved = await resolveIdentityToken(resolvedIdentity, async (secretRef) => `secret:${secretRef}`);
+
+    expect(resolved).toEqual({
+      token: "secret:00000000-0000-4000-8000-000000000004",
+      source: "plugin-secret"
+    });
+  });
+
+  it("returns inline tokenSecretRef through plugin secret resolution without reading sidecar tokenFile", async () => {
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = join(sidecarDir!, "does-not-exist.json");
+    const resolvedIdentity = {
+      agentId: "agent-1",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot",
+        tokenSecretRef: "inline-secret-ref",
+        allowedOwnerPatterns: ["^roshangautam$"]
+      }
+    };
+
+    const resolved = await resolveIdentityToken(resolvedIdentity, async (secretRef) => `secret:${secretRef}`);
+
+    expect(resolved).toEqual({ token: "secret:inline-secret-ref", source: "plugin-secret" });
+  });
+
 });

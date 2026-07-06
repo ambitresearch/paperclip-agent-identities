@@ -49,13 +49,14 @@ Current Paperclip server builds reject plugin config fields that look like secre
   "version": 1,
   "identities": {
     "<agent-id>": {
-      "secretId": "<paperclip-company-secret-uuid>"
+      "secretId": "<paperclip-company-secret-uuid>",
+      "tokenFile": "/paperclip/.paperclip/github-bot-identity/tokens/<agent-id>.token"
     }
   }
 }
 ```
 
-Default path in Paperclip: `/paperclip/.paperclip/github-bot-identity/credentials.json`. Override with `PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS` for tests or custom deployments. The file stores Paperclip secret UUIDs only; raw GitHub tokens remain in Paperclip Secrets and are resolved just-in-time with `ctx.secrets.resolve(secretId)`.
+Default path in Paperclip: `/paperclip/.paperclip/github-bot-identity/credentials.json`. Override with `PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS` for tests or custom deployments. If both fields are present, the plugin tries `secretId` first and falls back to `tokenFile` only when Paperclip plugin secret resolution fails. Prefer `secretId` once Paperclip plugin secret resolution is enabled. Until then, set `tokenFile` to an operator-managed file containing the GitHub token; keep that file outside git, readable only by the Paperclip server user, and remove it after migrating back to `secretId`.
 
 ## Build Options
 

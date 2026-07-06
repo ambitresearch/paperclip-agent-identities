@@ -42,24 +42,24 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
   }
 
   return (
-    <div style={{ maxWidth: 600, display: "grid", gap: "1rem" }}>
+    <div style={pageStyle}>
       <h2 style={{ margin: 0 }}>Pilot Agent Bot Identity Mapping</h2>
-      <p style={{ margin: 0, color: "#555" }}>
+      <p style={descriptionStyle}>
         Configure public identity metadata for the Paperclip agent.
         Operators bind the credential separately through the sidecar credentials file.
       </p>
 
-      <div style={{ padding: "0.75rem 1rem", backgroundColor: "#fff3cd", border: "1px solid #ffc107", borderRadius: 4 }}>
+      <div style={noticeStyle}>
         <strong>Security notice:</strong> GitHub token references are not stored in plugin config while
         Paperclip secret references are disabled for plugin config. Store only a Paperclip secret UUID
         in the operator-managed sidecar credentials file.
       </div>
 
-      <fieldset style={{ border: "1px solid #ddd", borderRadius: 4, padding: "1rem", display: "grid", gap: "0.75rem" }}>
+      <fieldset style={fieldsetStyle}>
         <legend style={{ fontWeight: 600 }}>Identity</legend>
 
         <label style={{ display: "grid", gap: "0.25rem" }}>
-          <span>Agent ID <span style={{ color: "red" }}>*</span></span>
+          <span>Agent ID <span style={requiredStyle}>*</span></span>
           <input
             type="text"
             value={config.agentId}
@@ -71,7 +71,7 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
         </label>
 
         <label style={{ display: "grid", gap: "0.25rem" }}>
-          <span>Label <span style={{ color: "red" }}>*</span></span>
+          <span>Label <span style={requiredStyle}>*</span></span>
           <input
             type="text"
             value={config.label}
@@ -83,11 +83,11 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
         </label>
       </fieldset>
 
-      <fieldset style={{ border: "1px solid #ddd", borderRadius: 4, padding: "1rem", display: "grid", gap: "0.75rem" }}>
+      <fieldset style={fieldsetStyle}>
         <legend style={{ fontWeight: 600 }}>GitHub Account</legend>
 
         <label style={{ display: "grid", gap: "0.25rem" }}>
-          <span>GitHub Username <span style={{ color: "red" }}>*</span></span>
+          <span>GitHub Username <span style={requiredStyle}>*</span></span>
           <input
             type="text"
             value={config.githubUsername}
@@ -114,7 +114,7 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
         </label>
       </fieldset>
 
-      <fieldset style={{ border: "1px solid #ddd", borderRadius: 4, padding: "1rem", display: "grid", gap: "0.75rem" }}>
+      <fieldset style={fieldsetStyle}>
         <legend style={{ fontWeight: 600 }}>Commit Identity (optional)</legend>
 
         <label style={{ display: "grid", gap: "0.25rem" }}>
@@ -158,21 +158,64 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
         >
           {saving ? "Saving..." : "Save Configuration"}
         </button>
-        {saveSuccess && <span style={{ color: "green" }}>Saved successfully.</span>}
-        {saveError && <span style={{ color: "red" }}>{saveError}</span>}
+        {saveSuccess && <span style={successStyle}>Saved successfully.</span>}
+        {saveError && <span style={errorStyle}>{saveError}</span>}
       </div>
     </div>
   );
 }
 
+const pageStyle: CSSProperties = {
+  maxWidth: 600,
+  display: "grid",
+  gap: "1rem",
+  color: "CanvasText",
+};
+
+const descriptionStyle: CSSProperties = {
+  margin: 0,
+  color: "CanvasText",
+  opacity: 0.82,
+};
+
+const noticeStyle: CSSProperties = {
+  padding: "0.75rem 1rem",
+  backgroundColor: "#fff3cd",
+  border: "1px solid #ffc107",
+  borderRadius: 4,
+  color: "#332701",
+};
+
+const fieldsetStyle: CSSProperties = {
+  border: "1px solid GrayText",
+  borderRadius: 4,
+  padding: "1rem",
+  display: "grid",
+  gap: "0.75rem",
+};
+
 const inputStyle: CSSProperties = {
   padding: "0.4rem 0.6rem",
-  border: "1px solid #ccc",
+  border: "1px solid GrayText",
   borderRadius: 4,
   fontSize: "0.9rem",
+  backgroundColor: "Field",
+  color: "FieldText",
 };
 
 const hintStyle: CSSProperties = {
   fontSize: "0.8rem",
-  color: "#666",
+  color: "GrayText",
+};
+
+const requiredStyle: CSSProperties = {
+  color: "#ff6b6b",
+};
+
+const successStyle: CSSProperties = {
+  color: "#2da44e",
+};
+
+const errorStyle: CSSProperties = {
+  color: "#ff6b6b",
 };

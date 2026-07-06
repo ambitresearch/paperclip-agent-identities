@@ -89,8 +89,11 @@ GitHub Actions workflow: [`.github/workflows/publish.yml`](.github/workflows/pub
 
 Publish is only available through explicit release paths:
 
-- GitHub Release `published` event: performs real npm publish.
-- Manual `workflow_dispatch`: supports safe dry-run by default.
+- Recommended: run the `Create Release` workflow after bumping `package.json`.
+  It validates the package, creates the `v<package.json version>` GitHub Release,
+  then dispatches the `Publish` workflow against that tag.
+- Manually publishing a GitHub Release also triggers the `Publish` workflow.
+- Manual `Publish` workflow dispatch supports safe dry-run by default.
 
 Required GitHub secret:
 
@@ -102,12 +105,20 @@ Manual dry-run publish in GitHub Actions:
 2. Click `Run workflow`.
 3. Keep `dry_run=true` to validate publish packaging without uploading to npm.
 
+Create a release and publish to npm:
+
+1. Bump `package.json` version in a PR and merge it to `main`.
+2. Open `Create Release` workflow in Actions.
+3. Click `Run workflow` from `main`.
+4. Leave `version` empty to use `package.json`, or set it to the exact same version.
+5. Keep `publish_to_npm=true` to dispatch the `Publish` workflow for the new tag.
+
 Manual real publish in GitHub Actions:
 
 1. Open `Publish` workflow in Actions.
 2. Click `Run workflow`.
 3. Set `dry_run=false`.
-4. Optionally set `ref` to a release tag (for example `v0.1.1`).
+4. Set `ref` to a release tag (for example `v0.1.1`) or leave it empty for `main`.
 
 Test install of a published version in Paperclip:
 

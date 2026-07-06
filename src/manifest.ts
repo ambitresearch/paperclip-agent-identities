@@ -1,4 +1,8 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import {
+  GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+  githubBotPushBranchToolDefinition
+} from "./github-bot-push-branch-tool-definition.js";
 import { githubBotWhoamiManifestTool } from "./shared/github-bot-whoami-tool.js";
 import { githubBotCreatePullRequestManifestTool } from "./shared/github-bot-create-pull-request-tool.js";
 
@@ -47,12 +51,20 @@ const manifest: PaperclipPluginManifestV1 = {
     "plugin.state.write",
     "ui.dashboardWidget.register",
     "instance.settings.register",
+    "project.workspaces.read",
     "agent.tools.register",
     "http.outbound",
     "secrets.read-ref",
     "activity.log.write"
   ],
-  tools: [githubBotWhoamiManifestTool, githubBotCreatePullRequestManifestTool],
+  tools: [
+    githubBotWhoamiManifestTool,
+    githubBotCreatePullRequestManifestTool,
+    {
+      name: GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+      ...githubBotPushBranchToolDefinition
+    }
+  ],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"

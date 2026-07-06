@@ -73,9 +73,23 @@ export function normalizeGitHubRepoRef(input: string): GitHubRepoRef | null {
     return buildRepoRef(scpMatch[1], scpMatch[2]);
   }
 
+  const sshUrlMatch = trimmed.match(/^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (sshUrlMatch) {
+    return buildRepoRef(sshUrlMatch[1], sshUrlMatch[2]);
+  }
+
+  const gitProtocolMatch = trimmed.match(/^git:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
+  if (gitProtocolMatch) {
+    return buildRepoRef(gitProtocolMatch[1], gitProtocolMatch[2]);
+  }
+
   const asUrl = parseGithubUrl(trimmed);
   if (asUrl) {
     return asUrl;
+  }
+
+  if (isUrlLikeRepoRef(trimmed)) {
+    return null;
   }
 
   return parseOwnerRepoPair(trimmed);
@@ -132,6 +146,10 @@ export function evaluateRepoPolicy(identity: GitHubAgentIdentity, repoInput: str
   }
 
   return { allowed: true, reason: "Repository allowed", repo: normalizedRepo };
+}
+
+function isUrlLikeRepoRef(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) || /^[^/\s]+\.[^/\s]+\//.test(value);
 }
 
 function parseGithubUrl(value: string): GitHubRepoRef | null {

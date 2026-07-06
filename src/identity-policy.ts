@@ -88,6 +88,10 @@ export function normalizeGitHubRepoRef(input: string): GitHubRepoRef | null {
     return asUrl;
   }
 
+  if (isUrlLikeRepoRef(trimmed)) {
+    return null;
+  }
+
   return parseOwnerRepoPair(trimmed);
 }
 
@@ -142,6 +146,10 @@ export function evaluateRepoPolicy(identity: GitHubAgentIdentity, repoInput: str
   }
 
   return { allowed: true, reason: "Repository allowed", repo: normalizedRepo };
+}
+
+function isUrlLikeRepoRef(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) || /^[^/\s]+\.[^/\s]+\//.test(value);
 }
 
 function parseGithubUrl(value: string): GitHubRepoRef | null {

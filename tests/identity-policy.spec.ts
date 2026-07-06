@@ -90,9 +90,11 @@ describe("github repo normalization", () => {
     ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
   });
 
-  it("rejects malformed repository input", () => {
+  it("rejects malformed and non-GitHub URL input", () => {
     expect(normalizeGitHubRepoRef("not-a-repo")).toBeNull();
     expect(normalizeGitHubRepoRef("   ")).toBeNull();
+    expect(normalizeGitHubRepoRef("https://gitlab.com/roshangautam/repo.git")).toBeNull();
+    expect(normalizeGitHubRepoRef("gitlab.com/roshangautam/repo")).toBeNull();
   });
 });
 

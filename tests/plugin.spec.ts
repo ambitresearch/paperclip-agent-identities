@@ -265,6 +265,43 @@ describe("plugin scaffold", () => {
     expect(secretResolveCalls).toBe(0);
   });
 
+  it("denies non-GitHub remotes before secret resolution", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: pushToolConfig("github-token-ref")
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const commands: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+    let secretResolveCalls = 0;
+    harness.ctx.secrets.resolve = async () => {
+      secretResolveCalls += 1;
+      return "should-not-be-used";
+    };
+
+    __setGitCommandRunnerForTests(async ({ args, env }) => {
+      commands.push({ args, env });
+      if (args[0] === "remote" && args[1] === "get-url") {
+        return {
+          exitCode: 0,
+          stdout: "https://gitlab.com/roshangautam/repo.git\n",
+          stderr: ""
+        };
+      }
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    });
+
+    seedPrimaryWorkspace(harness, "https://gitlab.com/roshangautam/repo.git");
+
+    const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
+
+    expect(result.error).toBe("Push denied: remote must be a GitHub repository URL.");
+    expect(commands).toHaveLength(1);
+    expect(commands[0].args).toEqual(["remote", "get-url", "origin"]);
+    expect(secretResolveCalls).toBe(0);
+  });
+
   it("rejects invalid remote parameter before git command execution", async () => {
     const harness = createTestHarness({
       manifest,

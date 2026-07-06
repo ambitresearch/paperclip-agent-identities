@@ -80,6 +80,12 @@ describe("github repo normalization", () => {
     expect(
       normalizeGitHubRepoRef("git@github.com:RoshanGautam/Paperclip-Github-Bot-Identity-Plugin.git")?.fullName
     ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
+    expect(
+      normalizeGitHubRepoRef("ssh://git@github.com/roshangautam/paperclip-github-bot-identity-plugin.git")?.fullName
+    ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
+    expect(
+      normalizeGitHubRepoRef("git://github.com/roshangautam/paperclip-github-bot-identity-plugin.git")?.fullName
+    ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
   });
 });
 

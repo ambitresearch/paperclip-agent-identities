@@ -27,6 +27,16 @@ type GithubBotPushBranchParams = {
   dryRun?: boolean;
 };
 
+type PushBranchOutcomeLogInput = {
+  message: string;
+  outcome: string;
+  branch: string;
+  remote: string;
+  repository?: string;
+  expectedRepository?: string;
+  dryRun?: boolean;
+};
+
 const runGitCommandDefault: GitCommandRunner = async ({ args, cwd, env }) => {
   return await new Promise((resolve, reject) => {
     const child = spawn("git", args, {
@@ -103,6 +113,20 @@ function validateBranchName(branch: string): string | null {
   return trimmed;
 }
 
+function validateRemoteName(remote: string): string | null {
+  const trimmed = remote.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/[\s\0]/.test(trimmed)) {
+    return null;
+  }
+  if (trimmed.startsWith("-")) {
+    return null;
+  }
+  return trimmed;
+}
+
 function toBranchRef(branch: string): string {
   return branch.startsWith("refs/heads/") ? branch : `refs/heads/${branch}`;
 }
@@ -162,6 +186,38 @@ function parseToolParams(input: unknown): GithubBotPushBranchParams | null {
   };
 }
 
+async function logPushBranchOutcome(
+  ctx: PluginContext,
+  runCtx: ToolRunContext,
+  input: PushBranchOutcomeLogInput
+): Promise<void> {
+  const metadata: Record<string, unknown> = {
+    agentId: runCtx.agentId,
+    runId: runCtx.runId,
+    branch: input.branch,
+    remote: input.remote,
+    outcome: input.outcome
+  };
+
+  if (input.repository) {
+    metadata.repository = input.repository;
+  }
+  if (input.expectedRepository) {
+    metadata.expectedRepository = input.expectedRepository;
+  }
+  if (input.dryRun !== undefined) {
+    metadata.dryRun = input.dryRun;
+  }
+
+  await ctx.activity.log({
+    companyId: runCtx.companyId,
+    entityType: "run",
+    entityId: runCtx.runId,
+    message: input.message,
+    metadata
+  });
+}
+
 export function createGithubBotPushBranchTool(ctx: PluginContext) {
   return async (paramsInput: unknown, runCtx: ToolRunContext): Promise<ToolResult> => {
     const params = parseToolParams(paramsInput);
@@ -174,24 +230,20 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       return { error: "Invalid branch. Use a non-empty branch name without whitespace." };
     }
 
-    const remote = (params.remote ?? "origin").trim();
+    const remote = validateRemoteName(params.remote ?? "origin");
+    if (!remote) {
+      return { error: "Invalid remote. Use a non-empty remote name without whitespace." };
+    }
     const expectedRepository = params.expectedRepository?.trim();
     const dryRun = params.dryRun === true;
 
     const workspace = await ctx.projects.getPrimaryWorkspace(runCtx.projectId, runCtx.companyId);
     if (!workspace?.path) {
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
+      await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: missing project workspace",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          branch,
-          remote,
-          outcome: "missing_workspace"
-        }
+        outcome: "missing_workspace",
+        branch,
+        remote
       });
       return { error: "No primary workspace is configured for this project." };
     }
@@ -202,36 +254,22 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
     });
 
     if (remoteResolution.exitCode !== 0) {
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
+      await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: remote resolution",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          branch,
-          remote,
-          outcome: "remote_resolution_failed"
-        }
+        outcome: "remote_resolution_failed",
+        branch,
+        remote
       });
       return { error: `Unable to resolve git remote '${remote}'.` };
     }
 
     const repository = normalizeGitHubRepoRef(remoteResolution.stdout);
     if (!repository) {
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
+      await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch denied: unsupported remote",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          branch,
-          remote,
-          outcome: "denied_remote_url"
-        }
+        outcome: "denied_remote_url",
+        branch,
+        remote
       });
       return { error: "Push denied: remote must be a GitHub repository URL." };
     }
@@ -243,38 +281,24 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       resolvedIdentity = resolveAgentIdentityFromToolRunContext(config, runCtx);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
+      await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: missing config",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          repository: repository.fullName,
-          branch,
-          remote,
-          outcome: "missing_config"
-        }
+        outcome: "missing_config",
+        repository: repository.fullName,
+        branch,
+        remote
       });
       return { error: reason };
     }
 
     const policyDecision = evaluateRepoPolicy(resolvedIdentity.identity, repository.fullName);
     if (!policyDecision.allowed) {
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
+      await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch denied: owner policy",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          repository: repository.fullName,
-          branch,
-          remote,
-          outcome: "denied_owner_policy"
-        }
+        outcome: "denied_owner_policy",
+        repository: repository.fullName,
+        branch,
+        remote
       });
       return { error: `Push denied for '${repository.fullName}': ${policyDecision.reason}.` };
     }
@@ -282,37 +306,23 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
     if (expectedRepository) {
       const normalizedExpected = normalizeExpectedRepository(expectedRepository);
       if (!normalizedExpected) {
-        await ctx.activity.log({
-          companyId: runCtx.companyId,
-          entityType: "run",
-          entityId: runCtx.runId,
+        await logPushBranchOutcome(ctx, runCtx, {
           message: "github_bot_push_branch failed: invalid expectedRepository",
-          metadata: {
-            agentId: runCtx.agentId,
-            runId: runCtx.runId,
-            repository: repository.fullName,
-            branch,
-            remote,
-            outcome: "invalid_expected_repository"
-          }
+          outcome: "invalid_expected_repository",
+          repository: repository.fullName,
+          branch,
+          remote
         });
         return { error: "Invalid expectedRepository format. Use 'owner/repo' or a GitHub URL." };
       }
       if (normalizedExpected !== repository.fullName) {
-        await ctx.activity.log({
-          companyId: runCtx.companyId,
-          entityType: "run",
-          entityId: runCtx.runId,
+        await logPushBranchOutcome(ctx, runCtx, {
           message: "github_bot_push_branch denied: expectedRepository mismatch",
-          metadata: {
-            agentId: runCtx.agentId,
-            runId: runCtx.runId,
-            repository: repository.fullName,
-            expectedRepository: normalizedExpected,
-            branch,
-            remote,
-            outcome: "denied_expected_repository_mismatch"
-          }
+          outcome: "denied_expected_repository_mismatch",
+          repository: repository.fullName,
+          expectedRepository: normalizedExpected,
+          branch,
+          remote
         });
         return { error: `Push denied: repository mismatch. Expected '${normalizedExpected}', found '${repository.fullName}'.` };
       }
@@ -322,19 +332,12 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
     try {
       token = await ctx.secrets.resolve(resolvedIdentity.identity.tokenSecretRef);
     } catch {
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
+      await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: secret resolution",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          repository: repository.fullName,
-          branch,
-          remote,
-          outcome: "secret_resolution_failed"
-        }
+        outcome: "secret_resolution_failed",
+        repository: repository.fullName,
+        branch,
+        remote
       });
       return { error: "Failed to resolve bot authentication credentials." };
     }
@@ -344,19 +347,12 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       authEnv = await buildGitAuthEnvironment(token);
     } catch (error) {
       const message = redactSecretText(error instanceof Error ? error.message : String(error), [token]);
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
+      await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: execution exception",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          repository: repository.fullName,
-          branch,
-          remote,
-          outcome: "auth_setup_exception"
-        }
+        outcome: "auth_setup_exception",
+        repository: repository.fullName,
+        branch,
+        remote
       });
       return { error: `git auth setup failed: ${message}` };
     }
@@ -379,19 +375,12 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       const redactedStderr = redactSecretText(pushResult.stderr, [token]);
 
       if (pushResult.exitCode !== 0) {
-        await ctx.activity.log({
-          companyId: runCtx.companyId,
-          entityType: "run",
-          entityId: runCtx.runId,
+        await logPushBranchOutcome(ctx, runCtx, {
           message: "github_bot_push_branch failed: git push",
-          metadata: {
-            agentId: runCtx.agentId,
-            runId: runCtx.runId,
-            repository: repository.fullName,
-            branch,
-            remote,
-            outcome: "push_failed"
-          }
+          outcome: "push_failed",
+          repository: repository.fullName,
+          branch,
+          remote
         });
         return {
           error: `git push failed for '${repository.fullName}' branch '${branch}'.`,
@@ -402,20 +391,13 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         };
       }
 
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
+      await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch succeeded",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          repository: repository.fullName,
-          branch,
-          remote,
-          dryRun,
-          outcome: "success"
-        }
+        outcome: "success",
+        repository: repository.fullName,
+        branch,
+        remote,
+        dryRun
       });
 
       return {
@@ -432,19 +414,12 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       };
     } catch (error) {
       const message = redactSecretText(error instanceof Error ? error.message : String(error), [token]);
-      await ctx.activity.log({
-        companyId: runCtx.companyId,
-        entityType: "run",
-        entityId: runCtx.runId,
+      await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: execution exception",
-        metadata: {
-          agentId: runCtx.agentId,
-          runId: runCtx.runId,
-          repository: repository.fullName,
-          branch,
-          remote,
-          outcome: "push_exception"
-        }
+        outcome: "push_exception",
+        repository: repository.fullName,
+        branch,
+        remote
       });
       return { error: `git push failed: ${message}` };
     } finally {

@@ -217,6 +217,27 @@ describe("plugin scaffold", () => {
     expect(secretResolveCalls).toBe(0);
   });
 
+  it("rejects invalid remote parameter before git command execution", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: pushToolConfig("github-token-ref")
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    __setGitCommandRunnerForTests(async ({ args }) => {
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    });
+
+    const result = await harness.executeTool(
+      "github_bot_push_branch",
+      { branch: "feature/tool", remote: "--all" },
+      { agentId: TOOL_AGENT_ID }
+    );
+
+    expect(result.error).toBe("Invalid remote. Use a non-empty remote name without whitespace.");
+  });
+
   it("fails when calling agent identity config is missing", async () => {
     const harness = createTestHarness({
       manifest,

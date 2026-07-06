@@ -227,11 +227,23 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
 
     const branch = validateBranchName(params.branch);
     if (!branch) {
+      await logPushBranchOutcome(ctx, runCtx, {
+        message: "github_bot_push_branch failed: invalid branch name",
+        outcome: "invalid_branch",
+        branch: params.branch,
+        remote: params.remote ?? "origin"
+      });
       return { error: "Invalid branch. Use a non-empty branch name without whitespace." };
     }
 
     const remote = validateRemoteName(params.remote ?? "origin");
     if (!remote) {
+      await logPushBranchOutcome(ctx, runCtx, {
+        message: "github_bot_push_branch failed: invalid remote name",
+        outcome: "invalid_remote",
+        branch,
+        remote: params.remote ?? ""
+      });
       return { error: "Invalid remote. Use a non-empty remote name without whitespace." };
     }
     const expectedRepository = params.expectedRepository?.trim();
@@ -358,7 +370,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
     }
 
     try {
-      const pushArgs = ["push"];
+      const pushArgs = ["-c", "credential.helper=", "push"];
       if (dryRun) {
         pushArgs.push("--dry-run");
       }

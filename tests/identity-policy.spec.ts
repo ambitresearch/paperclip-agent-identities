@@ -70,22 +70,29 @@ describe("github identity config", () => {
 });
 
 describe("github repo normalization", () => {
-  it("normalizes owner/repo strings and URLs", () => {
-    expect(normalizeGitHubRepoRef("RoshanGautam/Paperclip-Github-Bot-Identity-Plugin")?.fullName).toBe(
-      "roshangautam/paperclip-github-bot-identity-plugin"
+  it("normalizes HTTPS, SSH, .git suffix, and owner/repo input", () => {
+    expect(normalizeGitHubRepoRef("https://github.com/RoshanGautam/Genie")?.fullName).toBe("roshangautam/genie");
+    expect(normalizeGitHubRepoRef("https://github.com/roshangautam/genie.git")?.fullName).toBe("roshangautam/genie");
+    expect(normalizeGitHubRepoRef("git@github.com:RoshanGautam/Genie.git")?.fullName).toBe("roshangautam/genie");
+    expect(normalizeGitHubRepoRef("roshangautam/genie")?.fullName).toBe("roshangautam/genie");
+  });
+
+  it("normalizes scheme-less and path-suffixed GitHub URLs", () => {
+    expect(normalizeGitHubRepoRef("github.com/roshangautam/genie")?.fullName).toBe("roshangautam/genie");
+    expect(normalizeGitHubRepoRef("https://github.com/roshangautam/genie/tree/main")?.fullName).toBe(
+      "roshangautam/genie"
     );
-    expect(
-      normalizeGitHubRepoRef("https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git")?.fullName
-    ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
-    expect(
-      normalizeGitHubRepoRef("git@github.com:RoshanGautam/Paperclip-Github-Bot-Identity-Plugin.git")?.fullName
-    ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
     expect(
       normalizeGitHubRepoRef("ssh://git@github.com/roshangautam/paperclip-github-bot-identity-plugin.git")?.fullName
     ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
     expect(
       normalizeGitHubRepoRef("git://github.com/roshangautam/paperclip-github-bot-identity-plugin.git")?.fullName
     ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
+  });
+
+  it("rejects malformed repository input", () => {
+    expect(normalizeGitHubRepoRef("not-a-repo")).toBeNull();
+    expect(normalizeGitHubRepoRef("   ")).toBeNull();
   });
 });
 
@@ -106,6 +113,16 @@ describe("github repo policy", () => {
     expect(evaluateRepoPolicy(identity, "affaan-m/everything-claude-code").allowed).toBe(false);
     expect(evaluateRepoPolicy(identity, "openai/plugins").allowed).toBe(false);
     expect(evaluateRepoPolicy(identity, "NousResearch/hermes-agent").allowed).toBe(false);
+  });
+
+  it("allows only explicitly approved repositories when allowedRepos is configured", () => {
+    const repoScopedIdentity = { ...identity, allowedRepos: ["roshangautam/genie"] };
+
+    expect(evaluateRepoPolicy(repoScopedIdentity, "roshangautam/genie").allowed).toBe(true);
+    expect(evaluateRepoPolicy(repoScopedIdentity, "paperclipai/paperclip").allowed).toBe(false);
+    expect(evaluateRepoPolicy(repoScopedIdentity, "affaan-m/everything-claude-code").allowed).toBe(false);
+    expect(evaluateRepoPolicy(repoScopedIdentity, "openai/plugins").allowed).toBe(false);
+    expect(evaluateRepoPolicy(repoScopedIdentity, "NousResearch/hermes-agent").allowed).toBe(false);
   });
 
   it("fails closed when allowedOwnerPatterns is explicitly empty", () => {

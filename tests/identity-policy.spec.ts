@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import {
   evaluateRepoPolicy,
@@ -6,7 +9,11 @@ import {
   parseGitHubBotIdentityPluginConfig,
   resolveAgentIdentityFromToolRunContext
 } from "../src/identity-policy.js";
-import { parseCredentialSidecar } from "../src/credential-sidecar.js";
+import {
+  CREDENTIAL_SIDECAR_PATH_ENV,
+  parseCredentialSidecar,
+  resolveIdentitySecretRef
+} from "../src/credential-sidecar.js";
 
 const baseRunCtx: ToolRunContext = {
   agentId: "agent-1",
@@ -152,5 +159,115 @@ describe("github repo policy", () => {
     expect(evaluateRepoPolicy(denyAllIdentity, "roshangautam/paperclip-github-bot-identity-plugin").allowed).toBe(
       false
     );
+  });
+});
+
+describe("resolveIdentitySecretRef", () => {
+  const originalCredentialSidecarPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
+  let sidecarDir: string | null = null;
+
+  beforeEach(async () => {
+    sidecarDir = await mkdtemp(join(tmpdir(), "identity-secret-ref-test-"));
+  });
+
+  afterEach(async () => {
+    if (originalCredentialSidecarPath === undefined) {
+      delete process.env[CREDENTIAL_SIDECAR_PATH_ENV];
+    } else {
+      process.env[CREDENTIAL_SIDECAR_PATH_ENV] = originalCredentialSidecarPath;
+    }
+    if (sidecarDir) {
+      await rm(sidecarDir, { recursive: true, force: true });
+      sidecarDir = null;
+    }
+  });
+
+  it("returns inline tokenSecretRef when present, without reading sidecar", async () => {
+    // Point sidecar at a non-existent path — if it tries to read, it will throw
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = join(sidecarDir!, "does-not-exist.json");
+
+    const resolvedIdentity = {
+      agentId: "agent-1",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot",
+        tokenSecretRef: "inline-secret-ref-uuid",
+        allowedOwnerPatterns: ["^roshangautam$"]
+      }
+    };
+
+    const secretRef = await resolveIdentitySecretRef(resolvedIdentity);
+    expect(secretRef).toBe("inline-secret-ref-uuid");
+  });
+
+  it("falls through to sidecar when tokenSecretRef is undefined", async () => {
+    const sidecarPath = join(sidecarDir!, "credentials.json");
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+    await writeFile(sidecarPath, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1": { secretId: "00000000-0000-4000-8000-000000000001" }
+      }
+    }), "utf8");
+
+    const resolvedIdentity = {
+      agentId: "agent-1",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot",
+        allowedOwnerPatterns: ["^roshangautam$"]
+      }
+    };
+
+    const secretRef = await resolveIdentitySecretRef(resolvedIdentity);
+    expect(secretRef).toBe("00000000-0000-4000-8000-000000000001");
+  });
+
+  it("throws when agent has no sidecar entry and no inline tokenSecretRef", async () => {
+    const sidecarPath = join(sidecarDir!, "credentials.json");
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+    await writeFile(sidecarPath, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-other": { secretId: "00000000-0000-4000-8000-000000000099" }
+      }
+    }), "utf8");
+
+    const resolvedIdentity = {
+      agentId: "agent-missing",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot",
+        allowedOwnerPatterns: ["^roshangautam$"]
+      }
+    };
+
+    await expect(resolveIdentitySecretRef(resolvedIdentity)).rejects.toThrow(
+      "Missing GitHub bot credential sidecar entry for agent 'agent-missing'"
+    );
+  });
+
+  it("falls through to sidecar when tokenSecretRef is empty/whitespace", async () => {
+    const sidecarPath = join(sidecarDir!, "credentials.json");
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+    await writeFile(sidecarPath, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1": { secretId: "00000000-0000-4000-8000-000000000002" }
+      }
+    }), "utf8");
+
+    const resolvedIdentity = {
+      agentId: "agent-1",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot",
+        tokenSecretRef: "   ",
+        allowedOwnerPatterns: ["^roshangautam$"]
+      }
+    };
+
+    const secretRef = await resolveIdentitySecretRef(resolvedIdentity);
+    expect(secretRef).toBe("00000000-0000-4000-8000-000000000002");
   });
 });

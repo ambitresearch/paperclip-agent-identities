@@ -261,6 +261,36 @@ describe("github_bot_create_pull_request tool", () => {
       expect(harness.activity[0].message).toContain("Created PR #10");
       expect(harness.activity[0].metadata?.repository).toBe("roshangautam/my-repo");
     });
+
+    it("normalizes full GitHub URL to canonical owner/repo for API call", async () => {
+      vi.spyOn(harness.ctx.secrets, "resolve").mockResolvedValue("fake-token");
+      const fetchSpy = vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({
+          number: 11,
+          html_url: "https://github.com/roshangautam/my-repo/pull/11",
+          state: "open",
+          draft: false,
+          head: { ref: "feat" },
+          base: { ref: "main" },
+        }), { status: 201 }),
+      );
+
+      const result = await harness.executeTool<ToolResult>(
+        "github_bot_create_pull_request",
+        {
+          repository: "https://github.com/roshangautam/my-repo",
+          head: "feat",
+          base: "main",
+          title: "PR via URL",
+        },
+        validRunCtx,
+      );
+
+      expect(result.error).toBeUndefined();
+      // Verify the fetch was called with the canonical API URL
+      const calledUrl = fetchSpy.mock.calls[0][0] as string;
+      expect(calledUrl).toBe("https://api.github.com/repos/roshangautam/my-repo/pulls");
+    });
   });
 
   describe("error handling", () => {

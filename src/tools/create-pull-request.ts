@@ -107,8 +107,10 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
         return { error: "Failed to resolve bot authentication credentials" };
       }
 
-      // Call GitHub REST API
-      const [owner, repo] = validated.repository.split("/");
+      // Call GitHub REST API — use the canonical owner/repo from the policy
+      // decision (which normalizes URLs, SSH remotes, etc.) instead of naively
+      // splitting the raw input.
+      const { owner, repo } = policyDecision.repo!;
       const apiUrl = `https://api.github.com/repos/${owner}/${repo}/pulls`;
 
       let response: Response;

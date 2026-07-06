@@ -186,6 +186,52 @@ describe("plugin scaffold", () => {
     expect(commands[1].env?.GITHUB_TOKEN).toBe("resolved:github-token-ref");
   });
 
+  it("denies push when expectedRepository does not match resolved remote", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: pushToolConfig("github-token-ref")
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const commands: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+    let secretResolveCalls = 0;
+    harness.ctx.secrets.resolve = async () => {
+      secretResolveCalls += 1;
+      return "should-not-be-used";
+    };
+
+    __setGitCommandRunnerForTests(async ({ args, env }) => {
+      commands.push({ args, env });
+      if (args[0] === "remote" && args[1] === "get-url") {
+        return {
+          exitCode: 0,
+          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stderr: ""
+        };
+      }
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    });
+
+    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+
+    const result = await harness.executeTool(
+      "github_bot_push_branch",
+      {
+        branch: "feature/tool",
+        expectedRepository: "roshangautam/some-other-repo"
+      },
+      { agentId: TOOL_AGENT_ID }
+    );
+
+    expect(result.error).toBe(
+      "Push denied: repository mismatch. Expected 'roshangautam/some-other-repo', found 'roshangautam/paperclip-github-bot-identity-plugin'."
+    );
+    expect(commands).toHaveLength(1);
+    expect(commands[0].args).toEqual(["remote", "get-url", "origin"]);
+    expect(secretResolveCalls).toBe(0);
+  });
+
   it("denies push to disallowed repository before secret resolution", async () => {
     const harness = createTestHarness({
       manifest,

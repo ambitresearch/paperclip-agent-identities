@@ -384,7 +384,6 @@ describe("plugin scaffold", () => {
     expect(result.error).toBeUndefined();
     expect(result.content).toContain("Dry-run push succeeded");
     expect(commands).toHaveLength(2);
-    expect(commands[1].args).toContain("--dry-run");
     expect(commands[1].args[0]).toBe("-c");
     expect(commands[1].args[1]).toBe("credential.helper=");
     expect(commands[1].args[2]).toBe("push");

@@ -8,7 +8,6 @@ import { evaluateRepoPolicy, resolveAgentIdentityFromToolRunContext } from "../i
 import { resolveIdentitySecretRef } from "../credential-sidecar.js";
 import { githubBotCreatePullRequestToolMetadata, githubBotCreatePullRequestToolName } from "../shared/github-bot-create-pull-request-tool.js";
 
-
 export interface CreatePullRequestParams {
   repository: string;
   head: string;

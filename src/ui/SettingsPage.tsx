@@ -98,7 +98,6 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
           <span style={hintStyle}>GitHub machine user account for this agent.</span>
         </label>
 
-
         <label style={{ display: "grid", gap: "0.25rem" }}>
           <span>Allowed Owner Pattern</span>
           <input

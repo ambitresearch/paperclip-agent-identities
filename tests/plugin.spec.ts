@@ -154,7 +154,7 @@ describe("plugin scaffold", () => {
           stderr: ""
         };
       }
-      if (args[0] === "push") {
+      if (args[0] === "-c" && args[2] === "push") {
         return {
           exitCode: 0,
           stdout: "pushed\n",
@@ -178,9 +178,11 @@ describe("plugin scaffold", () => {
     expect(result.error).toBeUndefined();
     expect(result.content).toContain("Push succeeded");
     expect(commands).toHaveLength(2);
-    expect(commands[1].args[0]).toBe("push");
-    expect(commands[1].args[1]).toBe("https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
-    expect(commands[1].args[2]).toBe("HEAD:refs/heads/feature/tool");
+    expect(commands[1].args[0]).toBe("-c");
+    expect(commands[1].args[1]).toBe("credential.helper=");
+    expect(commands[1].args[2]).toBe("push");
+    expect(commands[1].args[3]).toBe("https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    expect(commands[1].args[4]).toBe("HEAD:refs/heads/feature/tool");
     expect(commands[1].env?.GITHUB_TOKEN).toBe("resolved:github-token-ref");
   });
 
@@ -321,7 +323,7 @@ describe("plugin scaffold", () => {
           stderr: ""
         };
       }
-      if (args[0] === "push") {
+      if (args[0] === "-c" && args[2] === "push") {
         return {
           exitCode: 0,
           stdout: "pushed\n",
@@ -357,7 +359,7 @@ describe("plugin scaffold", () => {
           stderr: ""
         };
       }
-      if (args[0] === "push") {
+      if (args[0] === "-c" && args[2] === "push") {
         return {
           exitCode: 1,
           stdout: "token was super-secret-token and should be hidden\n",

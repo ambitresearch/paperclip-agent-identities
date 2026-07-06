@@ -341,6 +341,58 @@ describe("plugin scaffold", () => {
     expect(result.content).toContain("Push succeeded");
   });
 
+  it("includes --dry-run flag and returns dry-run success message when dryRun is true", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: pushToolConfig("github-token-ref")
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const commands: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
+    __setGitCommandRunnerForTests(async ({ args, env }) => {
+      commands.push({ args, env });
+      if (args[0] === "remote" && args[1] === "get-url") {
+        return {
+          exitCode: 0,
+          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stderr: ""
+        };
+      }
+      if (args[0] === "-c" && args[2] === "push") {
+        return {
+          exitCode: 0,
+          stdout: "dry-run pushed\n",
+          stderr: ""
+        };
+      }
+      throw new Error(`Unexpected git command: ${args.join(" ")}`);
+    });
+
+    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+
+    const result = await harness.executeTool(
+      "github_bot_push_branch",
+      {
+        branch: "feature/dry",
+        expectedRepository: "roshangautam/paperclip-github-bot-identity-plugin",
+        dryRun: true
+      },
+      { agentId: TOOL_AGENT_ID }
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("Dry-run push succeeded");
+    expect(commands).toHaveLength(2);
+    expect(commands[1].args).toContain("--dry-run");
+    expect(commands[1].args[0]).toBe("-c");
+    expect(commands[1].args[1]).toBe("credential.helper=");
+    expect(commands[1].args[2]).toBe("push");
+    expect(commands[1].args[3]).toBe("--dry-run");
+    expect(commands[1].args[4]).toBe("https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    expect(commands[1].args[5]).toBe("HEAD:refs/heads/feature/dry");
+  });
+
   it("redacts resolved token from tool-visible output on push failure", async () => {
     const harness = createTestHarness({
       manifest,

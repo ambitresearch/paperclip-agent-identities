@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { evaluateRepoPolicy, normalizeGitHubRepoRef, resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
+import { resolveIdentitySecretRef } from "./credential-sidecar.js";
 
 type GitCommandResult = {
   exitCode: number;
@@ -340,9 +341,24 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       }
     }
 
+    let secretRef: string;
+    try {
+      secretRef = await resolveIdentitySecretRef(resolvedIdentity);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      await logPushBranchOutcome(ctx, runCtx, {
+        message: "github_bot_push_branch failed: credential mapping",
+        outcome: "credential_mapping_failed",
+        repository: repository.fullName,
+        branch,
+        remote
+      });
+      return { error: reason };
+    }
+
     let token: string;
     try {
-      token = await ctx.secrets.resolve(resolvedIdentity.identity.tokenSecretRef);
+      token = await ctx.secrets.resolve(secretRef);
     } catch {
       await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: secret resolution",

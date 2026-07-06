@@ -6,7 +6,7 @@ const HARD_ALLOWED_OWNER = "roshangautam";
 const githubIdentitySchema = z.object({
   label: z.string().trim().min(1),
   githubUsername: z.string().trim().min(1),
-  tokenSecretRef: z.string().trim().min(1),
+  tokenSecretRef: z.string().trim().min(1).optional(),
   allowedOwnerPatterns: z.array(z.string().trim().min(1)).default([...DEFAULT_ALLOWED_OWNER_PATTERNS]),
   allowedRepos: z.array(z.string().trim().min(1)).optional(),
   commitName: z.string().trim().min(1).optional(),

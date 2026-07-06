@@ -1,18 +1,56 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import type { ToolResult } from "@paperclipai/plugin-sdk";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
+import { CREDENTIAL_SIDECAR_PATH_ENV } from "../src/credential-sidecar.js";
 
 describe("github_bot_create_pull_request tool", () => {
+  const TEST_SECRET_ID = "00000000-0000-4000-8000-000000000001";
+  const originalCredentialSidecarPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
   let harness: ReturnType<typeof createTestHarness>;
+  let credentialSidecarDir: string | null = null;
 
   beforeEach(async () => {
+    credentialSidecarDir = await mkdtemp(join(tmpdir(), "github-bot-identity-pr-test-"));
+    const sidecarPath = join(credentialSidecarDir, "credentials.json");
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+    await writeFile(sidecarPath, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1": { secretId: TEST_SECRET_ID }
+      }
+    }), "utf8");
+
     harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities, "events.emit"],
+      config: {
+        identities: {
+          "agent-1": {
+            label: "PR Bot",
+            githubUsername: "paperclip-pr-bot",
+            allowedOwnerPatterns: ["^roshangautam$"]
+          }
+        }
+      }
     });
     await plugin.definition.setup(harness.ctx);
+  });
+
+  afterEach(async () => {
+    if (originalCredentialSidecarPath === undefined) {
+      delete process.env[CREDENTIAL_SIDECAR_PATH_ENV];
+    } else {
+      process.env[CREDENTIAL_SIDECAR_PATH_ENV] = originalCredentialSidecarPath;
+    }
+    if (credentialSidecarDir) {
+      await rm(credentialSidecarDir, { recursive: true, force: true });
+      credentialSidecarDir = null;
+    }
   });
 
   const validRunCtx = {
@@ -101,7 +139,7 @@ describe("github_bot_create_pull_request tool", () => {
         { repository: "paperclipai/paperclip", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
-      expect(result.error).toMatch(/repository owner must be "roshangautam"/);
+      expect(result.error).toMatch(/outside MVP allowed scope/);
       // Secrets should never be resolved for denied repos
       expect(secretsSpy).not.toHaveBeenCalled();
     });
@@ -114,7 +152,7 @@ describe("github_bot_create_pull_request tool", () => {
         { repository: "attacker/evil-repo", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
-      expect(result.error).toMatch(/repository owner must be "roshangautam"/);
+      expect(result.error).toMatch(/outside MVP allowed scope/);
       expect(secretsSpy).not.toHaveBeenCalled();
     });
 
@@ -126,7 +164,7 @@ describe("github_bot_create_pull_request tool", () => {
         { repository: "not-a-valid-repo", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
-      expect(result.error).toMatch(/owner\/repo/);
+      expect(result.error).toMatch(/Invalid repository format/);
       expect(secretsSpy).not.toHaveBeenCalled();
     });
   });
@@ -222,6 +260,36 @@ describe("github_bot_create_pull_request tool", () => {
       expect(harness.activity).toHaveLength(1);
       expect(harness.activity[0].message).toContain("Created PR #10");
       expect(harness.activity[0].metadata?.repository).toBe("roshangautam/my-repo");
+    });
+
+    it("normalizes full GitHub URL to canonical owner/repo for API call", async () => {
+      vi.spyOn(harness.ctx.secrets, "resolve").mockResolvedValue("fake-token");
+      const fetchSpy = vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({
+          number: 11,
+          html_url: "https://github.com/roshangautam/my-repo/pull/11",
+          state: "open",
+          draft: false,
+          head: { ref: "feat" },
+          base: { ref: "main" },
+        }), { status: 201 }),
+      );
+
+      const result = await harness.executeTool<ToolResult>(
+        "github_bot_create_pull_request",
+        {
+          repository: "https://github.com/roshangautam/my-repo",
+          head: "feat",
+          base: "main",
+          title: "PR via URL",
+        },
+        validRunCtx,
+      );
+
+      expect(result.error).toBeUndefined();
+      // Verify the fetch was called with the canonical API URL
+      const calledUrl = fetchSpy.mock.calls[0][0] as string;
+      expect(calledUrl).toBe("https://api.github.com/repos/roshangautam/my-repo/pulls");
     });
   });
 

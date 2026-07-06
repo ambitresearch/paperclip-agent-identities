@@ -33,13 +33,29 @@ This repository defines a typed per-agent identity configuration core:
 
 - `identities[agentId].label`
 - `identities[agentId].githubUsername`
-- `identities[agentId].tokenSecretRef`
 - `identities[agentId].allowedOwnerPatterns` (defaults to `["^roshangautam$"]`)
 - Optional `identities[agentId].allowedRepos`
 - Optional `identities[agentId].commitName`
 - Optional `identities[agentId].commitEmail`
 
 MVP repo policy hard-denies any repository outside `roshangautam/*`, even if other patterns are configured.
+
+### Credential sidecar workaround
+
+Current Paperclip server builds reject plugin config fields that look like secret references until company-scoped plugin config lands. Keep plugin config free of secrets and bind credentials through an operator-managed sidecar file instead:
+
+```json
+{
+  "version": 1,
+  "identities": {
+    "<agent-id>": {
+      "secretId": "<paperclip-company-secret-uuid>"
+    }
+  }
+}
+```
+
+Default path in Paperclip: `/paperclip/.paperclip/github-bot-identity/credentials.json`. Override with `PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS` for tests or custom deployments. The file stores Paperclip secret UUIDs only; raw GitHub tokens remain in Paperclip Secrets and are resolved just-in-time with `ctx.secrets.resolve(secretId)`.
 
 ## Build Options
 

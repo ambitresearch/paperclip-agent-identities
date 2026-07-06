@@ -45,14 +45,14 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
     <div style={{ maxWidth: 600, display: "grid", gap: "1rem" }}>
       <h2 style={{ margin: 0 }}>Pilot Agent Bot Identity Mapping</h2>
       <p style={{ margin: 0, color: "#555" }}>
-        Configure which Paperclip agent acts through a GitHub bot account.
-        The agent will use this identity for all GitHub operations on allowed repositories.
+        Configure public identity metadata for the Paperclip agent.
+        Operators bind the credential separately through the sidecar credentials file.
       </p>
 
       <div style={{ padding: "0.75rem 1rem", backgroundColor: "#fff3cd", border: "1px solid #ffc107", borderRadius: 4 }}>
-        <strong>Security notice:</strong> The token secret ref must point to a <em>bot account</em> credential
-        managed by Paperclip secrets, never a personal access token. The raw token is never exposed in
-        this UI or stored in plugin config — only the secret reference is saved.
+        <strong>Security notice:</strong> GitHub token references are not stored in plugin config while
+        Paperclip secret references are disabled for plugin config. Store only a Paperclip secret UUID
+        in the operator-managed sidecar credentials file.
       </div>
 
       <fieldset style={{ border: "1px solid #ddd", borderRadius: 4, padding: "1rem", display: "grid", gap: "0.75rem" }}>
@@ -96,21 +96,6 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
             style={inputStyle}
           />
           <span style={hintStyle}>GitHub machine user account for this agent.</span>
-        </label>
-
-        <label style={{ display: "grid", gap: "0.25rem" }}>
-          <span>Token Secret Ref <span style={{ color: "red" }}>*</span></span>
-          <input
-            type="text"
-            value={config.tokenSecretRef}
-            onChange={(e) => updateField("tokenSecretRef", e.target.value)}
-            placeholder="e.g. GITHUB_BOT_TOKEN"
-            style={inputStyle}
-          />
-          <span style={hintStyle}>
-            Paperclip secret reference that resolves to the bot&apos;s GitHub token.
-            Must be a bot account credential — not a personal token.
-          </span>
         </label>
 
         <label style={{ display: "grid", gap: "0.25rem" }}>
@@ -160,7 +145,7 @@ export function SettingsPage(_props: PluginSettingsPageProps) {
       <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
         <button
           onClick={() => void handleSave()}
-          disabled={saving || !config.agentId || !config.label || !config.githubUsername || !config.tokenSecretRef}
+          disabled={saving || !config.agentId || !config.label || !config.githubUsername}
           style={{
             padding: "0.5rem 1.25rem",
             backgroundColor: "#0d6efd",

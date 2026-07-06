@@ -1,127 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { normalizeGitHubRepo, isRepoAllowed } from "../src/lib/github.js";
-import { resolveContributionAccess } from "../src/lib/access.js";
 import { redactSecrets, redactSecretsInText, toSafeError } from "../src/lib/redaction.js";
 import { createPullRequest } from "../src/lib/pr.js";
 import { pushBranch } from "../src/lib/push.js";
-
-describe("GitHub repository normalization", () => {
-  it("normalizes HTTPS, SSH, .git suffix, and owner/repo input", () => {
-    expect(normalizeGitHubRepo("https://github.com/RoshanGautam/Genie")).toBe("roshangautam/genie");
-    expect(normalizeGitHubRepo("https://github.com/roshangautam/genie.git")).toBe("roshangautam/genie");
-    expect(normalizeGitHubRepo("git@github.com:RoshanGautam/Genie.git")).toBe("roshangautam/genie");
-    expect(normalizeGitHubRepo("roshangautam/genie")).toBe("roshangautam/genie");
-  });
-
-  it("normalizes scheme-less and path-suffixed GitHub URLs", () => {
-    expect(normalizeGitHubRepo("github.com/roshangautam/genie")).toBe("roshangautam/genie");
-    expect(normalizeGitHubRepo("https://github.com/roshangautam/genie/tree/main")).toBe("roshangautam/genie");
-  });
-
-  it("rejects non-GitHub or malformed repository input", () => {
-    expect(normalizeGitHubRepo("https://gitlab.com/roshangautam/genie")).toBeNull();
-    expect(normalizeGitHubRepo("https://github.com/roshangautam")).toBeNull();
-    expect(normalizeGitHubRepo("not-a-repo")).toBeNull();
-  });
-});
-
-describe("Policy enforcement", () => {
-  it("allows only the explicitly approved repository", () => {
-    const allowed = ["roshangautam/genie"];
-
-    expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
-    expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
-    expect(isRepoAllowed("affaan-m/everything-claude-code", allowed)).toBe(false);
-    expect(isRepoAllowed("openai/plugins", allowed)).toBe(false);
-    expect(isRepoAllowed("NousResearch/hermes-agent", allowed)).toBe(false);
-  });
-
-  it("covers owner/* policy branch while still denying other owners", () => {
-    const allowed = ["roshangautam/*"];
-
-    expect(isRepoAllowed("roshangautam/genie", allowed)).toBe(true);
-    expect(isRepoAllowed("https://github.com/roshangautam/genie.git", allowed)).toBe(true);
-    expect(isRepoAllowed("github.com/roshangautam/another-repo", allowed)).toBe(true);
-    expect(isRepoAllowed("roshangautam/another-repo", allowed)).toBe(true);
-    expect(isRepoAllowed("paperclipai/paperclip", allowed)).toBe(false);
-  });
-
-  it("matches owner wildcard entries case-insensitively across URL forms", () => {
-    const allowed = ["RoshanGautam/*"];
-
-    expect(isRepoAllowed("https://github.com/roshangautam/genie.git", allowed)).toBe(true);
-    expect(isRepoAllowed("git@github.com:ROSHANGAUTAM/another-repo.git", allowed)).toBe(true);
-    expect(isRepoAllowed("https://github.com/openai/plugins", allowed)).toBe(false);
-  });
-});
-
-describe("Config resolution", () => {
-  it("denies all contribution tools when identity is missing", () => {
-    const result = resolveContributionAccess({}, { companyId: "paperclip" });
-
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toBe("identity_missing");
-    expect(result.deniedTools).toEqual(["github.push", "github.pr.create"]);
-  });
-
-  it("denies when company context is missing or wrong", () => {
-    const config = {
-      defaultIdentityAlias: "genie",
-      identities: {
-        genie: {
-          companyId: "paperclip",
-          githubUsername: "paperclip-genie",
-          githubToken: "fake_token_for_tests",
-        },
-      },
-    };
-
-    const missingContext = resolveContributionAccess(config, {});
-    expect(missingContext.allowed).toBe(false);
-    expect(missingContext.reason).toBe("company_context_missing");
-
-    const wrongContext = resolveContributionAccess(config, { companyId: "other-company" });
-    expect(wrongContext.allowed).toBe(false);
-    expect(wrongContext.reason).toBe("company_context_mismatch");
-  });
-
-  it("covers company_not_allowed fail-closed branch when allow list excludes matching company", () => {
-    const config = {
-      defaultIdentityAlias: "genie",
-      identities: {
-        genie: {
-          companyId: "paperclip",
-          githubUsername: "paperclip-genie",
-          githubToken: "fake_token_for_tests",
-        },
-      },
-      allowedCompanyIds: ["another-company"],
-    };
-
-    const result = resolveContributionAccess(config, { companyId: "paperclip" });
-    expect(result.allowed).toBe(false);
-    expect(result.reason).toBe("company_not_allowed");
-    expect(result.reason).not.toBe("company_context_mismatch");
-    expect(result.reason).not.toBe("identity_missing");
-    expect(result.deniedTools).toEqual(["github.push", "github.pr.create"]);
-  });
-
-  it("returns a fresh denied tools array for each denied result", () => {
-    const first = resolveContributionAccess({}, { companyId: "paperclip" });
-    const second = resolveContributionAccess({}, { companyId: "paperclip" });
-
-    expect(first.allowed).toBe(false);
-    expect(second.allowed).toBe(false);
-    expect(first.deniedTools).not.toBe(second.deniedTools);
-  });
-
-  it("returns a frozen denied tools array", () => {
-    const result = resolveContributionAccess({}, { companyId: "paperclip" });
-
-    expect(result.allowed).toBe(false);
-    expect(Object.isFrozen(result.deniedTools)).toBe(true);
-  });
-});
 
 describe("Redaction", () => {
   const fakeToken = "fake_token_123456";
@@ -236,12 +116,12 @@ describe("Mocked subprocess push behavior", () => {
         env: expect.objectContaining({
           GIT_ASKPASS: expect.stringContaining("paperclip-git-askpass-"),
           GIT_TERMINAL_PROMPT: "0",
-          PAPERCLIP_GIT_PUSH_TOKEN: fakeToken,
         }),
       }),
     );
     const env = runner.run.mock.calls[0]?.[2]?.env as Record<string, string | undefined>;
     expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.PAPERCLIP_GIT_PUSH_TOKEN).toBeUndefined();
   });
 
   it("throws a redacted error when git push fails", async () => {

@@ -4,14 +4,10 @@
  * any secrets.
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
-import { validateRepoPolicy } from "../shared/types.js";
+import { evaluateRepoPolicy, resolveAgentIdentityFromToolRunContext } from "../identity-policy.js";
+import { resolveIdentitySecretRef } from "../credential-sidecar.js";
 import { githubBotCreatePullRequestToolMetadata, githubBotCreatePullRequestToolName } from "../shared/github-bot-create-pull-request-tool.js";
 
-/** The owner used for simple policy checks in this tool. */
-const ALLOWED_OWNER = "roshangautam";
-
-/** Secret ref for the bot's GitHub token. */
-const TOKEN_SECRET_REF = "GITHUB_BOT_TOKEN";
 
 export interface CreatePullRequestParams {
   repository: string;
@@ -72,19 +68,36 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
         return { error: validated };
       }
 
-      // Enforce repo owner policy BEFORE resolving any secrets
-      const policyError = validateRepoPolicy(
-        validated.repository,
-        ALLOWED_OWNER,
-      );
-      if (policyError) {
-        return { error: policyError };
+      let resolvedIdentity: ReturnType<typeof resolveAgentIdentityFromToolRunContext>;
+      try {
+        resolvedIdentity = resolveAgentIdentityFromToolRunContext(await ctx.config.get(), runCtx);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return { error: reason };
       }
 
-      // Resolve token just-in-time
+      // Enforce repo policy BEFORE resolving any secrets.
+      const policyDecision = evaluateRepoPolicy(resolvedIdentity.identity, validated.repository);
+      if (!policyDecision.allowed) {
+        return { error: policyDecision.reason };
+      }
+
+      let secretRef: string;
+      try {
+        secretRef = await resolveIdentitySecretRef(resolvedIdentity);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        ctx.logger.error("Failed to resolve bot credential mapping", {
+          agentId: runCtx.agentId,
+          repository: validated.repository,
+        });
+        return { error: reason };
+      }
+
+      // Resolve token just-in-time.
       let token: string;
       try {
-        token = await ctx.secrets.resolve(TOKEN_SECRET_REF);
+        token = await ctx.secrets.resolve(secretRef);
       } catch (err) {
         ctx.logger.error("Failed to resolve bot token", {
           agentId: runCtx.agentId,

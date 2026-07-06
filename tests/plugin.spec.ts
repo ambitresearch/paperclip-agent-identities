@@ -1,23 +1,51 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin, { DEFAULT_ALLOWED_OWNER_PATTERN } from "../src/worker.js";
 import type { BotIdentityConfig } from "../src/worker.js";
 import { __resetGitCommandRunnerForTests, __setGitCommandRunnerForTests } from "../src/github-bot-push-branch.js";
+import { CREDENTIAL_SIDECAR_PATH_ENV } from "../src/credential-sidecar.js";
 
-afterEach(() => {
+afterEach(async () => {
   __resetGitCommandRunnerForTests();
+  if (originalCredentialSidecarPath === undefined) {
+    delete process.env[CREDENTIAL_SIDECAR_PATH_ENV];
+  } else {
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = originalCredentialSidecarPath;
+  }
+  if (credentialSidecarDir) {
+    await rm(credentialSidecarDir, { recursive: true, force: true });
+    credentialSidecarDir = null;
+  }
 });
 
 const TOOL_AGENT_ID = "agent-test";
+const TEST_SECRET_ID = "00000000-0000-4000-8000-000000000001";
+let credentialSidecarDir: string | null = null;
+const originalCredentialSidecarPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
 
-function pushToolConfig(tokenSecretRef: string) {
+beforeEach(async () => {
+  credentialSidecarDir = await mkdtemp(join(tmpdir(), "github-bot-identity-test-"));
+  const sidecarPath = join(credentialSidecarDir, "credentials.json");
+  process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+  await writeFile(sidecarPath, JSON.stringify({
+    version: 1,
+    identities: {
+      [TOOL_AGENT_ID]: { secretId: TEST_SECRET_ID },
+      agent_1: { secretId: TEST_SECRET_ID }
+    }
+  }), "utf8");
+});
+
+function pushToolConfig() {
   return {
     identities: {
       [TOOL_AGENT_ID]: {
         label: "Push Bot",
-        githubUsername: "roshan-bot",
-        tokenSecretRef
+        githubUsername: "roshan-bot"
       }
     }
   };
@@ -74,7 +102,6 @@ describe("plugin scaffold", () => {
           agent_1: {
             label: "Droidshop CTO",
             githubUsername: "paperclip-kiln-lathe",
-            tokenSecretRef: "secret://github/bot/token",
             allowedOwnerPatterns: ["^roshangautam$"],
             allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"],
             commitName: "Kiln Lathe",
@@ -115,7 +142,6 @@ describe("plugin scaffold", () => {
           agent_1: {
             label: "Droidshop CTO",
             githubUsername: "paperclip-kiln-lathe",
-            tokenSecretRef: "secret://github/bot/token",
             allowedOwnerPatterns: ["^roshangautam$"],
             allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"]
           }
@@ -140,7 +166,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: pushToolConfig("github-token-ref")
+      config: pushToolConfig()
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -183,14 +209,14 @@ describe("plugin scaffold", () => {
     expect(commands[1].args[2]).toBe("push");
     expect(commands[1].args[3]).toBe("https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
     expect(commands[1].args[4]).toBe("HEAD:refs/heads/feature/tool");
-    expect(commands[1].env?.GITHUB_TOKEN).toBe("resolved:github-token-ref");
+    expect(commands[1].env?.GITHUB_TOKEN).toBe(`resolved:${TEST_SECRET_ID}`);
   });
 
   it("denies push when expectedRepository does not match resolved remote", async () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: pushToolConfig("github-token-ref")
+      config: pushToolConfig()
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -236,7 +262,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: pushToolConfig("github-token-ref")
+      config: pushToolConfig()
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -269,7 +295,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: pushToolConfig("github-token-ref")
+      config: pushToolConfig()
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -306,7 +332,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: pushToolConfig("github-token-ref")
+      config: pushToolConfig()
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -351,7 +377,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: pushToolConfig("github-token-ref")
+      config: pushToolConfig()
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -394,7 +420,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: pushToolConfig("github-token-ref")
+      config: pushToolConfig()
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -428,7 +454,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: pushToolConfig("github-token-ref")
+      config: pushToolConfig()
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -479,7 +505,7 @@ describe("plugin scaffold", () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
-      config: pushToolConfig("token-ref")
+      config: pushToolConfig()
     });
     await plugin.definition.setup(harness.ctx);
 
@@ -538,14 +564,12 @@ describe("bot identity settings", () => {
       agentId: "agent-uuid-123",
       label: "QA Bot",
       githubUsername: "paperclip-qa-bot",
-      tokenSecretRef: "GITHUB_QA_BOT_TOKEN",
       allowedOwnerPattern: DEFAULT_ALLOWED_OWNER_PATTERN,
     });
 
     expect(saved.agentId).toBe("agent-uuid-123");
     expect(saved.label).toBe("QA Bot");
     expect(saved.githubUsername).toBe("paperclip-qa-bot");
-    expect(saved.tokenSecretRef).toBe("GITHUB_QA_BOT_TOKEN");
     expect(saved.allowedOwnerPattern).toBe(DEFAULT_ALLOWED_OWNER_PATTERN);
 
     const config = await harness.getData<BotIdentityConfig>("bot-identity-config");
@@ -562,7 +586,6 @@ describe("bot identity settings", () => {
         agentId: "",
         label: "Test",
         githubUsername: "bot",
-        tokenSecretRef: "TOKEN",
       })
     ).rejects.toThrow("Required fields");
   });
@@ -577,7 +600,6 @@ describe("bot identity settings", () => {
         agentId: "agent-1",
         label: "Test",
         githubUsername: "bot",
-        tokenSecretRef: "TOKEN",
         allowedOwnerPattern: "",
       }
     );
@@ -593,7 +615,6 @@ describe("bot identity settings", () => {
       agentId: "agent-1",
       label: "Deploy Bot",
       githubUsername: "paperclip-deploy",
-      tokenSecretRef: "DEPLOY_TOKEN",
       allowedOwnerPattern: DEFAULT_ALLOWED_OWNER_PATTERN,
       commitName: "Paperclip Deploy",
       commitEmail: "deploy@paperclip.ai",

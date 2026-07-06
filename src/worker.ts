@@ -41,17 +41,16 @@ const plugin = definePlugin({
     ctx.tools.register(GITHUB_BOT_PUSH_BRANCH_TOOL_NAME, githubBotPushBranchToolDefinition, createGithubBotPushBranchTool(ctx));
 
     ctx.actions.register("save-bot-identity-config", async (params) => {
-      const { agentId, label, githubUsername, tokenSecretRef, allowedOwnerPattern, commitName, commitEmail } = params as BotIdentityConfig;
+      const { agentId, label, githubUsername, allowedOwnerPattern, commitName, commitEmail } = params as BotIdentityConfig;
 
-      if (!agentId || !label || !githubUsername || !tokenSecretRef) {
-        throw new Error("Required fields: agentId, label, githubUsername, tokenSecretRef");
+      if (!agentId || !label || !githubUsername) {
+        throw new Error("Required fields: agentId, label, githubUsername");
       }
 
       const config: BotIdentityConfig = {
         agentId,
         label,
         githubUsername,
-        tokenSecretRef,
         allowedOwnerPattern: allowedOwnerPattern || DEFAULT_ALLOWED_OWNER_PATTERN,
         commitName: commitName || undefined,
         commitEmail: commitEmail || undefined,

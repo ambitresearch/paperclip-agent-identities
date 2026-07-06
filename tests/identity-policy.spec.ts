@@ -6,6 +6,7 @@ import {
   parseGitHubBotIdentityPluginConfig,
   resolveAgentIdentityFromToolRunContext
 } from "../src/identity-policy.js";
+import { parseCredentialSidecar } from "../src/credential-sidecar.js";
 
 const baseRunCtx: ToolRunContext = {
   agentId: "agent-1",
@@ -21,8 +22,7 @@ describe("github identity config", () => {
         identities: {
           "agent-1": {
             label: "Default Bot",
-            githubUsername: "roshan-bot",
-            tokenSecretRef: "secret://github/token"
+            githubUsername: "roshan-bot"
           }
         }
       },
@@ -39,8 +39,7 @@ describe("github identity config", () => {
           identities: {
             "agent-other": {
               label: "Other Bot",
-              githubUsername: "other-bot",
-              tokenSecretRef: "secret://github/other"
+              githubUsername: "other-bot"
             }
           }
         },
@@ -55,7 +54,6 @@ describe("github identity config", () => {
         "agent-1": {
           label: "Primary",
           githubUsername: "roshan-bot",
-          tokenSecretRef: "secret://github/token",
           allowedOwnerPatterns: ["^roshangautam$"],
           allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"],
           commitName: "Roshan Bot",
@@ -68,6 +66,29 @@ describe("github identity config", () => {
     expect(parsed.identities["agent-1"].commitEmail).toBe("bot@users.noreply.github.com");
   });
 });
+
+describe("github credential sidecar", () => {
+  it("parses agent to Paperclip secret UUID mappings", () => {
+    const parsed = parseCredentialSidecar({
+      version: 1,
+      identities: {
+        "agent-1": { secretId: "00000000-0000-4000-8000-000000000001" }
+      }
+    });
+
+    expect(parsed.identities["agent-1"].secretId).toBe("00000000-0000-4000-8000-000000000001");
+  });
+
+  it("rejects non-UUID sidecar secret ids", () => {
+    expect(() => parseCredentialSidecar({
+      version: 1,
+      identities: {
+        "agent-1": { secretId: "GITHUB_TOKEN" }
+      }
+    })).toThrow();
+  });
+});
+
 
 describe("github repo normalization", () => {
   it("normalizes HTTPS, SSH, .git suffix, and owner/repo input", () => {
@@ -102,7 +123,6 @@ describe("github repo policy", () => {
   const identity = {
     label: "Default",
     githubUsername: "roshan-bot",
-    tokenSecretRef: "secret://github/token",
     allowedOwnerPatterns: ["^roshangautam$"]
   };
 

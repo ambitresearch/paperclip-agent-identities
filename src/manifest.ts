@@ -9,7 +9,7 @@ import { githubBotCreatePullRequestManifestTool } from "./shared/github-bot-crea
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-github-bot-identity",
   apiVersion: 1,
-  version: "0.1.0",
+  version: "0.1.2",
   displayName: "GitHub Bot Identity",
   description: "Per-agent GitHub bot identity and contribution tools for Paperclip",
   author: "Roshan Gautam",
@@ -25,7 +25,6 @@ const manifest: PaperclipPluginManifestV1 = {
             properties: {
               label: { type: "string" },
               githubUsername: { type: "string" },
-              tokenSecretRef: { type: "string" },
               allowedOwnerPatterns: {
                 type: "array",
                 items: { type: "string" }
@@ -37,7 +36,7 @@ const manifest: PaperclipPluginManifestV1 = {
               commitName: { type: "string" },
               commitEmail: { type: "string" }
             },
-            required: ["label", "githubUsername", "tokenSecretRef"],
+            required: ["label", "githubUsername"],
             additionalProperties: false
           }
         }

@@ -1,4 +1,9 @@
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { createGithubBotPushBranchTool } from "./github-bot-push-branch.js";
+import {
+  GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+  githubBotPushBranchToolDefinition
+} from "./github-bot-push-branch-tool-definition.js";
 import { resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
 import { DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 import type { BotIdentityConfig } from "./shared/types.js";
@@ -32,6 +37,8 @@ const plugin = definePlugin({
       ctx.logger.info("Ping action invoked");
       return { pong: true, at: new Date().toISOString() };
     });
+
+    ctx.tools.register(GITHUB_BOT_PUSH_BRANCH_TOOL_NAME, githubBotPushBranchToolDefinition, createGithubBotPushBranchTool(ctx));
 
     ctx.actions.register("save-bot-identity-config", async (params) => {
       const { agentId, label, githubUsername, tokenSecretRef, allowedOwnerPattern, commitName, commitEmail } = params as BotIdentityConfig;

@@ -1,0 +1,40 @@
+name: Plugin CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Test
+        run: pnpm test
+      - name: Build
+        run: pnpm build
+      - name: Pack plugin tarball
+        run: |
+          npm pack --json > pack.json
+          node -e "const p=require('./pack.json')[0]; console.log(p.filename);" > asset-name.txt
+          shasum -a 256 "$(cat asset-name.txt)" > "$(cat asset-name.txt).sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plugin-tarball
+          path: |
+            *.tgz
+            *.tgz.sha256
+            pack.json

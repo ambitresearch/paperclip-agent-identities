@@ -2,6 +2,18 @@
 
 Per-agent identity providers and contribution tools for Paperclip. GitHub is the first provider.
 
+## Current Repo State
+
+This repository now contains the **Agent Identities** Paperclip plugin. It was renamed from the GitHub-specific bot identity plugin, but the active TrueNAS development install intentionally still uses the legacy dev-dropdown plugin id so existing test configuration and plugin state are preserved.
+
+- Source plugin id: `roshangautam.paperclip-agent-identities`
+- Package name: `@gautamroshan/paperclip-agent-identities`
+- Active TrueNAS dev plugin id: `roshangautam.paperclip-github-bot-identity-dev-dropdown`
+- Active TrueNAS dev package name: `@gautamroshan/paperclip-agent-identities-dev-dropdown`
+- Active TrueNAS dev version: `0.1.3-dev.8`
+
+The public npm package was removed, and publish/release automation is intentionally disabled. Treat this repo as source plus local/dev deployment until package publishing is restored.
+
 ## Development
 
 ```bash
@@ -24,8 +36,11 @@ folder on your machine.
 ## Install Into Paperclip
 
 ```bash
-paperclipai plugin install @gautamroshan/paperclip-agent-identities
+pnpm build
+paperclipai plugin install . --local
 ```
+
+For the current production-like TrueNAS test instance, use the dev deployment path instead of npm install. See [TrueNAS dev deploy](#truenas-dev-deploy).
 
 ## Identity Config Model
 
@@ -147,7 +162,9 @@ Download CI artifact from GitHub:
 
 GitHub Actions workflow: [`.github/workflows/publish.yml`](.github/workflows/publish.yml)
 
-Publish automation is temporarily disabled because the npm package has been removed. When publishing is restored, use explicit release paths:
+Publish automation is temporarily disabled because the npm package has been removed. Both the `Publish` and `Create Release` workflows have hard-disabled jobs, so merges to `main` will not publish or create releases from this repository right now.
+
+When publishing is restored, use explicit release paths:
 
 - Recommended: merge a PR to `main` that bumps `package.json` by major, minor,
   or patch. The `Create Release` workflow validates the package, creates the

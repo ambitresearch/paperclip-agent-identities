@@ -169,6 +169,9 @@ function legacyOwnerPatternsToRepoPatterns(ownerPatterns: string[]): string[] {
 
 function exactLegacyOwnerPatternToRepoPattern(pattern: string): string | null {
   const trimmed = pattern.trim();
+  if (trimmed === ".*" || trimmed === "^.*$" || trimmed === "*") {
+    return "*/*";
+  }
   const exactMatch = trimmed.match(/^\^?([a-zA-Z0-9][a-zA-Z0-9-]*)\$?$/);
   return exactMatch ? `${exactMatch[1].toLowerCase()}/*` : null;
 }
@@ -184,7 +187,7 @@ function repoPatternToRegExp(pattern: string): RegExp | Error {
   const normalized = pattern.trim().toLowerCase();
   const parts = normalized.split("/");
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    return new Error(`Invalid allowed repository pattern '${pattern}'. Use 'owner/repo', e.g. 'roshangautam/*'.`);
+    return new Error(`Invalid allowed repository pattern '${pattern}'. Use 'owner/repo', e.g. '*/*'.`);
   }
 
   const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&");

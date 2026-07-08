@@ -4,13 +4,13 @@ export const githubBotCreatePullRequestToolMetadata = {
   displayName: "Create Pull Request (Agent Identity)",
   description:
     "Creates a GitHub pull request using the configured agent identity. " +
-    "Only repositories under the allowed owner (roshangautam/*) are permitted.",
+    "Only repositories matching the configured allowed repository patterns are permitted.",
   parametersSchema: {
     type: "object",
     properties: {
       repository: {
         type: "string",
-        description: "Target repository in owner/repo format (e.g. \"roshangautam/my-repo\")",
+        description: "Target repository in owner/repo format (e.g. \"my-org/my-repo\")",
       },
       head: {
         type: "string",

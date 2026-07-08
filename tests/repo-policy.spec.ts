@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import { validateRepoPolicy } from "../src/shared/types.js";
 
 describe("validateRepoPolicy", () => {
-  const allowedPatterns = ["roshangautam/*", "codestudiohq/laravel-totem"];
+  const allowedPatterns = ["my-org/*", "octo-org/example-repo"];
 
   it("returns null for repos matching owner/repo patterns", () => {
-    expect(validateRepoPolicy("roshangautam/my-repo", allowedPatterns)).toBeNull();
-    expect(validateRepoPolicy("codestudiohq/laravel-totem", allowedPatterns)).toBeNull();
+    expect(validateRepoPolicy("my-org/my-repo", allowedPatterns)).toBeNull();
+    expect(validateRepoPolicy("octo-org/example-repo", allowedPatterns)).toBeNull();
   });
 
   it("returns error for non-matching repositories", () => {
-    const err = validateRepoPolicy("paperclipai/paperclip", allowedPatterns);
+    const err = validateRepoPolicy("other-org/other-repo", allowedPatterns);
     expect(err).toMatch(/does not match allowed repository patterns/);
   });
 
@@ -35,7 +35,7 @@ describe("validateRepoPolicy", () => {
   });
 
   it("returns error for empty repo part", () => {
-    const err = validateRepoPolicy("roshangautam/", allowedPatterns);
+    const err = validateRepoPolicy("my-org/", allowedPatterns);
     expect(err).toMatch(/owner\/repo/);
   });
 });

@@ -45,8 +45,8 @@ describe("Redaction", () => {
       createPullRequest(
         client,
         {
-          owner: "roshangautam",
-          repo: "genie",
+          owner: "my-org",
+          repo: "example-repo",
           title: "Regression hardening",
           body: "Body",
           head: "feature/regression",
@@ -60,8 +60,8 @@ describe("Redaction", () => {
       createPullRequest(
         client,
         {
-          owner: "roshangautam",
-          repo: "genie",
+          owner: "my-org",
+          repo: "example-repo",
           title: "Regression hardening",
           body: "Body",
           head: "feature/regression",
@@ -78,15 +78,15 @@ describe("Mocked GitHub API PR creation", () => {
     const client = {
       createPullRequest: vi.fn().mockResolvedValue({
         number: 42,
-        url: "https://github.com/roshangautam/genie/pull/42",
+        url: "https://github.com/my-org/example-repo/pull/42",
       }),
     };
 
     const result = await createPullRequest(
       client,
       {
-        owner: "roshangautam",
-        repo: "genie",
+        owner: "my-org",
+        repo: "example-repo",
         title: "Add tests",
         body: "This adds regression tests",
         head: "feature/tests",

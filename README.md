@@ -2,17 +2,14 @@
 
 Per-agent identity providers and contribution tools for Paperclip. GitHub is the first provider.
 
-## Current Repo State
+## Features
 
-This repository now contains the **Agent Identities** Paperclip plugin. It was renamed from the GitHub-specific bot identity plugin, but the active TrueNAS development install intentionally still uses the legacy dev-dropdown plugin id so existing test configuration and plugin state are preserved.
-
-- Source plugin id: `roshangautam.paperclip-agent-identities`
-- Package name: `@gautamroshan/paperclip-agent-identities`
-- Active TrueNAS dev plugin id: `roshangautam.paperclip-github-bot-identity-dev-dropdown`
-- Active TrueNAS dev package name: `@gautamroshan/paperclip-agent-identities-dev-dropdown`
-- Active TrueNAS dev version: `0.1.3-dev.8`
-
-The public npm package was removed, and publish/release automation is intentionally disabled. Treat this repo as source plus local/dev deployment until package publishing is restored.
+- Configure one GitHub identity per Paperclip agent.
+- Restrict each identity to explicit `owner/repo` allow-list patterns.
+- Create GitHub Apps with GitHub's App Manifest flow from the settings page.
+- Store GitHub App metadata in plugin state and credential references in a local sidecar file.
+- Mint short-lived GitHub App installation tokens on demand for plugin tools.
+- Create pull requests and push branches using the configured agent identity.
 
 ## Development
 
@@ -40,24 +37,22 @@ pnpm build
 paperclipai plugin install . --local
 ```
 
-For the current production-like TrueNAS test instance, use the dev deployment path instead of npm install. See [TrueNAS dev deploy](#truenas-dev-deploy).
-
 ## Identity Config Model
 
 This repository defines a typed per-agent identity configuration core. The settings page stores a v2 list of agent mappings in plugin state and supports adding, editing, and deleting mappings one agent at a time:
 
 - `identities[agentId].label`
 - `identities[agentId].githubUsername`
-- `identities[agentId].allowedRepoPatterns` (defaults to `["roshangautam/*"]`; supports patterns like `codestudiohq/laravel-totem`)
+- `identities[agentId].allowedRepoPatterns` (defaults to `["*/*"]`; supports patterns like `my-org/*` or `my-org/my-repo`)
 - Optional `identities[agentId].githubAppCredentialPropagationAgentIds`
 - Optional `identities[agentId].commitName`
 - Optional `identities[agentId].commitEmail`
 
 The worker still reads older single-agent settings state and converts previous `allowedOwnerPattern` / `allowedRepos` values into unified repository patterns at runtime. Repository policy is enforced against the configured `owner/repo` patterns before credentials are resolved.
 
-### GitHub App credential workaround
+### GitHub App credentials
 
-Current Paperclip server builds reject plugin config fields that look like secret references until company-scoped plugin config lands. The settings page stores public GitHub identity metadata in plugin state and writes credential references to an operator-local sidecar file. Prefer GitHub App credentials so tools mint short-lived installation tokens just-in-time instead of reading generated token files:
+The settings page stores public GitHub identity metadata in plugin state and writes credential references to an operator-local sidecar file. Prefer GitHub App credentials so tools mint short-lived installation tokens just-in-time instead of reading generated token files:
 
 ```json
 {
@@ -68,16 +63,16 @@ Current Paperclip server builds reject plugin config fields that look like secre
         "appId": "<github-app-id>",
         "installationId": "<github-installation-id>",
         "privateKeySecretId": "<paperclip-company-secret-uuid-containing-private-key>",
-        "privateKeyFile": "/paperclip/.paperclip/github-bot-identity/github-apps/<agent>/private-key.pem"
+        "privateKeyFile": "/paperclip/.paperclip/agent-identities/github-apps/<agent>/private-key.pem"
       }
     }
   }
 }
 ```
 
-Default path in Paperclip: `/paperclip/.paperclip/github-bot-identity/credentials.json`. Override with `PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS` for tests or custom deployments; `PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS` is still accepted for compatibility. The plugin tries the private-key secret first and falls back to `privateKeyFile` while plugin secret refs are disabled. It uses those GitHub App credentials to mint a fresh installation token on each GitHub tool call; generated tokens are not stored.
+Default sidecar path in Paperclip: `/paperclip/.paperclip/agent-identities/credentials.json`. Override with `PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS` for tests or custom deployments. The plugin tries the configured private-key secret first and falls back to `privateKeyFile` when a file path is present. It uses those GitHub App credentials to mint a fresh installation token on each GitHub tool call; generated tokens are not stored.
 
-The settings page includes a **Create GitHub App on GitHub** button for bootstrapping this credential source with GitHub's App Manifest flow. The generated manifest opens GitHub with the required permissions (`contents`, `pull_requests`, `issues`, and `workflows` as `write`), marks the app private, uses the selected agent dashboard as the GitHub App homepage, redirects back to the current settings URL for manifest conversion, configures a GitHub App `setup_url` plus `setup_on_update` for post-install and repository-selection callbacks, explicitly disables OAuth-on-install, and intentionally omits `hook_attributes` for the no-webhook case; GitHub rejects `hook_attributes: { "active": false }` even though the resulting error says the URL is missing. After GitHub creates the app, the callback returns to the settings page and restores the relevant identity form with the one-time code prefilled; if the browser loses that state, paste the returned callback URL or `code=...` value into the field manually. The plugin exchanges that one-time code, writes the returned PEM content to `github-apps/<agent-id>/private-key.pem` beside the sidecar credentials file, prefills the App ID, private key file, and bot username fields, then sends the browser into the GitHub App installation flow. GitHub redirects back to the setup URL with `installation_id`, and the settings page restores the same form with Installation ID prefilled before saving. Current Paperclip plugin APIs only expose secret reference reads (`secrets.read-ref`), not secret creation, so the generated private key file is the automatic credential source; operators can still copy that PEM into a Paperclip secret manually and select its UUID to prefer secret resolution over the file fallback. When editing an agent that already has GitHub App credentials, the manifest creation CTA is treated as a replacement/rotation flow and is tucked behind a disclosure so normal edits focus on the existing App ID, Installation ID, and key source.
+The settings page includes a **Create GitHub App on GitHub** button for bootstrapping this credential source with GitHub's App Manifest flow. The generated manifest opens GitHub with the required permissions (`contents`, `pull_requests`, `issues`, and `workflows` as `write`), marks the app private, uses the selected agent dashboard as the GitHub App homepage, redirects back to the current settings URL for manifest conversion, configures a GitHub App `setup_url` plus `setup_on_update` for post-install and repository-selection callbacks, explicitly disables OAuth-on-install, and intentionally omits `hook_attributes` for the no-webhook case; GitHub rejects `hook_attributes: { "active": false }` even though the resulting error says the URL is missing. After GitHub creates the app, the callback returns to the settings page and restores the relevant identity form with the one-time code prefilled; if the browser loses that state, paste the returned callback URL or `code=...` value into the field manually. The plugin exchanges that one-time code, writes the returned PEM content to `github-apps/<agent-id>/private-key.pem` beside the sidecar credentials file, prefills the App ID, private key file, and bot username fields, then sends the browser into the GitHub App installation flow. GitHub redirects back to the setup URL with `installation_id`, and the settings page restores the same form with Installation ID prefilled before saving. The generated private key file is the automatic credential source. Operators can also copy that PEM into a Paperclip secret and select its UUID to prefer secret resolution over the file fallback. When editing an agent that already has GitHub App credentials, the manifest creation CTA is treated as a replacement/rotation flow and is tucked behind a disclosure so normal edits focus on the existing App ID, Installation ID, and key source.
 
 The settings page can also propagate GitHub App credentials to one or more agent environments, matching the GitHub Sync plugin's host REST patch pattern:
 
@@ -98,23 +93,6 @@ The settings page can also propagate GitHub App credentials to one or more agent
 ```
 
 Removing an agent from `githubAppCredentialPropagationAgentIds` removes only matching GitHub App env bindings for that identity, preserving unrelated environment variables. `secretId`/`tokenFile` token fallback is still accepted, but GitHub App mode is the durable path.
-
-### TrueNAS dev deploy
-
-The active TrueNAS test plugin is registered as the dev-dropdown variant and points at a symlinked server-side directory:
-
-- Registered path: `/paperclip/.paperclip/github-bot-identity/dev-dropdown-plugin-fallback-20260706-062302`
-- Symlink target: `/paperclip/.paperclip/github-bot-identity/dev-sync-live`
-
-After local edits, run:
-
-```sh
-pnpm deploy:truenas
-```
-
-The script builds locally, stages `dist`, `README.md`, `pnpm-lock.yaml`, and `package.json`, rewrites the staged manifest/package identity to the registered dev-dropdown plugin id, and rsyncs it to TrueNAS. The default dev manifest id intentionally remains the existing GitHub-specific registration id so the live test plugin keeps its current state while showing the new Agent Identities branding. Paperclip's local plugin watcher reloads the worker/UI from that path.
-
-Override the defaults with `PAPERCLIP_TRUENAS_HOST`, `PAPERCLIP_AGENT_IDENTITIES_PLUGIN_PATH`, `PAPERCLIP_AGENT_IDENTITIES_DEV_MANIFEST_ID`, `PAPERCLIP_AGENT_IDENTITIES_DEV_PACKAGE_NAME`, or `PAPERCLIP_AGENT_IDENTITIES_DEV_VERSION`. The older `PAPERCLIP_GITHUB_BOT_*` names are still accepted for compatibility.
 
 ## Build Options
 
@@ -157,57 +135,3 @@ Download CI artifact from GitHub:
 1. Open the workflow run in the Actions tab.
 2. In the `Artifacts` section, download `npm-package-tarball`.
 3. Extract the `.tgz` and verify `dist/manifest.js`, `dist/worker.js`, and `dist/ui/index.js` are present.
-
-## Publish
-
-GitHub Actions workflow: [`.github/workflows/publish.yml`](.github/workflows/publish.yml)
-
-Publish automation is temporarily disabled because the npm package has been removed. Both the `Publish` and `Create Release` workflows have hard-disabled jobs, so merges to `main` will not publish or create releases from this repository right now.
-
-When publishing is restored, use explicit release paths:
-
-- Recommended: merge a PR to `main` that bumps `package.json` by major, minor,
-  or patch. The `Create Release` workflow validates the package, creates the
-  `v<package.json version>` GitHub Release, then dispatches the `Publish`
-  workflow against that tag.
-- You can also run `Create Release` manually from Actions for the current
-  `package.json` version.
-- Manually publishing a GitHub Release also triggers the `Publish` workflow.
-- Manual `Publish` workflow dispatch supports safe dry-run by default.
-
-Required GitHub secret:
-
-- `NPM_TOKEN`: npm automation token with publish permissions.
-
-Manual dry-run publish in GitHub Actions:
-
-1. Open `Publish` workflow in Actions.
-2. Click `Run workflow`.
-3. Keep `dry_run=true` to validate publish packaging without uploading to npm.
-
-Create a release and publish to npm automatically:
-
-1. Bump `package.json` version in a PR using a major, minor, or patch increase.
-2. Merge the PR to `main`.
-3. The `Create Release` workflow runs from the merge commit, creates `v<version>`,
-   and dispatches the `Publish` workflow for that tag.
-
-Create a release manually:
-
-1. Open `Create Release` workflow in Actions.
-2. Click `Run workflow` from `main`.
-3. Leave `version` empty to use `package.json`, or set it to the exact same version.
-4. Keep `publish_to_npm=true` to dispatch the `Publish` workflow for the new tag.
-
-Manual real publish in GitHub Actions:
-
-1. Open `Publish` workflow in Actions.
-2. Click `Run workflow`.
-3. Set `dry_run=false`.
-4. Set `ref` to a release tag (for example `v0.1.1`) or leave it empty for `main`.
-
-Test install of a published version in Paperclip:
-
-```bash
-paperclipai plugin install @gautamroshan/paperclip-agent-identities@<version>
-```

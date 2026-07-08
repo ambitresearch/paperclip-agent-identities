@@ -29,7 +29,7 @@ let credentialSidecarDir: string | null = null;
 const originalCredentialSidecarPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
 
 beforeEach(async () => {
-  credentialSidecarDir = await mkdtemp(join(tmpdir(), "github-bot-identity-test-"));
+  credentialSidecarDir = await mkdtemp(join(tmpdir(), "agent-identities-test-"));
   const sidecarPath = join(credentialSidecarDir, "credentials.json");
   process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
   await writeFile(sidecarPath, JSON.stringify({
@@ -46,7 +46,8 @@ function pushToolConfig() {
     identities: {
       [TOOL_AGENT_ID]: {
         label: "Push Bot",
-        githubUsername: "roshan-bot"
+        githubUsername: "paperclip-push-bot",
+        allowedRepoPatterns: ["my-org/*"]
       }
     }
   };
@@ -145,9 +146,9 @@ describe("plugin scaffold", () => {
       config: {
         identities: {
           agent_1: {
-            label: "Droidshop CTO",
+            label: "Example CTO",
             githubUsername: "paperclip-kiln-lathe",
-            allowedRepoPatterns: ["roshangautam/paperclip-github-bot-identity-plugin"],
+            allowedRepoPatterns: ["my-org/example-repo"],
             commitName: "Kiln Lathe",
             commitEmail: "kiln@example.com"
           }
@@ -164,13 +165,13 @@ describe("plugin scaffold", () => {
 
     expect(whoami.error).toBeUndefined();
     expect(whoami.data).toEqual({
-      label: "Droidshop CTO",
+      label: "Example CTO",
       githubUsername: "paperclip-kiln-lathe",
-      allowedRepoPatterns: ["roshangautam/paperclip-github-bot-identity-plugin"],
+      allowedRepoPatterns: ["my-org/example-repo"],
       hasCommitName: true,
       hasCommitEmail: true
     });
-    expect(whoami.content).toContain("Droidshop CTO");
+    expect(whoami.content).toContain("Example CTO");
     expect(whoami.content).toContain("@paperclip-kiln-lathe");
     expect(whoami.data?.tokenSecretRef).toBeUndefined();
     expect(whoami.data?.token).toBeUndefined();
@@ -183,9 +184,9 @@ describe("plugin scaffold", () => {
       config: {
         identities: {
           agent_1: {
-            label: "Droidshop CTO",
+            label: "Example CTO",
             githubUsername: "paperclip-kiln-lathe",
-            allowedRepoPatterns: ["roshangautam/paperclip-github-bot-identity-plugin"]
+            allowedRepoPatterns: ["my-org/example-repo"]
           }
         }
       }
@@ -204,7 +205,7 @@ describe("plugin scaffold", () => {
     expect(whoami.content).toBeUndefined();
   });
 
-  it("allows mediated push for roshangautam repository", async () => {
+  it("allows mediated push for a configured repository", async () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
@@ -218,7 +219,7 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "git@github.com:roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "git@github.com:my-org/example-repo.git\n",
           stderr: ""
         };
       }
@@ -232,13 +233,13 @@ describe("plugin scaffold", () => {
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool(
       "github_bot_push_branch",
       {
         branch: "feature/tool",
-        expectedRepository: "roshangautam/paperclip-github-bot-identity-plugin"
+        expectedRepository: "my-org/example-repo"
       },
       { agentId: TOOL_AGENT_ID }
     );
@@ -249,7 +250,7 @@ describe("plugin scaffold", () => {
     expect(commands[1].args[0]).toBe("-c");
     expect(commands[1].args[1]).toBe("credential.helper=");
     expect(commands[1].args[2]).toBe("push");
-    expect(commands[1].args[3]).toBe("https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    expect(commands[1].args[3]).toBe("https://github.com/my-org/example-repo.git");
     expect(commands[1].args[4]).toBe("HEAD:refs/heads/feature/tool");
     expect(commands[1].env?.GITHUB_TOKEN).toBe(`resolved:${TEST_SECRET_ID}`);
   });
@@ -274,26 +275,26 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool(
       "github_bot_push_branch",
       {
         branch: "feature/tool",
-        expectedRepository: "roshangautam/some-other-repo"
+        expectedRepository: "my-org/some-other-repo"
       },
       { agentId: TOOL_AGENT_ID }
     );
 
     expect(result.error).toBe(
-      "Push denied: repository mismatch. Expected 'roshangautam/some-other-repo', found 'roshangautam/paperclip-github-bot-identity-plugin'."
+      "Push denied: repository mismatch. Expected 'my-org/some-other-repo', found 'my-org/example-repo'."
     );
     expect(commands).toHaveLength(1);
     expect(commands[0].args).toEqual(["remote", "get-url", "origin"]);
@@ -353,14 +354,14 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://gitlab.com/roshangautam/repo.git\n",
+          stdout: "https://gitlab.com/my-org/repo.git\n",
           stderr: ""
         };
       }
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://gitlab.com/roshangautam/repo.git");
+    seedPrimaryWorkspace(harness, "https://gitlab.com/my-org/repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
@@ -402,14 +403,14 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
     expect(result.error).toContain("Invalid agent identity config");
@@ -438,14 +439,14 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
@@ -470,7 +471,7 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "ssh://git@github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "ssh://git@github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
@@ -484,7 +485,7 @@ describe("plugin scaffold", () => {
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
@@ -506,7 +507,7 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
@@ -520,13 +521,13 @@ describe("plugin scaffold", () => {
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool(
       "github_bot_push_branch",
       {
         branch: "feature/dry",
-        expectedRepository: "roshangautam/paperclip-github-bot-identity-plugin",
+        expectedRepository: "my-org/example-repo",
         dryRun: true
       },
       { agentId: TOOL_AGENT_ID }
@@ -539,7 +540,7 @@ describe("plugin scaffold", () => {
     expect(commands[1].args[1]).toBe("credential.helper=");
     expect(commands[1].args[2]).toBe("push");
     expect(commands[1].args[3]).toBe("--dry-run");
-    expect(commands[1].args[4]).toBe("https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    expect(commands[1].args[4]).toBe("https://github.com/my-org/example-repo.git");
     expect(commands[1].args[5]).toBe("HEAD:refs/heads/feature/dry");
   });
 
@@ -557,7 +558,7 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
@@ -571,7 +572,7 @@ describe("plugin scaffold", () => {
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
@@ -661,10 +662,10 @@ describe("agent identity settings", () => {
     expect(manifestBody).toMatchObject({
       name: "Sterling Hale Paperclip Agent",
       description: "Paperclip-managed GitHub bot identity for Sterling Hale.",
-      url: "https://paperclip.roshangautam.com",
-      redirect_url: "https://paperclip.roshangautam.com",
-      callback_urls: ["https://paperclip.roshangautam.com"],
-      setup_url: expect.stringMatching(/^https:\/\/paperclip\.roshangautam\.com\/?\?githubAppManifest=install&state=pc_/),
+      url: "https://paperclip.example.com",
+      redirect_url: "https://paperclip.example.com",
+      callback_urls: ["https://paperclip.example.com"],
+      setup_url: expect.stringMatching(/^https:\/\/paperclip\.example\.com\/?\?githubAppManifest=install&state=pc_/),
       setup_on_update: true,
       request_oauth_on_install: false,
       public: false,
@@ -687,14 +688,14 @@ describe("agent identity settings", () => {
     const result = await harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
       agentId: "sterling-hale",
       label: "Sterling Hale",
-      homepageUrl: "https://paperclip.roshangautam.com/WAT/agents/sterling-hale/dashboard",
-      callbackUrl: "https://paperclip.roshangautam.com/WAT/settings?tab=plugins&githubAppManifest=1",
+      homepageUrl: "https://paperclip.example.com/WAT/agents/sterling-hale/dashboard",
+      callbackUrl: "https://paperclip.example.com/WAT/settings?tab=plugins&githubAppManifest=1",
     });
 
     const manifestBody = JSON.parse(result.manifest);
-    expect(manifestBody.url).toBe("https://paperclip.roshangautam.com/WAT/agents/sterling-hale/dashboard");
-    expect(manifestBody.redirect_url).toBe("https://paperclip.roshangautam.com/WAT/settings?tab=plugins&githubAppManifest=1");
-    expect(manifestBody.callback_urls).toEqual(["https://paperclip.roshangautam.com/WAT/settings?tab=plugins&githubAppManifest=1"]);
+    expect(manifestBody.url).toBe("https://paperclip.example.com/WAT/agents/sterling-hale/dashboard");
+    expect(manifestBody.redirect_url).toBe("https://paperclip.example.com/WAT/settings?tab=plugins&githubAppManifest=1");
+    expect(manifestBody.callback_urls).toEqual(["https://paperclip.example.com/WAT/settings?tab=plugins&githubAppManifest=1"]);
     expect(manifestBody.setup_url).toBe(`${result.setupUrl}`);
     expect(manifestBody.setup_url).toContain("githubAppManifest=install");
     expect(manifestBody.setup_url).toContain(`state=${encodeURIComponent(result.state)}`);
@@ -775,7 +776,7 @@ describe("agent identity settings", () => {
           appId: "12345",
           installationId: "67890",
           privateKeySecretId: TEST_SECRET_ID,
-          privateKeyFile: "/paperclip/.paperclip/github-bot-identity/github-apps/agent-with-github-app/private-key.pem",
+          privateKeyFile: "/paperclip/.paperclip/agent-identities/github-apps/agent-with-github-app/private-key.pem",
         },
       },
     });
@@ -786,7 +787,7 @@ describe("agent identity settings", () => {
         appId: "12345",
         installationId: "67890",
         privateKeySecretId: TEST_SECRET_ID,
-        privateKeyFile: "/paperclip/.paperclip/github-bot-identity/github-apps/agent-with-github-app/private-key.pem",
+        privateKeyFile: "/paperclip/.paperclip/agent-identities/github-apps/agent-with-github-app/private-key.pem",
       },
     });
 
@@ -807,14 +808,14 @@ describe("agent identity settings", () => {
       allowedRepoPatterns: [DEFAULT_ALLOWED_REPO_PATTERN],
       credential: {
         secretId: TEST_SECRET_ID,
-        tokenFile: "/paperclip/.paperclip/github-bot-identity/tokens/agent-with-credential.token",
+        tokenFile: "/paperclip/.paperclip/agent-identities/tokens/agent-with-credential.token",
       },
     });
 
     const sidecar = JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"));
     expect(sidecar.identities["agent-with-credential"]).toEqual({
       secretId: TEST_SECRET_ID,
-      tokenFile: "/paperclip/.paperclip/github-bot-identity/tokens/agent-with-credential.token",
+      tokenFile: "/paperclip/.paperclip/agent-identities/tokens/agent-with-credential.token",
     });
 
     const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");

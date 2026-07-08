@@ -26,7 +26,7 @@ function validateParams(params: unknown): CreatePullRequestParams | string {
   const p = params as Record<string, unknown>;
 
   if (!p.repository || typeof p.repository !== "string") {
-    return "repository is required (e.g. \"roshangautam/my-repo\")";
+    return "repository is required (e.g. \"my-org/my-repo\")";
   }
   if (!p.head || typeof p.head !== "string") {
     return "head branch is required";

@@ -123,6 +123,9 @@ function legacyOwnerPatternsToRepoPatterns(ownerPatterns: string[]): string[] {
 
 function exactLegacyOwnerPatternToRepoPattern(pattern: string): string | null {
   const trimmed = pattern.trim();
+  if (trimmed === ".*" || trimmed === "^.*$" || trimmed === "*") {
+    return "*/*";
+  }
   const exactMatch = trimmed.match(/^\^?([a-zA-Z0-9][a-zA-Z0-9-]*)\$?$/);
   return exactMatch ? `${exactMatch[1].toLowerCase()}/*` : null;
 }

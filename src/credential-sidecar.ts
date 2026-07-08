@@ -6,7 +6,7 @@ import type { ResolvedAgentIdentity } from "./identity-policy.js";
 
 export const CREDENTIAL_SIDECAR_PATH_ENV = "PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS";
 export const LEGACY_CREDENTIAL_SIDECAR_PATH_ENV = "PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS";
-export const DEFAULT_CREDENTIAL_SIDECAR_PATH = "/paperclip/.paperclip/github-bot-identity/credentials.json";
+export const DEFAULT_CREDENTIAL_SIDECAR_PATH = "/paperclip/.paperclip/agent-identities/credentials.json";
 
 const githubAppCredentialSchema = z.object({
   appId: z.string().trim().min(1),

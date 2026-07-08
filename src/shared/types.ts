@@ -52,10 +52,10 @@ export type DeleteBotIdentityConfigInput = {
   agentId: string;
 };
 
-export const DEFAULT_ALLOWED_REPO_PATTERNS = ["roshangautam/*"] as const;
+export const DEFAULT_ALLOWED_REPO_PATTERNS = ["*/*"] as const;
 export const DEFAULT_ALLOWED_REPO_PATTERN = DEFAULT_ALLOWED_REPO_PATTERNS[0];
 /** Compatibility alias for older config callers. Prefer DEFAULT_ALLOWED_REPO_PATTERN. */
-export const DEFAULT_ALLOWED_OWNER_PATTERN = "^roshangautam$";
+export const DEFAULT_ALLOWED_OWNER_PATTERN = "^.*$";
 
 export type PaperclipAgentOption = {
   id: string;

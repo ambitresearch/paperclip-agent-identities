@@ -473,12 +473,12 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               <textarea
                 value={config.allowedRepoPatternsText}
                 onChange={(e) => updateField("allowedRepoPatternsText", e.target.value)}
-                placeholder="roshangautam/*
-codestudiohq/laravel-totem"
+                placeholder="my-org/*
+my-org/my-repo"
                 rows={4}
                 style={textareaStyle}
               />
-              <span style={hintStyle}>One owner/repo pattern per line. Supports * and ? wildcards; examples: roshangautam/* or codestudiohq/laravel-totem.</span>
+              <span style={hintStyle}>One owner/repo pattern per line. Supports * and ? wildcards; examples: my-org/* or my-org/my-repo.</span>
             </label>
           </fieldset>
 
@@ -618,10 +618,10 @@ codestudiohq/laravel-totem"
                 type="text"
                 value={config.privateKeyFile}
                 onChange={(e) => updateField("privateKeyFile", e.target.value)}
-                placeholder="/paperclip/.paperclip/github-bot-identity/github-apps/<agent>/private-key.pem"
+                placeholder="/paperclip/.paperclip/agent-identities/github-apps/<agent>/private-key.pem"
                 style={inputStyle}
               />
-              <span style={hintStyle}>Used by plugin tools while plugin secret refs are disabled. The plugin mints short-lived installation tokens from this private key; it does not store generated tokens.</span>
+              <span style={hintStyle}>Used by plugin tools while a secret UUID is not configured or cannot be resolved. The plugin mints short-lived installation tokens from this private key; it does not store generated tokens.</span>
             </label>
 
             <details>
@@ -658,7 +658,7 @@ codestudiohq/laravel-totem"
                     type="text"
                     value={config.tokenFile}
                     onChange={(e) => updateField("tokenFile", e.target.value)}
-                    placeholder="/paperclip/.paperclip/github-bot-identity/tokens/<agent-id>.token"
+                    placeholder="/paperclip/.paperclip/agent-identities/tokens/<agent-id>.token"
                     style={inputStyle}
                   />
                   <span style={hintStyle}>Compatibility only. Prefer GitHub App credentials above.</span>
@@ -823,7 +823,7 @@ function getAgentIdentityDefaults(agent: PaperclipAgentOption): Pick<IdentityFor
     githubUsername: `${slug}[bot]`,
     commitName: `${displayName} Paperclip Bot`,
     commitEmail: `${slug}[bot]@users.noreply.github.com`,
-    privateKeyFile: `/paperclip/.paperclip/github-bot-identity/github-apps/${agent.id}/private-key.pem`,
+    privateKeyFile: `/paperclip/.paperclip/agent-identities/github-apps/${agent.id}/private-key.pem`,
   };
 }
 

@@ -329,7 +329,7 @@ function readString(value: unknown): string {
 }
 
 const GITHUB_APP_MANIFEST_FLOW_STATE_PREFIX = "github-app-manifest-flow:";
-const DEFAULT_GITHUB_APP_URL = "https://paperclip.roshangautam.com";
+const DEFAULT_GITHUB_APP_URL = "https://paperclip.example.com";
 
 function githubAppManifestFlowScope(state: string) {
   return { scopeKind: "instance" as const, stateKey: `${GITHUB_APP_MANIFEST_FLOW_STATE_PREFIX}${state}` };

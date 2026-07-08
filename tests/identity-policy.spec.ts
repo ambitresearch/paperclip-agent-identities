@@ -38,7 +38,7 @@ describe("github identity config", () => {
       baseRunCtx
     );
 
-    expect(resolved.identity.allowedRepoPatterns).toEqual(["roshangautam/*"]);
+    expect(resolved.identity.allowedRepoPatterns).toEqual(["*/*"]);
   });
 
   it("fails closed when calling agent has no config", () => {
@@ -63,7 +63,7 @@ describe("github identity config", () => {
         "agent-1": {
           label: "Primary",
           githubUsername: "roshan-bot",
-          allowedRepoPatterns: ["roshangautam/*", "codestudiohq/laravel-totem"],
+          allowedRepoPatterns: ["my-org/*", "octo-org/example-repo"],
           commitName: "Roshan Bot",
           commitEmail: "bot@users.noreply.github.com"
         }
@@ -120,64 +120,64 @@ describe("github credential sidecar", () => {
 
 describe("github repo normalization", () => {
   it("normalizes HTTPS, SSH, .git suffix, and owner/repo input", () => {
-    expect(normalizeGitHubRepoRef("https://github.com/RoshanGautam/Genie")?.fullName).toBe("roshangautam/genie");
-    expect(normalizeGitHubRepoRef("https://github.com/roshangautam/genie.git")?.fullName).toBe("roshangautam/genie");
-    expect(normalizeGitHubRepoRef("git@github.com:RoshanGautam/Genie.git")?.fullName).toBe("roshangautam/genie");
-    expect(normalizeGitHubRepoRef("roshangautam/genie")?.fullName).toBe("roshangautam/genie");
+    expect(normalizeGitHubRepoRef("https://github.com/My-Org/Example-Repo")?.fullName).toBe("my-org/example-repo");
+    expect(normalizeGitHubRepoRef("https://github.com/my-org/example-repo.git")?.fullName).toBe("my-org/example-repo");
+    expect(normalizeGitHubRepoRef("git@github.com:My-Org/Example-Repo.git")?.fullName).toBe("my-org/example-repo");
+    expect(normalizeGitHubRepoRef("my-org/example-repo")?.fullName).toBe("my-org/example-repo");
   });
 
   it("normalizes scheme-less and path-suffixed GitHub URLs", () => {
-    expect(normalizeGitHubRepoRef("github.com/roshangautam/genie")?.fullName).toBe("roshangautam/genie");
-    expect(normalizeGitHubRepoRef("https://github.com/roshangautam/genie/tree/main")?.fullName).toBe(
-      "roshangautam/genie"
+    expect(normalizeGitHubRepoRef("github.com/my-org/example-repo")?.fullName).toBe("my-org/example-repo");
+    expect(normalizeGitHubRepoRef("https://github.com/my-org/example-repo/tree/main")?.fullName).toBe(
+      "my-org/example-repo"
     );
     expect(
-      normalizeGitHubRepoRef("ssh://git@github.com/roshangautam/paperclip-github-bot-identity-plugin.git")?.fullName
-    ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
+      normalizeGitHubRepoRef("ssh://git@github.com/my-org/example-repo.git")?.fullName
+    ).toBe("my-org/example-repo");
     expect(
-      normalizeGitHubRepoRef("git://github.com/roshangautam/paperclip-github-bot-identity-plugin.git")?.fullName
-    ).toBe("roshangautam/paperclip-github-bot-identity-plugin");
+      normalizeGitHubRepoRef("git://github.com/my-org/example-repo.git")?.fullName
+    ).toBe("my-org/example-repo");
   });
 
   it("rejects malformed and non-GitHub URL input", () => {
     expect(normalizeGitHubRepoRef("not-a-repo")).toBeNull();
     expect(normalizeGitHubRepoRef("   ")).toBeNull();
-    expect(normalizeGitHubRepoRef("https://gitlab.com/roshangautam/repo.git")).toBeNull();
-    expect(normalizeGitHubRepoRef("gitlab.com/roshangautam/repo")).toBeNull();
+    expect(normalizeGitHubRepoRef("https://gitlab.com/my-org/repo.git")).toBeNull();
+    expect(normalizeGitHubRepoRef("gitlab.com/my-org/repo")).toBeNull();
   });
 });
 
 describe("github repo policy", () => {
   const identity = {
     label: "Default",
-    githubUsername: "roshan-bot",
-    allowedRepoPatterns: ["roshangautam/*"]
+    githubUsername: "default-bot",
+    allowedRepoPatterns: ["my-org/*"]
   };
 
-  it("allows roshangautam repos by default", () => {
-    expect(evaluateRepoPolicy(identity, "roshangautam/paperclip-github-bot-identity-plugin").allowed).toBe(true);
+  it("allows repositories matching configured owner patterns", () => {
+    expect(evaluateRepoPolicy(identity, "my-org/example-repo").allowed).toBe(true);
   });
 
   it("allows repositories matching configured patterns without a hard-coded owner", () => {
-    const multiOwnerIdentity = { ...identity, allowedRepoPatterns: ["roshangautam/*", "codestudiohq/laravel-totem"] };
-    expect(evaluateRepoPolicy(multiOwnerIdentity, "codestudiohq/laravel-totem").allowed).toBe(true);
-    expect(evaluateRepoPolicy(multiOwnerIdentity, "codestudiohq/other-repo").allowed).toBe(false);
-    expect(evaluateRepoPolicy(multiOwnerIdentity, "paperclipai/paperclip").allowed).toBe(false);
+    const multiOwnerIdentity = { ...identity, allowedRepoPatterns: ["my-org/*", "octo-org/example-repo"] };
+    expect(evaluateRepoPolicy(multiOwnerIdentity, "octo-org/example-repo").allowed).toBe(true);
+    expect(evaluateRepoPolicy(multiOwnerIdentity, "octo-org/other-repo").allowed).toBe(false);
+    expect(evaluateRepoPolicy(multiOwnerIdentity, "other-org/other-repo").allowed).toBe(false);
   });
 
   it("allows only explicitly approved repositories when exact repo patterns are configured", () => {
-    const repoScopedIdentity = { ...identity, allowedRepoPatterns: ["roshangautam/genie"] };
+    const repoScopedIdentity = { ...identity, allowedRepoPatterns: ["my-org/example-repo"] };
 
-    expect(evaluateRepoPolicy(repoScopedIdentity, "roshangautam/genie").allowed).toBe(true);
-    expect(evaluateRepoPolicy(repoScopedIdentity, "paperclipai/paperclip").allowed).toBe(false);
-    expect(evaluateRepoPolicy(repoScopedIdentity, "affaan-m/everything-claude-code").allowed).toBe(false);
+    expect(evaluateRepoPolicy(repoScopedIdentity, "my-org/example-repo").allowed).toBe(true);
+    expect(evaluateRepoPolicy(repoScopedIdentity, "other-org/other-repo").allowed).toBe(false);
+    expect(evaluateRepoPolicy(repoScopedIdentity, "another-org/another-repo").allowed).toBe(false);
     expect(evaluateRepoPolicy(repoScopedIdentity, "openai/plugins").allowed).toBe(false);
     expect(evaluateRepoPolicy(repoScopedIdentity, "NousResearch/hermes-agent").allowed).toBe(false);
   });
 
   it("fails closed when allowedRepoPatterns is explicitly empty", () => {
     const denyAllIdentity = { ...identity, allowedRepoPatterns: [] as string[] };
-    expect(evaluateRepoPolicy(denyAllIdentity, "roshangautam/paperclip-github-bot-identity-plugin").allowed).toBe(
+    expect(evaluateRepoPolicy(denyAllIdentity, "my-org/example-repo").allowed).toBe(
       false
     );
   });
@@ -213,7 +213,7 @@ describe("resolveIdentitySecretRef", () => {
         label: "Bot",
         githubUsername: "bot",
         tokenSecretRef: "inline-secret-ref-uuid",
-        allowedRepoPatterns: ["roshangautam/*"]
+        allowedRepoPatterns: ["my-org/*"]
       }
     };
 
@@ -236,7 +236,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        allowedRepoPatterns: ["roshangautam/*"]
+        allowedRepoPatterns: ["my-org/*"]
       }
     };
 
@@ -259,7 +259,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        allowedRepoPatterns: ["roshangautam/*"]
+        allowedRepoPatterns: ["my-org/*"]
       }
     };
 
@@ -284,7 +284,7 @@ describe("resolveIdentitySecretRef", () => {
         label: "Bot",
         githubUsername: "bot",
         tokenSecretRef: "   ",
-        allowedRepoPatterns: ["roshangautam/*"]
+        allowedRepoPatterns: ["my-org/*"]
       }
     };
 
@@ -312,12 +312,12 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        allowedRepoPatterns: ["roshangautam/*"]
+        allowedRepoPatterns: ["my-org/*"]
       }
     };
 
     const resolved = await resolveIdentityToken(resolvedIdentity, async () => {
-      throw new Error("Plugin secret references are disabled until company-scoped plugin config lands");
+      throw new Error("Secret resolver unavailable");
     });
 
     expect(resolved).toEqual({ token: "file-token", source: "token-file" });
@@ -351,7 +351,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        allowedRepoPatterns: ["roshangautam/*"]
+        allowedRepoPatterns: ["my-org/*"]
       }
     };
     const requests: Array<{ url: string; authorization?: string }> = [];
@@ -390,7 +390,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        allowedRepoPatterns: ["roshangautam/*"]
+        allowedRepoPatterns: ["my-org/*"]
       }
     };
 
@@ -410,7 +410,7 @@ describe("resolveIdentitySecretRef", () => {
         label: "Bot",
         githubUsername: "bot",
         tokenSecretRef: "inline-secret-ref",
-        allowedRepoPatterns: ["roshangautam/*"]
+        allowedRepoPatterns: ["my-org/*"]
       }
     };
 

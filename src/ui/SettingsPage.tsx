@@ -83,17 +83,23 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         const selectedAgent = agentOptions.find((agent) => agent.id === flow.agentId);
         const defaults = selectedAgent ? getAgentIdentityDefaults(selectedAgent) : null;
         const restoredForm = toFormState(savedIdentity);
+        const conversion = flow.conversion;
         setFormState({
           ...restoredForm,
           agentId: flow.agentId,
           label: restoredForm.label || flow.label,
-          githubUsername: restoredForm.githubUsername || defaults?.githubUsername || DEFAULT_BOT_IDENTITY_CONFIG.githubUsername,
+          githubUsername: conversion?.githubUsername || restoredForm.githubUsername || defaults?.githubUsername || DEFAULT_BOT_IDENTITY_CONFIG.githubUsername,
           commitName: restoredForm.commitName || defaults?.commitName || "",
           commitEmail: restoredForm.commitEmail || defaults?.commitEmail || "",
-          privateKeyFile: restoredForm.privateKeyFile || defaults?.privateKeyFile || "",
+          githubAppId: conversion?.appId || restoredForm.githubAppId,
+          githubInstallationId: callback.installationId || restoredForm.githubInstallationId,
+          privateKeyFile: conversion?.privateKeyFile || restoredForm.privateKeyFile || defaults?.privateKeyFile || "",
         });
         setManifestFlow(flow);
-        setManifestCode(callback.code);
+        setManifestCode(callback.code ?? "");
+        if (callback.installationId) {
+          setManifestResult(conversion ?? null);
+        }
         setSaveError(null);
         setSaveSuccess(false);
         cleanManifestCallbackParams();
@@ -237,7 +243,8 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       const result = await createGitHubAppManifest({
         agentId: config.agentId.trim(),
         label: config.label.trim(),
-        appUrl: getManifestReturnUrl(),
+        homepageUrl: getAgentDashboardUrl(config.agentId.trim()),
+        callbackUrl: getManifestReturnUrl(),
       }) as CreateGitHubAppManifestResult;
       setManifestFlow(result);
       submitGitHubAppManifest(result);
@@ -261,7 +268,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       updateField("githubAppId", result.appId);
       updateField("privateKeyFile", result.privateKeyFile);
       updateField("githubUsername", result.githubUsername);
-      window.open(result.installUrl, "_blank", "noopener,noreferrer");
+      window.location.assign(result.installUrl);
     } catch (err) {
       setManifestError(err instanceof Error ? err.message : "Failed to convert GitHub App manifest");
     } finally {
@@ -350,7 +357,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     <div style={pageStyle}>
       <div style={headerStyle}>
         <div>
-          <h2 style={{ margin: 0 }}>Paperclip Agent Identities</h2>
+          <h2 style={{ margin: 0 }}>Agent Identities</h2>
           <p style={descriptionStyle}>
             Configure per-agent identity providers. GitHub is the first provider, with per-agent bot metadata and GitHub App token sources.
           </p>
@@ -544,7 +551,11 @@ codestudiohq/laravel-totem"
             )}
 
             {manifestError && <span style={errorStyle}>{manifestError}</span>}
-            {manifestResult && <span style={successStyle}>GitHub App {manifestResult.appName} created. Paste the installation ID after installing it.</span>}
+            {manifestResult && config.githubInstallationId ? (
+              <span style={successStyle}>GitHub App {manifestResult.appName} installed. Review the prefilled Installation ID, then save this identity.</span>
+            ) : manifestResult ? (
+              <span style={successStyle}>GitHub App {manifestResult.appName} created. Install it on GitHub; Paperclip will prefill the Installation ID when GitHub redirects back.</span>
+            ) : null}
 
             {hasExistingGitHubAppCredential && (
               <div style={formActionsStyle}>
@@ -708,7 +719,7 @@ codestudiohq/laravel-totem"
 function GitHubAppManifestCreateIntro() {
   return (
     <div style={inlineNoticeStyle}>
-      <strong>Create a GitHub App with a manifest.</strong> This opens GitHub with the required bot permissions prefilled. After GitHub creates the app, paste the one-time <code>code</code> from the callback URL here to save the private key file and prefill the App ID. Then install the app and paste the Installation ID.
+      <strong>Create a GitHub App with a manifest.</strong> This opens GitHub with the required bot permissions prefilled. After GitHub creates the app, Paperclip saves the generated private key file, preloads the App ID, opens the install flow, and restores the form with the Installation ID when GitHub redirects back.
     </div>
   );
 }
@@ -754,22 +765,39 @@ function submitGitHubAppManifest(flow: CreateGitHubAppManifestResult) {
 function getManifestReturnUrl(): string {
   const url = new URL(window.location.href);
   url.searchParams.delete("code");
+  url.searchParams.delete("installation_id");
+  url.searchParams.delete("setup_action");
   url.searchParams.delete("state");
   url.searchParams.set("githubAppManifest", "1");
   return url.toString();
 }
 
-function getManifestCallbackParams(): { code: string; state: string } | null {
+function getAgentDashboardUrl(agentId: string): string {
+  const url = new URL(window.location.href);
+  const companySegment = url.pathname.split("/").filter(Boolean)[0];
+  const agentSegment = encodeURIComponent(agentId);
+  url.pathname = companySegment
+    ? `/${encodeURIComponent(companySegment)}/agents/${agentSegment}/dashboard`
+    : `/agents/${agentSegment}/dashboard`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+function getManifestCallbackParams(): { code?: string; installationId?: string; state: string } | null {
   const url = new URL(window.location.href);
   const code = url.searchParams.get("code")?.trim();
+  const installationId = url.searchParams.get("installation_id")?.trim();
   const state = url.searchParams.get("state")?.trim();
-  if (!code || !state?.startsWith("pc_")) return null;
-  return { code, state };
+  if (!state?.startsWith("pc_") || (!code && !installationId)) return null;
+  return { ...(code ? { code } : {}), ...(installationId ? { installationId } : {}), state };
 }
 
 function cleanManifestCallbackParams() {
   const url = new URL(window.location.href);
   url.searchParams.delete("code");
+  url.searchParams.delete("installation_id");
+  url.searchParams.delete("setup_action");
   url.searchParams.delete("state");
   url.searchParams.delete("githubAppManifest");
   window.history.replaceState(window.history.state, document.title, url.toString());

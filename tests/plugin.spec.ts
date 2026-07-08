@@ -660,9 +660,13 @@ describe("agent identity settings", () => {
     expect(result.postUrl).toBe(`https://github.com/settings/apps/new?state=${encodeURIComponent(result.state)}`);
     expect(manifestBody).toMatchObject({
       name: "Sterling Hale Paperclip Agent",
+      description: "Paperclip-managed GitHub bot identity for Sterling Hale.",
       url: "https://paperclip.roshangautam.com",
       redirect_url: "https://paperclip.roshangautam.com",
       callback_urls: ["https://paperclip.roshangautam.com"],
+      setup_url: expect.stringMatching(/^https:\/\/paperclip\.roshangautam\.com\/?\?githubAppManifest=install&state=pc_/),
+      setup_on_update: true,
+      request_oauth_on_install: false,
       public: false,
       default_permissions: {
         contents: "write",
@@ -673,23 +677,29 @@ describe("agent identity settings", () => {
       default_events: [],
     });
     expect(manifestBody.hook_attributes).toBeUndefined();
+    expect(manifestBody.default_events).toEqual([]);
   });
 
-  it("uses the caller-provided app URL as the manifest return URL", async () => {
+  it("uses separate homepage and callback URLs in the GitHub App manifest", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
 
     const result = await harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
-      agentId: "agent-manifest",
+      agentId: "sterling-hale",
       label: "Sterling Hale",
-      appUrl: "https://paperclip.roshangautam.com/watersail/settings?tab=plugins",
+      homepageUrl: "https://paperclip.roshangautam.com/WAT/agents/sterling-hale/dashboard",
+      callbackUrl: "https://paperclip.roshangautam.com/WAT/settings?tab=plugins&githubAppManifest=1",
     });
 
     const manifestBody = JSON.parse(result.manifest);
-    expect(manifestBody.url).toBe("https://paperclip.roshangautam.com/watersail/settings?tab=plugins");
-    expect(manifestBody.redirect_url).toBe("https://paperclip.roshangautam.com/watersail/settings?tab=plugins");
-    expect(manifestBody.callback_urls).toEqual(["https://paperclip.roshangautam.com/watersail/settings?tab=plugins"]);
+    expect(manifestBody.url).toBe("https://paperclip.roshangautam.com/WAT/agents/sterling-hale/dashboard");
+    expect(manifestBody.redirect_url).toBe("https://paperclip.roshangautam.com/WAT/settings?tab=plugins&githubAppManifest=1");
+    expect(manifestBody.callback_urls).toEqual(["https://paperclip.roshangautam.com/WAT/settings?tab=plugins&githubAppManifest=1"]);
+    expect(manifestBody.setup_url).toBe(`${result.setupUrl}`);
+    expect(manifestBody.setup_url).toContain("githubAppManifest=install");
+    expect(manifestBody.setup_url).toContain(`state=${encodeURIComponent(result.state)}`);
   });
+
 
   it("returns a stored GitHub App manifest flow by state", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
@@ -740,9 +750,14 @@ describe("agent identity settings", () => {
       appName: "Sterling Hale Paperclip Agent",
       githubUsername: "sterling-hale-paperclip-agent[bot]",
       privateKeyFile: join(credentialSidecarDir!, "github-apps", "agent-manifest", "private-key.pem"),
-      installUrl: "https://github.com/apps/sterling-hale-paperclip-agent/installations/new",
+      installUrl: `https://github.com/apps/sterling-hale-paperclip-agent/installations/new?state=${encodeURIComponent(flow.state)}`,
     });
     await expect(readFile(result.privateKeyFile, "utf8")).resolves.toBe("-----BEGIN RSA PRIVATE KEY-----\ntest-key\n-----END RSA PRIVATE KEY-----\n");
+
+    const restored = await harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
+      state: flow.state,
+    });
+    expect(restored.conversion).toEqual(result);
   });
 
   it("writes GitHub App credential references to the sidecar on save", async () => {

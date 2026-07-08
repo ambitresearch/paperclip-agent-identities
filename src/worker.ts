@@ -172,6 +172,7 @@ const plugin = definePlugin({
 
       const conversion = await response.json();
       const converted = await persistGitHubAppManifestConversion(flow, conversion);
+      await ctx.state.set(githubAppManifestFlowScope(flow.state), { ...flow, conversion: converted });
       ctx.logger.info("GitHub App manifest converted", { agentId: converted.agentId, appId: converted.appId, appSlug: converted.appSlug });
       return converted;
     });
@@ -337,14 +338,20 @@ function githubAppManifestFlowScope(state: string) {
 function createGitHubAppManifestFlow(input: CreateGitHubAppManifestInput): CreateGitHubAppManifestResult {
   const agentId = readRequiredString(input.agentId, "agentId");
   const label = readRequiredString(input.label, "label");
-  const appUrl = readOptionalUrl(input.appUrl, "appUrl") ?? DEFAULT_GITHUB_APP_URL;
+  const callbackUrl = readOptionalUrl(input.callbackUrl ?? input.appUrl, input.callbackUrl ? "callbackUrl" : "appUrl") ?? DEFAULT_GITHUB_APP_URL;
+  const homepageUrl = readOptionalUrl(input.homepageUrl, "homepageUrl") ?? callbackUrl;
   const appName = normalizeGitHubAppName(label);
   const state = `pc_${createHash("sha256").update(`${agentId}:${Date.now()}:${randomBytes(16).toString("hex")}`).digest("hex").slice(0, 32)}`;
+  const setupUrl = getGitHubAppSetupUrl(callbackUrl, state);
   const manifest = JSON.stringify({
     name: appName,
-    url: appUrl,
-    redirect_url: appUrl,
-    callback_urls: [appUrl],
+    description: `Paperclip-managed GitHub bot identity for ${label}.`,
+    url: homepageUrl,
+    redirect_url: callbackUrl,
+    callback_urls: [callbackUrl],
+    setup_url: setupUrl,
+    setup_on_update: true,
+    request_oauth_on_install: false,
     public: false,
     default_permissions: {
       contents: "write",
@@ -360,6 +367,7 @@ function createGitHubAppManifestFlow(input: CreateGitHubAppManifestInput): Creat
     state,
     manifest,
     postUrl: `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`,
+    setupUrl,
     createdAt: new Date().toISOString(),
     label,
     appName,
@@ -378,11 +386,13 @@ function normalizeGitHubAppManifestFlowState(raw: unknown): GitHubAppManifestFlo
   const state = readString(raw.state);
   const manifest = readString(raw.manifest);
   const postUrl = readString(raw.postUrl);
+  const setupUrl = readString(raw.setupUrl) || readString(parseManifestSetupUrl(manifest)) || postUrl;
   const createdAt = readString(raw.createdAt);
   const appName = readString(raw.appName) || readString(parseManifestName(manifest));
   const label = readString(raw.label) || appName;
-  if (!agentId || !state || !manifest || !postUrl || !createdAt || !appName || !label) return null;
-  return { agentId, state, manifest, postUrl, createdAt, label, appName };
+  if (!agentId || !state || !manifest || !postUrl || !setupUrl || !createdAt || !appName || !label) return null;
+  const conversion = normalizeGitHubAppManifestConversionResult(raw.conversion);
+  return { agentId, state, manifest, postUrl, setupUrl, createdAt, label, appName, ...(conversion ? { conversion } : {}) };
 }
 
 function parseManifestName(manifest: string): unknown {
@@ -392,6 +402,38 @@ function parseManifestName(manifest: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function parseManifestSetupUrl(manifest: string): unknown {
+  try {
+    const parsed = JSON.parse(manifest);
+    return isRecord(parsed) ? parsed.setup_url : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function getGitHubAppSetupUrl(appUrl: string, state: string): string {
+  const url = new URL(appUrl);
+  url.searchParams.set("githubAppManifest", "install");
+  url.searchParams.set("state", state);
+  url.searchParams.delete("code");
+  url.searchParams.delete("installation_id");
+  url.searchParams.delete("setup_action");
+  return url.toString();
+}
+
+function normalizeGitHubAppManifestConversionResult(raw: unknown): ConvertGitHubAppManifestResult | null {
+  if (!isRecord(raw)) return null;
+  const agentId = readString(raw.agentId);
+  const appId = readString(raw.appId);
+  const appSlug = readString(raw.appSlug);
+  const appName = readString(raw.appName);
+  const githubUsername = readString(raw.githubUsername);
+  const privateKeyFile = readString(raw.privateKeyFile);
+  const installUrl = readString(raw.installUrl);
+  if (!agentId || !appId || !appSlug || !appName || !githubUsername || !privateKeyFile || !installUrl) return null;
+  return { agentId, appId, appSlug, appName, githubUsername, privateKeyFile, installUrl };
 }
 
 async function persistGitHubAppManifestConversion(flow: GitHubAppManifestFlowState, rawConversion: unknown): Promise<ConvertGitHubAppManifestResult> {
@@ -417,7 +459,7 @@ async function persistGitHubAppManifestConversion(flow: GitHubAppManifestFlowSta
     appName,
     githubUsername: `${appSlug}[bot]`,
     privateKeyFile,
-    installUrl: `https://github.com/apps/${appSlug}/installations/new`,
+    installUrl: `https://github.com/apps/${appSlug}/installations/new?state=${encodeURIComponent(flow.state)}`,
   };
 }
 

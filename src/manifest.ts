@@ -10,7 +10,7 @@ const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-agent-identities",
   apiVersion: 1,
   version: "0.1.3",
-  displayName: "Paperclip Agent Identities",
+  displayName: "Agent Identities",
   description: "Per-agent identity providers and contribution tools for Paperclip",
   author: "Roshan Gautam",
   categories: ["connector"],
@@ -78,7 +78,7 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "dashboardWidget",
         id: "health-widget",
-        displayName: "Agent Identities Health",
+        displayName: "Agent Identity Coverage",
         exportName: "DashboardWidget"
       },
       {

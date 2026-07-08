@@ -74,14 +74,19 @@ export type GitHubAppManifestFlowState = {
   state: string;
   manifest: string;
   postUrl: string;
+  setupUrl: string;
   createdAt: string;
   label: string;
   appName: string;
+  conversion?: ConvertGitHubAppManifestResult;
 };
 
 export type CreateGitHubAppManifestInput = {
   agentId: string;
   label: string;
+  homepageUrl?: string;
+  callbackUrl?: string;
+  /** Compatibility alias for older callers. Prefer callbackUrl. */
   appUrl?: string;
 };
 

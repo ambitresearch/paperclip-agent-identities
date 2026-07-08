@@ -131,7 +131,7 @@ describe("github_bot_create_pull_request tool", () => {
       expect(result.data).toBeDefined();
     });
 
-    it("denies paperclipai/* repositories before secret resolution", async () => {
+    it("denies repositories outside configured patterns before secret resolution", async () => {
       const secretsSpy = vi.spyOn(harness.ctx.secrets, "resolve");
 
       const result = await harness.executeTool<ToolResult>(
@@ -139,12 +139,12 @@ describe("github_bot_create_pull_request tool", () => {
         { repository: "paperclipai/paperclip", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
-      expect(result.error).toMatch(/outside MVP allowed scope/);
+      expect(result.error).toMatch(/does not match allowedRepoPatterns/);
       // Secrets should never be resolved for denied repos
       expect(secretsSpy).not.toHaveBeenCalled();
     });
 
-    it("denies arbitrary owner repos before secret resolution", async () => {
+    it("denies arbitrary repos outside configured patterns before secret resolution", async () => {
       const secretsSpy = vi.spyOn(harness.ctx.secrets, "resolve");
 
       const result = await harness.executeTool<ToolResult>(
@@ -152,7 +152,7 @@ describe("github_bot_create_pull_request tool", () => {
         { repository: "attacker/evil-repo", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
-      expect(result.error).toMatch(/outside MVP allowed scope/);
+      expect(result.error).toMatch(/does not match allowedRepoPatterns/);
       expect(secretsSpy).not.toHaveBeenCalled();
     });
 

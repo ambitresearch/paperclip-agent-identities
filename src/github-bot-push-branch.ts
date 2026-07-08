@@ -342,7 +342,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
 
     let token: string;
     try {
-      ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets)));
+      ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets), ctx.http.fetch.bind(ctx.http)));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       await logPushBranchOutcome(ctx, runCtx, {

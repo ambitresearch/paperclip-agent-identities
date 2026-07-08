@@ -1,6 +1,6 @@
 /**
  * github_bot_create_pull_request — Creates a GitHub pull request using the
- * configured bot identity. Enforces repository owner policy before resolving
+ * configured agent identity. Enforces repository owner policy before resolving
  * any secrets.
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
@@ -85,7 +85,7 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
       // Resolve token just-in-time.
       let token: string;
       try {
-        ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets)));
+        ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets), ctx.http.fetch.bind(ctx.http)));
       } catch (err) {
         ctx.logger.error("Failed to resolve bot token", {
           agentId: runCtx.agentId,

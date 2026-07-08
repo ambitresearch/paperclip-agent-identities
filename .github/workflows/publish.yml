@@ -22,6 +22,7 @@ permissions:
 
 jobs:
   publish:
+    if: ${{ false }} # Temporarily disabled while npm package publishing is paused.
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository

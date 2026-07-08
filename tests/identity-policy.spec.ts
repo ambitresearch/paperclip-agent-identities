@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +25,7 @@ const baseRunCtx: ToolRunContext = {
 };
 
 describe("github identity config", () => {
-  it("resolves configured agent identity and applies default owner pattern", () => {
+  it("resolves configured agent identity and applies default repo pattern", () => {
     const resolved = resolveAgentIdentityFromToolRunContext(
       {
         identities: {
@@ -37,7 +38,7 @@ describe("github identity config", () => {
       baseRunCtx
     );
 
-    expect(resolved.identity.allowedOwnerPatterns).toEqual(["^roshangautam$"]);
+    expect(resolved.identity.allowedRepoPatterns).toEqual(["roshangautam/*"]);
   });
 
   it("fails closed when calling agent has no config", () => {
@@ -53,7 +54,7 @@ describe("github identity config", () => {
         },
         baseRunCtx
       )
-    ).toThrow("Missing GitHub bot identity config for agent 'agent-1'");
+    ).toThrow("Missing agent identity config for agent 'agent-1'");
   });
 
   it("supports optional fields in typed config shape", () => {
@@ -62,8 +63,7 @@ describe("github identity config", () => {
         "agent-1": {
           label: "Primary",
           githubUsername: "roshan-bot",
-          allowedOwnerPatterns: ["^roshangautam$"],
-          allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"],
+          allowedRepoPatterns: ["roshangautam/*", "codestudiohq/laravel-totem"],
           commitName: "Roshan Bot",
           commitEmail: "bot@users.noreply.github.com"
         }
@@ -151,22 +151,22 @@ describe("github repo policy", () => {
   const identity = {
     label: "Default",
     githubUsername: "roshan-bot",
-    allowedOwnerPatterns: ["^roshangautam$"]
+    allowedRepoPatterns: ["roshangautam/*"]
   };
 
   it("allows roshangautam repos by default", () => {
     expect(evaluateRepoPolicy(identity, "roshangautam/paperclip-github-bot-identity-plugin").allowed).toBe(true);
   });
 
-  it("denies repositories outside roshangautam/* for MVP", () => {
-    expect(evaluateRepoPolicy(identity, "paperclipai/paperclip").allowed).toBe(false);
-    expect(evaluateRepoPolicy(identity, "affaan-m/everything-claude-code").allowed).toBe(false);
-    expect(evaluateRepoPolicy(identity, "openai/plugins").allowed).toBe(false);
-    expect(evaluateRepoPolicy(identity, "NousResearch/hermes-agent").allowed).toBe(false);
+  it("allows repositories matching configured patterns without a hard-coded owner", () => {
+    const multiOwnerIdentity = { ...identity, allowedRepoPatterns: ["roshangautam/*", "codestudiohq/laravel-totem"] };
+    expect(evaluateRepoPolicy(multiOwnerIdentity, "codestudiohq/laravel-totem").allowed).toBe(true);
+    expect(evaluateRepoPolicy(multiOwnerIdentity, "codestudiohq/other-repo").allowed).toBe(false);
+    expect(evaluateRepoPolicy(multiOwnerIdentity, "paperclipai/paperclip").allowed).toBe(false);
   });
 
-  it("allows only explicitly approved repositories when allowedRepos is configured", () => {
-    const repoScopedIdentity = { ...identity, allowedRepos: ["roshangautam/genie"] };
+  it("allows only explicitly approved repositories when exact repo patterns are configured", () => {
+    const repoScopedIdentity = { ...identity, allowedRepoPatterns: ["roshangautam/genie"] };
 
     expect(evaluateRepoPolicy(repoScopedIdentity, "roshangautam/genie").allowed).toBe(true);
     expect(evaluateRepoPolicy(repoScopedIdentity, "paperclipai/paperclip").allowed).toBe(false);
@@ -175,8 +175,8 @@ describe("github repo policy", () => {
     expect(evaluateRepoPolicy(repoScopedIdentity, "NousResearch/hermes-agent").allowed).toBe(false);
   });
 
-  it("fails closed when allowedOwnerPatterns is explicitly empty", () => {
-    const denyAllIdentity = { ...identity, allowedOwnerPatterns: [] as string[] };
+  it("fails closed when allowedRepoPatterns is explicitly empty", () => {
+    const denyAllIdentity = { ...identity, allowedRepoPatterns: [] as string[] };
     expect(evaluateRepoPolicy(denyAllIdentity, "roshangautam/paperclip-github-bot-identity-plugin").allowed).toBe(
       false
     );
@@ -213,7 +213,7 @@ describe("resolveIdentitySecretRef", () => {
         label: "Bot",
         githubUsername: "bot",
         tokenSecretRef: "inline-secret-ref-uuid",
-        allowedOwnerPatterns: ["^roshangautam$"]
+        allowedRepoPatterns: ["roshangautam/*"]
       }
     };
 
@@ -236,7 +236,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        allowedOwnerPatterns: ["^roshangautam$"]
+        allowedRepoPatterns: ["roshangautam/*"]
       }
     };
 
@@ -259,12 +259,12 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        allowedOwnerPatterns: ["^roshangautam$"]
+        allowedRepoPatterns: ["roshangautam/*"]
       }
     };
 
     await expect(resolveIdentitySecretRef(resolvedIdentity)).rejects.toThrow(
-      "Missing GitHub bot credential sidecar entry for agent 'agent-missing'"
+      "Missing agent identity credential sidecar entry for agent 'agent-missing'"
     );
   });
 
@@ -284,7 +284,7 @@ describe("resolveIdentitySecretRef", () => {
         label: "Bot",
         githubUsername: "bot",
         tokenSecretRef: "   ",
-        allowedOwnerPatterns: ["^roshangautam$"]
+        allowedRepoPatterns: ["roshangautam/*"]
       }
     };
 
@@ -312,7 +312,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        allowedOwnerPatterns: ["^roshangautam$"]
+        allowedRepoPatterns: ["roshangautam/*"]
       }
     };
 
@@ -321,6 +321,53 @@ describe("resolveIdentitySecretRef", () => {
     });
 
     expect(resolved).toEqual({ token: "file-token", source: "token-file" });
+  });
+
+  it("mints a GitHub App installation token from sidecar app credentials", async () => {
+    const sidecarPath = join(sidecarDir!, "credentials.json");
+    const privateKeyPath = join(sidecarDir!, "github-app.pem");
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+    await writeFile(privateKeyPath, privateKey, "utf8");
+    await writeFile(sidecarPath, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1": {
+          githubApp: {
+            appId: "12345",
+            installationId: "67890",
+            privateKeyFile: privateKeyPath
+          }
+        }
+      }
+    }), "utf8");
+
+    const resolvedIdentity = {
+      agentId: "agent-1",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot",
+        allowedRepoPatterns: ["roshangautam/*"]
+      }
+    };
+    const requests: Array<{ url: string; authorization?: string }> = [];
+
+    const resolved = await resolveIdentityToken(
+      resolvedIdentity,
+      async () => { throw new Error("secret resolver should not be used"); },
+      async (url, init) => {
+        requests.push({ url, authorization: init?.headers ? new Headers(init.headers).get("authorization") ?? undefined : undefined });
+        return new Response(JSON.stringify({ token: "ghs_installation_token" }), { status: 201 });
+      }
+    );
+
+    expect(resolved).toEqual({ token: "ghs_installation_token", source: "github-app" });
+    expect(requests[0]?.url).toBe("https://api.github.com/app/installations/67890/access_tokens");
+    expect(requests[0]?.authorization).toMatch(/^Bearer .+\..+\..+$/);
   });
 
   it("prefers plugin secret resolution when secretId succeeds even if tokenFile is present", async () => {
@@ -343,7 +390,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        allowedOwnerPatterns: ["^roshangautam$"]
+        allowedRepoPatterns: ["roshangautam/*"]
       }
     };
 
@@ -363,7 +410,7 @@ describe("resolveIdentitySecretRef", () => {
         label: "Bot",
         githubUsername: "bot",
         tokenSecretRef: "inline-secret-ref",
-        allowedOwnerPatterns: ["^roshangautam$"]
+        allowedRepoPatterns: ["roshangautam/*"]
       }
     };
 

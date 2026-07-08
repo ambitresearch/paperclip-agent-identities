@@ -14,7 +14,7 @@ export function DashboardWidget(_props: PluginWidgetProps) {
 
   return (
     <div style={{ display: "grid", gap: "0.5rem" }}>
-      <strong>GitHub Bot Identity</strong>
+      <strong>Paperclip Agent Identities</strong>
       <div>Health: {data?.status ?? "unknown"}</div>
       <div>Checked: {data?.checkedAt ?? "never"}</div>
       <button onClick={() => void ping()}>Ping Worker</button>

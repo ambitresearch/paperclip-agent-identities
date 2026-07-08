@@ -34,6 +34,7 @@ concurrency:
 
 jobs:
   create-release:
+    if: ${{ false }} # Temporarily disabled so package/CD release automation cannot run.
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository

@@ -1,9 +1,9 @@
 export const githubBotCreatePullRequestToolName = "github_bot_create_pull_request";
 
 export const githubBotCreatePullRequestToolMetadata = {
-  displayName: "Create Pull Request (Bot Identity)",
+  displayName: "Create Pull Request (Agent Identity)",
   description:
-    "Creates a GitHub pull request using the configured bot identity. " +
+    "Creates a GitHub pull request using the configured agent identity. " +
     "Only repositories under the allowed owner (roshangautam/*) are permitted.",
   parametersSchema: {
     type: "object",

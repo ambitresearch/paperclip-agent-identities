@@ -806,6 +806,23 @@ describe("agent identity settings", () => {
     expect(manifestBody.setup_url).toContain(`state=${encodeURIComponent(result.state)}`);
   });
 
+  it("rejects GitHub App manifest agent IDs that are not a single path segment", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await expect(harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      provider: "github",
+      agentId: "../agent-manifest",
+      label: "Sterling Hale",
+    })).rejects.toThrow("agentId must be a single path segment.");
+
+    await expect(harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      provider: "github",
+      agentId: "nested/agent-manifest",
+      label: "Sterling Hale",
+    })).rejects.toThrow("agentId must be a single path segment.");
+  });
+
 
   it("returns a stored GitHub App manifest flow by state", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });

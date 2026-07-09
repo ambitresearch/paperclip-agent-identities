@@ -350,6 +350,13 @@ function readRequiredString(value: unknown, field: string): string {
   return value.trim();
 }
 
+function validateSinglePathSegment(value: string, field: string): string {
+  if (value === "." || value === ".." || /[\\/]/.test(value)) {
+    throw new Error(`${field} must be a single path segment.`);
+  }
+  return value;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -366,7 +373,7 @@ function githubAppManifestFlowScope(state: string) {
 }
 
 function createGitHubAppManifestFlow(input: CreateGitHubAppManifestInput): CreateGitHubAppManifestResult {
-  const agentId = readRequiredString(input.agentId, "agentId");
+  const agentId = validateSinglePathSegment(readRequiredString(input.agentId, "agentId"), "agentId");
   const provider = input.provider ? normalizeProviderInput(input.provider) : GITHUB_IDENTITY_PROVIDER_ID;
   if (provider !== GITHUB_IDENTITY_PROVIDER_ID) {
     throw new Error("GitHub App manifest flow only supports the GitHub provider.");
@@ -485,12 +492,13 @@ async function persistGitHubAppManifestConversion(flow: GitHubAppManifestFlowSta
     throw new Error("GitHub App manifest conversion response is missing id, slug, name, or pem.");
   }
 
-  const privateKeyFile = join(dirname(await resolveCredentialSidecarPath()), "github-apps", flow.agentId, "private-key.pem");
+  const agentId = validateSinglePathSegment(readRequiredString(flow.agentId, "agentId"), "agentId");
+  const privateKeyFile = join(dirname(await resolveCredentialSidecarPath()), "github-apps", agentId, "private-key.pem");
   await mkdir(dirname(privateKeyFile), { recursive: true });
   await writeFile(privateKeyFile, pem.endsWith("\n") ? pem : `${pem}\n`, { encoding: "utf8", mode: 0o600 });
 
   return {
-    agentId: flow.agentId,
+    agentId,
     provider: flow.provider,
     appId,
     appSlug,

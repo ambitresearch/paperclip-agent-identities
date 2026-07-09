@@ -628,6 +628,54 @@ describe("agent identity settings", () => {
     expect(config.identities.find((identity) => identity.agentId === "agent-uuid-123")?.githubUsername).toBe("paperclip-qa-bot");
   });
 
+  it("filters configured identities to the current settings company", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    harness.seed({
+      agents: [
+        { id: "agent-company-1", companyId: "company_1", name: "Company One Bot" } as never,
+        { id: "agent-company-2", companyId: "company_2", name: "Company Two Bot" } as never,
+      ],
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      agentId: "agent-company-1",
+      label: "Company One Identity",
+      githubUsername: "company-one-bot",
+      allowedRepoPatterns: [DEFAULT_ALLOWED_REPO_PATTERN],
+    });
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      agentId: "agent-company-2",
+      label: "Company Two Identity",
+      githubUsername: "company-two-bot",
+      allowedRepoPatterns: [DEFAULT_ALLOWED_REPO_PATTERN],
+    });
+
+    const companyOneConfig = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company_1" });
+    const companyTwoConfig = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company_2" });
+    const unscopedConfig = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+
+    expect(companyOneConfig.identities.map((identity) => identity.agentId)).toEqual(["agent-company-1"]);
+    expect(companyTwoConfig.identities.map((identity) => identity.agentId)).toEqual(["agent-company-2"]);
+    expect(unscopedConfig.identities.map((identity) => identity.agentId).sort()).toEqual(["agent-company-1", "agent-company-2"]);
+  });
+
+  it("keeps configured identities visible when company agent lookup is empty", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      agentId: "agent-with-saved-config",
+      label: "Saved Identity",
+      githubUsername: "saved-identity-bot",
+      allowedRepoPatterns: [DEFAULT_ALLOWED_REPO_PATTERN],
+    });
+
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company-with-empty-agent-list" });
+
+    expect(config.identities.map((identity) => identity.agentId)).toEqual(["agent-with-saved-config"]);
+  });
+
   it("persists GitHub App credential propagation agent selections", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);

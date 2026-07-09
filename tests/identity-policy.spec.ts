@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
@@ -13,6 +13,7 @@ import {
 import {
   CREDENTIAL_SIDECAR_PATH_ENV,
   parseCredentialSidecar,
+  resolveCredentialSidecarPath,
   resolveIdentitySecretRef,
   resolveIdentityToken
 } from "../src/credential-sidecar.js";
@@ -219,6 +220,17 @@ describe("resolveIdentitySecretRef", () => {
 
     const secretRef = await resolveIdentitySecretRef(resolvedIdentity);
     expect(secretRef).toBe("inline-secret-ref-uuid");
+  });
+
+
+  it("falls back to the legacy default sidecar path when the renamed default is absent", async () => {
+    delete process.env[CREDENTIAL_SIDECAR_PATH_ENV];
+    const defaultPath = join(sidecarDir!, "agent-identities", "credentials.json");
+    const legacyPath = join(sidecarDir!, "github-bot-identity", "credentials.json");
+    await mkdir(join(sidecarDir!, "github-bot-identity"), { recursive: true });
+    await writeFile(legacyPath, JSON.stringify({ version: 1, identities: {} }), "utf8");
+
+    await expect(resolveCredentialSidecarPath(defaultPath, legacyPath)).resolves.toBe(legacyPath);
   });
 
   it("falls through to sidecar when tokenSecretRef is undefined", async () => {

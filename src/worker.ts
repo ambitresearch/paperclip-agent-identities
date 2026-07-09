@@ -1,4 +1,4 @@
-import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
+import { definePlugin, runWorker, type PluginContext } from "@paperclipai/plugin-sdk";
 import { createGithubBotPushBranchTool } from "./github-bot-push-branch.js";
 import {
   GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
@@ -33,8 +33,8 @@ import type {
 } from "./shared/types.js";
 import {
   deleteCredentialSidecarIdentity,
-  getCredentialSidecarPath,
   readCredentialSidecarIfExists,
+  resolveCredentialSidecarPath,
   upsertCredentialSidecarIdentity,
   type CredentialSidecarIdentity,
   type GitHubBotIdentityCredentialSidecar
@@ -57,9 +57,10 @@ const plugin = definePlugin({
       return { status: "ok", checkedAt: new Date().toISOString() };
     });
 
-    ctx.data.register("bot-identity-config", async () => {
+    ctx.data.register("bot-identity-config", async (params) => {
+      const companyId = typeof params.companyId === "string" ? params.companyId.trim() : "";
       const state = normalizeBotIdentitySettingsState(await ctx.state.get(CONFIG_SCOPE));
-      return await buildSettingsData(state);
+      return await buildSettingsData(ctx, state, companyId);
     });
 
     ctx.data.register("paperclip-agents", async (params) => {
@@ -68,18 +69,8 @@ const plugin = definePlugin({
         return { agents: [] } satisfies PaperclipAgentsData;
       }
 
-      const agents = await ctx.agents.list({ companyId });
-      const options: PaperclipAgentOption[] = agents
-        .map((agent) => ({
-          id: agent.id,
-          name: agent.name,
-          role: agent.role ?? null,
-          title: agent.title ?? null,
-          status: agent.status ?? null,
-        }))
-        .sort((left, right) => left.name.localeCompare(right.name));
-
-      return { agents: options } satisfies PaperclipAgentsData;
+      const agents = await listCompanyAgentOptions(ctx, companyId);
+      return { agents } satisfies PaperclipAgentsData;
     });
 
     ctx.actions.register("ping", async () => {
@@ -112,7 +103,7 @@ const plugin = definePlugin({
       }
 
       ctx.logger.info("Bot identity config saved", { agentId: identity.agentId, label: identity.label, githubUsername: identity.githubUsername });
-      return (await buildSettingsData(nextState)).identities.find((entry) => entry.agentId === identity.agentId) ?? identity;
+      return (await buildSettingsData(ctx, nextState)).identities.find((entry) => entry.agentId === identity.agentId) ?? identity;
     });
 
     ctx.actions.register("delete-bot-identity-config", async (params) => {
@@ -128,7 +119,7 @@ const plugin = definePlugin({
       await ctx.state.set(CONFIG_SCOPE, nextState);
       await deleteCredentialSidecarIdentity(agentId);
       ctx.logger.info("Bot identity config deleted", { agentId });
-      return await buildSettingsData(nextState);
+      return await buildSettingsData(ctx, nextState);
     });
 
 
@@ -212,8 +203,8 @@ const plugin = definePlugin({
 export default plugin;
 runWorker(plugin, import.meta.url);
 
-async function buildSettingsData(state: BotIdentitySettingsState): Promise<BotIdentitySettingsData> {
-  const credentialSidecarPath = getCredentialSidecarPath();
+async function buildSettingsData(ctx: PluginContext, state: BotIdentitySettingsState, companyId = ""): Promise<BotIdentitySettingsData> {
+  const credentialSidecarPath = await resolveCredentialSidecarPath();
   let sidecar: GitHubBotIdentityCredentialSidecar | null = null;
   let credentialSidecarError: string | undefined;
   try {
@@ -222,7 +213,13 @@ async function buildSettingsData(state: BotIdentitySettingsState): Promise<BotId
     credentialSidecarError = error instanceof Error ? error.message : String(error);
   }
 
+  const companyAgents = companyId ? await listCompanyAgentOptions(ctx, companyId) : [];
+  const companyAgentIds = companyId && companyAgents.length > 0
+    ? new Set(companyAgents.map((agent) => agent.id))
+    : null;
+
   const identities: BotIdentitySettingsEntry[] = Object.values(state.identities)
+    .filter((identity) => !companyAgentIds || companyAgentIds.has(identity.agentId))
     .map((identity) => {
       const credential = sidecar?.identities[identity.agentId];
       return {
@@ -243,6 +240,23 @@ async function buildSettingsData(state: BotIdentitySettingsState): Promise<BotId
     credentialSidecarPath,
     ...(credentialSidecarError ? { credentialSidecarError } : {}),
   };
+}
+
+async function listCompanyAgentOptions(ctx: PluginContext, companyId: string): Promise<PaperclipAgentOption[]> {
+  const agents = await ctx.agents.list({ companyId });
+  return agents
+    .filter((agent) => {
+      const agentCompanyId = isRecord(agent) ? readString(agent.companyId) : "";
+      return !agentCompanyId || agentCompanyId === companyId;
+    })
+    .map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      role: agent.role ?? null,
+      title: agent.title ?? null,
+      status: agent.status ?? null,
+    }))
+    .sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function normalizeIdentityInput(input: SaveBotIdentityConfigInput): BotIdentityConfig {
@@ -448,7 +462,7 @@ async function persistGitHubAppManifestConversion(flow: GitHubAppManifestFlowSta
     throw new Error("GitHub App manifest conversion response is missing id, slug, name, or pem.");
   }
 
-  const privateKeyFile = join(dirname(getCredentialSidecarPath()), "github-apps", flow.agentId, "private-key.pem");
+  const privateKeyFile = join(dirname(await resolveCredentialSidecarPath()), "github-apps", flow.agentId, "private-key.pem");
   await mkdir(dirname(privateKeyFile), { recursive: true });
   await writeFile(privateKeyFile, pem.endsWith("\n") ? pem : `${pem}\n`, { encoding: "utf8", mode: 0o600 });
 

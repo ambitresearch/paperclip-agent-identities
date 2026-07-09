@@ -89,7 +89,7 @@ See [Plugin runtime architecture](architecture/plugin-runtime.md) for details.
 
 - **Agent identity**: a per-agent mapping keyed by Paperclip `agentId`, with label, GitHub username, allowed repository patterns, selected-agent credential cascade, and optional commit author fields.
 - **Repository policy**: `owner/repo` glob patterns such as `my-org/*`, `my-org/my-repo`, and `*/*`. Current default when no pattern is configured is `*/*`.
-- **Credential sidecar**: an operator-local JSON file, defaulting to `/paperclip/.paperclip/agent-identities/credentials.json`, that stores credential references but not generated installation tokens.
+- **Credential sidecar**: an operator-local JSON file, defaulting to `/paperclip/.paperclip/agent-identities/credentials.json` with a legacy `/paperclip/.paperclip/github-bot-identity/credentials.json` fallback, that stores credential references but not generated installation tokens.
 - **GitHub App path**: preferred credential mode. The settings UI creates a GitHub App manifest, the worker converts the one-time code, writes a private key file, and later mints short-lived installation tokens on tool calls.
 - **Fallback credentials**: legacy secret ID or token file sources are still supported, but GitHub App credentials are the durable path described in the README.
 

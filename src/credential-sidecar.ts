@@ -1,5 +1,5 @@
 import { createSign } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "@paperclipai/plugin-sdk";
 import type { ResolvedAgentIdentity } from "./identity-policy.js";
@@ -7,6 +7,7 @@ import type { ResolvedAgentIdentity } from "./identity-policy.js";
 export const CREDENTIAL_SIDECAR_PATH_ENV = "PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS";
 export const LEGACY_CREDENTIAL_SIDECAR_PATH_ENV = "PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS";
 export const DEFAULT_CREDENTIAL_SIDECAR_PATH = "/paperclip/.paperclip/agent-identities/credentials.json";
+export const LEGACY_DEFAULT_CREDENTIAL_SIDECAR_PATH = "/paperclip/.paperclip/github-bot-identity/credentials.json";
 
 const githubAppCredentialSchema = z.object({
   appId: z.string().trim().min(1),
@@ -49,6 +50,31 @@ export function getCredentialSidecarPath(): string {
   );
 }
 
+export async function resolveCredentialSidecarPath(
+  defaultPath = DEFAULT_CREDENTIAL_SIDECAR_PATH,
+  legacyDefaultPath = LEGACY_DEFAULT_CREDENTIAL_SIDECAR_PATH
+): Promise<string> {
+  const explicitPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV]?.trim() || process.env[LEGACY_CREDENTIAL_SIDECAR_PATH_ENV]?.trim();
+  if (explicitPath) return explicitPath;
+  if (await pathExists(defaultPath)) return defaultPath;
+  if (await pathExists(legacyDefaultPath)) return legacyDefaultPath;
+  return defaultPath;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
 export function parseCredentialSidecar(rawConfig: unknown): GitHubBotIdentityCredentialSidecar {
   return credentialSidecarSchema.parse(rawConfig);
 }
@@ -71,10 +97,11 @@ export async function readCredentialSidecar(path = getCredentialSidecarPath()): 
 }
 
 export async function readCredentialSidecarIfExists(
-  path = getCredentialSidecarPath()
+  path?: string
 ): Promise<GitHubBotIdentityCredentialSidecar | null> {
+  const sidecarPath = path ?? await resolveCredentialSidecarPath();
   try {
-    return await readCredentialSidecar(path);
+    return await readCredentialSidecar(sidecarPath);
   } catch (error) {
     if (error instanceof Error && error.message.includes("ENOENT")) {
       return null;
@@ -86,10 +113,11 @@ export async function readCredentialSidecarIfExists(
 export async function upsertCredentialSidecarIdentity(
   agentId: string,
   identity: CredentialSidecarIdentity,
-  path = getCredentialSidecarPath()
+  path?: string
 ): Promise<GitHubBotIdentityCredentialSidecar> {
+  const sidecarPath = path ?? await resolveCredentialSidecarPath();
   const parsedIdentity = sidecarIdentitySchema.parse(identity);
-  const existing = await readCredentialSidecarIfExists(path) ?? { version: 1 as const, identities: {} };
+  const existing = await readCredentialSidecarIfExists(sidecarPath) ?? { version: 1 as const, identities: {} };
   const next: GitHubBotIdentityCredentialSidecar = {
     version: 1,
     identities: {
@@ -97,22 +125,23 @@ export async function upsertCredentialSidecarIdentity(
       [agentId]: parsedIdentity,
     },
   };
-  await writeCredentialSidecar(next, path);
+  await writeCredentialSidecar(next, sidecarPath);
   return next;
 }
 
 export async function deleteCredentialSidecarIdentity(
   agentId: string,
-  path = getCredentialSidecarPath()
+  path?: string
 ): Promise<GitHubBotIdentityCredentialSidecar | null> {
-  const existing = await readCredentialSidecarIfExists(path);
+  const sidecarPath = path ?? await resolveCredentialSidecarPath();
+  const existing = await readCredentialSidecarIfExists(sidecarPath);
   if (!existing || !existing.identities[agentId]) {
     return existing;
   }
 
   const { [agentId]: _removed, ...identities } = existing.identities;
   const next: GitHubBotIdentityCredentialSidecar = { version: 1, identities };
-  await writeCredentialSidecar(next, path);
+  await writeCredentialSidecar(next, sidecarPath);
   return next;
 }
 
@@ -133,7 +162,7 @@ export async function resolveIdentitySecretRef(resolvedIdentity: ResolvedAgentId
     return inlineSecretRef;
   }
 
-  const sidecarPath = getCredentialSidecarPath();
+  const sidecarPath = await resolveCredentialSidecarPath();
   const sidecarIdentity = await readSidecarIdentity(resolvedIdentity, sidecarPath);
   if (!sidecarIdentity.secretId) {
     throw new Error(
@@ -155,7 +184,7 @@ export async function resolveIdentityToken(
     return { token: await resolveSecret(inlineSecretRef), source: "plugin-secret" };
   }
 
-  const sidecarPath = getCredentialSidecarPath();
+  const sidecarPath = await resolveCredentialSidecarPath();
   const sidecarIdentity = await readSidecarIdentity(resolvedIdentity, sidecarPath);
   if (sidecarIdentity.githubApp) {
     return {

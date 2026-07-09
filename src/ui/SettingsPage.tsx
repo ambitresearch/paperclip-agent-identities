@@ -43,7 +43,7 @@ type IdentityFormState = {
 
 export function SettingsPage(props: PluginSettingsPageProps) {
   const companyId = props.context.companyId ?? "";
-  const { data, loading, error, refresh } = usePluginData<BotIdentitySettingsData>("bot-identity-config");
+  const { data, loading, error, refresh } = usePluginData<BotIdentitySettingsData>("bot-identity-config", { companyId });
   const { data: agentsData, loading: agentsLoading, error: agentsError } = usePluginData<PaperclipAgentsData>("paperclip-agents", { companyId });
   const saveConfig = usePluginAction("save-bot-identity-config");
   const deleteConfig = usePluginAction("delete-bot-identity-config");

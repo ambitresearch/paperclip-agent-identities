@@ -79,7 +79,9 @@ Path resolution order:
 
 1. `PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS`
 2. legacy `PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS`
-3. `/paperclip/.paperclip/agent-identities/credentials.json`
+3. `/paperclip/.paperclip/agent-identities/credentials.json` when present
+4. legacy `/paperclip/.paperclip/github-bot-identity/credentials.json` when the renamed default is absent
+5. `/paperclip/.paperclip/agent-identities/credentials.json` for new sidecars
 
 Sidecar schema version 1 maps agent IDs to credential sources:
 

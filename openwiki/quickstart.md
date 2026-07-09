@@ -62,6 +62,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm pack --pack-destination .
+pnpm docs:dev       # preview OpenWiki docs with VitePress
 ```
 
 For installing locally into Paperclip:

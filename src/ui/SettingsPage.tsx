@@ -43,6 +43,7 @@ type IdentityFormState = {
 
 export function SettingsPage(props: PluginSettingsPageProps) {
   const companyId = props.context.companyId ?? "";
+  const companyDisplayName = getCompanyDisplayName(props.context.companyPrefix, companyId);
   const { data, loading, error, refresh } = usePluginData<BotIdentitySettingsData>("bot-identity-config", { companyId });
   const { data: agentsData, loading: agentsLoading, error: agentsError } = usePluginData<PaperclipAgentsData>("paperclip-agents", { companyId });
   const saveConfig = usePluginAction("save-bot-identity-config");
@@ -81,24 +82,27 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         const flow = result as GetGitHubAppManifestFlowResult;
         const savedIdentity = identities.find((entry) => entry.agentId === flow.agentId);
         const selectedAgent = agentOptions.find((agent) => agent.id === flow.agentId);
-        const defaults = selectedAgent ? getAgentIdentityDefaults(selectedAgent) : null;
+        const defaults = selectedAgent ? getAgentIdentityDefaults(selectedAgent, companyDisplayName) : null;
         const restoredForm = toFormState(savedIdentity);
+        const draftForm = readManifestDraftForm(callback.state);
         const conversion = flow.conversion;
         setFormState({
           ...restoredForm,
+          ...draftForm,
           agentId: flow.agentId,
-          label: restoredForm.label || flow.label,
-          githubUsername: conversion?.githubUsername || restoredForm.githubUsername || defaults?.githubUsername || DEFAULT_BOT_IDENTITY_CONFIG.githubUsername,
-          commitName: restoredForm.commitName || defaults?.commitName || "",
-          commitEmail: restoredForm.commitEmail || defaults?.commitEmail || "",
-          githubAppId: conversion?.appId || restoredForm.githubAppId,
+          label: draftForm?.label || restoredForm.label || flow.label,
+          githubUsername: conversion?.githubUsername || draftForm?.githubUsername || restoredForm.githubUsername || defaults?.githubUsername || DEFAULT_BOT_IDENTITY_CONFIG.githubUsername,
+          commitName: draftForm?.commitName || restoredForm.commitName || defaults?.commitName || "",
+          commitEmail: draftForm?.commitEmail || restoredForm.commitEmail || defaults?.commitEmail || "",
+          githubAppId: conversion?.appId || draftForm?.githubAppId || restoredForm.githubAppId,
           githubInstallationId: callback.installationId || restoredForm.githubInstallationId,
-          privateKeyFile: conversion?.privateKeyFile || restoredForm.privateKeyFile || defaults?.privateKeyFile || "",
+          privateKeyFile: conversion?.privateKeyFile || draftForm?.privateKeyFile || restoredForm.privateKeyFile || defaults?.privateKeyFile || "",
         });
         setManifestFlow(flow);
         setManifestCode(callback.code ?? "");
         if (callback.installationId) {
           setManifestResult(conversion ?? null);
+          deleteManifestDraftForm(callback.state);
         }
         setSaveError(null);
         setSaveSuccess(false);
@@ -118,7 +122,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [agentOptions, getGitHubAppManifestFlow, identities]);
+  }, [agentOptions, companyDisplayName, getGitHubAppManifestFlow, identities]);
 
   useEffect(() => {
     if (!companyId) {
@@ -214,7 +218,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       if (!selectedAgent || base.previousAgentId || base.agentId === agentId) {
         return { ...base, agentId };
       }
-      const defaults = getAgentIdentityDefaults(selectedAgent);
+      const defaults = getAgentIdentityDefaults(selectedAgent, companyDisplayName);
       return {
         ...base,
         agentId,
@@ -247,6 +251,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         callbackUrl: getManifestReturnUrl(),
       }) as CreateGitHubAppManifestResult;
       setManifestFlow(result);
+      writeManifestDraftForm(result.state, config);
       submitGitHubAppManifest(result);
     } catch (err) {
       setManifestError(err instanceof Error ? err.message : "Failed to create GitHub App manifest");
@@ -256,7 +261,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   }
 
   async function handleConvertGitHubAppManifest() {
-    if (!manifestFlow) return;
+    if (!manifestFlow || !config) return;
     setManifestBusy(true);
     setManifestError(null);
     try {
@@ -264,6 +269,13 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         state: manifestFlow.state,
         code: manifestCode.trim(),
       }) as ConvertGitHubAppManifestResult;
+      const nextFormState = {
+        ...config,
+        githubAppId: result.appId,
+        privateKeyFile: result.privateKeyFile,
+        githubUsername: result.githubUsername,
+      };
+      writeManifestDraftForm(manifestFlow.state, nextFormState);
       setManifestResult(result);
       updateField("githubAppId", result.appId);
       updateField("privateKeyFile", result.privateKeyFile);
@@ -447,7 +459,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 type="text"
                 value={config.label}
                 onChange={(e) => updateField("label", e.target.value)}
-                placeholder="e.g. Ouroboros GitHub App"
+                placeholder="e.g. Cade Riven [Droidshop]"
                 style={inputStyle}
               />
             </label>
@@ -815,11 +827,11 @@ function extractManifestCode(value: string): string {
   }
 }
 
-function getAgentIdentityDefaults(agent: PaperclipAgentOption): Pick<IdentityFormState, "label" | "githubUsername" | "commitName" | "commitEmail" | "privateKeyFile"> {
+function getAgentIdentityDefaults(agent: PaperclipAgentOption, companyDisplayName: string): Pick<IdentityFormState, "label" | "githubUsername" | "commitName" | "commitEmail" | "privateKeyFile"> {
   const displayName = getAgentDisplayName(agent);
   const slug = slugifyGitHubAppName(displayName);
   return {
-    label: `${displayName} GitHub App`,
+    label: formatIdentityLabel(displayName, companyDisplayName),
     githubUsername: `${slug}[bot]`,
     commitName: `${displayName} Paperclip Bot`,
     commitEmail: `${slug}[bot]@users.noreply.github.com`,
@@ -831,8 +843,26 @@ function shouldPrefillIdentityField(value: string, defaultValue: string): boolea
   return value.trim() === defaultValue.trim();
 }
 
+function formatIdentityLabel(agentName: string, companyDisplayName: string): string {
+  const companySuffix = companyDisplayName.trim();
+  return companySuffix ? agentName + " [" + companySuffix + "]" : agentName;
+}
+
 function getAgentDisplayName(agent: PaperclipAgentOption): string {
   return (agent.name || agent.title || agent.role || agent.id).trim();
+}
+
+function getCompanyDisplayName(companyPrefix: string | null | undefined, companyId: string): string {
+  const displayName = titleCaseSlug(companyPrefix ?? "");
+  return displayName || companyId.trim();
+}
+
+function titleCaseSlug(value: string): string {
+  return value
+    .trim()
+    .replace(/[ _-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function slugifyGitHubAppName(value: string): string {
@@ -863,6 +893,61 @@ function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState {
     previousGithubInstallationId: entry?.credential?.githubApp?.installationId ?? "",
     previousPrivateKeySecretId: entry?.credential?.githubApp?.privateKeySecretId ?? "",
     previousPrivateKeyFile: entry?.credential?.githubApp?.privateKeyFile ?? "",
+  };
+}
+
+const MANIFEST_DRAFT_STORAGE_PREFIX = "paperclip-agent-identities:github-app-manifest-draft:";
+
+function getManifestDraftStorageKey(state: string): string {
+  return MANIFEST_DRAFT_STORAGE_PREFIX + state;
+}
+
+function writeManifestDraftForm(state: string, formState: IdentityFormState): void {
+  try {
+    window.sessionStorage.setItem(getManifestDraftStorageKey(state), JSON.stringify(formState));
+  } catch {
+    // Redirect restoration is best-effort; the server-side manifest flow still restores required fields.
+  }
+}
+
+function readManifestDraftForm(state: string): IdentityFormState | null {
+  try {
+    const raw = window.sessionStorage.getItem(getManifestDraftStorageKey(state));
+    if (!raw) return null;
+    return normalizeManifestDraftForm(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function deleteManifestDraftForm(state: string): void {
+  try {
+    window.sessionStorage.removeItem(getManifestDraftStorageKey(state));
+  } catch {
+    // Ignore sessionStorage cleanup failures; stale drafts are scoped by opaque manifest state.
+  }
+}
+
+function normalizeManifestDraftForm(raw: unknown): IdentityFormState | null {
+  if (!isRecord(raw)) return null;
+  return {
+    agentId: readString(raw.agentId),
+    label: readString(raw.label),
+    githubUsername: readString(raw.githubUsername),
+    allowedRepoPatternsText: readString(raw.allowedRepoPatternsText),
+    commitName: readString(raw.commitName),
+    commitEmail: readString(raw.commitEmail),
+    githubAppId: readString(raw.githubAppId),
+    githubInstallationId: readString(raw.githubInstallationId),
+    privateKeySecretId: readString(raw.privateKeySecretId),
+    privateKeyFile: readString(raw.privateKeyFile),
+    fallbackTokenSecretId: readString(raw.fallbackTokenSecretId),
+    tokenFile: readString(raw.tokenFile),
+    previousAgentId: readString(raw.previousAgentId),
+    previousGithubAppId: readString(raw.previousGithubAppId),
+    previousGithubInstallationId: readString(raw.previousGithubInstallationId),
+    previousPrivateKeySecretId: readString(raw.previousPrivateKeySecretId),
+    previousPrivateKeyFile: readString(raw.previousPrivateKeyFile),
   };
 }
 

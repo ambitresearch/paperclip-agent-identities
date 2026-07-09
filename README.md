@@ -21,6 +21,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm pack --pack-destination .
+pnpm docs:dev       # preview OpenWiki docs with VitePress
 ```
 
 `pnpm dev` rebuilds the worker, manifest, and UI bundles into `dist/`.
@@ -93,6 +94,16 @@ Saving an identity patches the selected agent environment with the GitHub App bi
 
 Deleting an identity removes only matching GitHub App env bindings for that identity, preserving unrelated environment variables. `secretId`/`tokenFile` token fallback is still accepted, but GitHub App mode is the durable path.
 
+## Documentation site
+
+OpenWiki-generated Markdown lives in [`openwiki/`](openwiki/quickstart.md). The repository publishes that content as a searchable VitePress site through GitHub Pages without moving OpenWiki's source folder.
+
+```bash
+pnpm docs:dev       # local VitePress server for openwiki/
+pnpm docs:build     # static site output in openwiki/.vitepress/dist
+pnpm docs:preview   # preview the built static site
+```
+
 ## Build Options
 
 - `pnpm build` uses esbuild presets from `@paperclipai/plugin-sdk/bundlers`.
@@ -100,7 +111,7 @@ Deleting an identity removes only matching GitHub App env bindings for that iden
 
 ## CI
 
-GitHub Actions workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+GitHub Actions workflows: [CI](.github/workflows/ci.yml) and [Publish Docs](.github/workflows/pages.yml)
 
 Runs on pull requests and pushes to `main`:
 

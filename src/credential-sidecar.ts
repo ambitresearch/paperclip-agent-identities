@@ -36,7 +36,7 @@ export type ResolveSecret = (secretRef: string) => Promise<string>;
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export type CredentialSidecarIdentity = z.infer<typeof sidecarIdentitySchema>;
 
-type NodeFsError = Error & { code?: string };
+type SystemErrorWithCode = Error & { code?: string };
 
 export interface ResolvedIdentityToken {
   token: string;
@@ -85,14 +85,14 @@ export async function readCredentialSidecarIfExists(
   try {
     return await readCredentialSidecar(sidecarPath);
   } catch (error) {
-    if (error instanceof Error && isNodeFsError(error.cause) && error.cause.code === "ENOENT") {
+    if (error instanceof Error && isSystemErrorWithCode(error.cause) && error.cause.code === "ENOENT") {
       return null;
     }
     throw error;
   }
 }
 
-function isNodeFsError(error: unknown): error is NodeFsError {
+function isSystemErrorWithCode(error: unknown): error is SystemErrorWithCode {
   return error instanceof Error && "code" in error;
 }
 

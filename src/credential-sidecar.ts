@@ -93,9 +93,7 @@ export async function readCredentialSidecarIfExists(
 }
 
 function isSystemErrorWithCode(error: unknown): error is SystemErrorWithCode {
-  if (!(error instanceof Error) || !("code" in error)) return false;
-  const code = (error as Record<string, unknown>).code;
-  return code === undefined || typeof code === "string";
+  return error instanceof Error && typeof (error as unknown as Record<string, unknown>).code === "string";
 }
 
 export async function upsertCredentialSidecarIdentity(

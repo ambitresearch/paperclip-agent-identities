@@ -1509,7 +1509,11 @@ async function syncGitHubAppCredentialPropagationForAgents(input: {
 }
 
 function hasCompleteGitHubAppValues(input: { appId?: string; installationId?: string; privateKeySecretRef?: string; privateKeyFile?: string }): boolean {
-  return Boolean(input.appId?.trim() && input.installationId?.trim() && (input.privateKeySecretRef?.trim() || input.privateKeyFile?.trim()));
+  const appId = input.appId?.trim();
+  const installationId = input.installationId?.trim();
+  const privateKeySecretRef = input.privateKeySecretRef?.trim();
+  const privateKeyFile = input.privateKeyFile?.trim();
+  return Boolean(appId && installationId && (privateKeySecretRef || privateKeyFile));
 }
 
 function buildGitHubAppPropagationConfig(

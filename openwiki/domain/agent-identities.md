@@ -158,12 +158,12 @@ The settings UI and worker actions implement GitHub's App Manifest flow.
 11. UI sends the operator to install the app; GitHub redirects back with `installation_id`.
 12. UI restores the flow and pre-fills Installation ID before the operator saves the identity.
 
-Flow state is restored by `get-github-app-manifest-flow`. The current code does not document or enforce explicit expiration/cleanup of manifest-flow state.
+Flow state is restored by `get-github-app-manifest-flow` while the operator is returning from GitHub, then deleted after successful manifest conversion so one-time setup state does not accumulate.
 
 ## Tests to inspect before changing this domain
 
 - `/tests/identity-policy.spec.ts`: config parsing, missing agent fail-closed behavior, repo normalization, sidecar parsing, token-source precedence, GitHub App token minting.
-- `/tests/repo-policy.spec.ts`: repository reference normalization.
+- `/tests/repo-normalization.spec.ts`: repository reference normalization.
 - `/tests/plugin.spec.ts`: settings save/load/delete, sidecar writes/deletes, agent dropdown data, provider-aware settings fallback, GitHub App manifest creation/conversion, and propagation ID dedupe.
 
 ## Change guidance

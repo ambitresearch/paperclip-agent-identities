@@ -71,7 +71,7 @@ Current test files:
   - successful GitHub API request and activity logging
   - GitHub/network/credential error behavior
   - no token exposure in tool output
-- `/tests/repo-policy.spec.ts`
+- `/tests/repo-normalization.spec.ts`
   - repository reference normalization behavior
 - `/tests/security.spec.ts`
   - redaction helpers
@@ -82,7 +82,7 @@ Current test files:
 
 | Change area | Minimum checks |
 | --- | --- |
-| Types/config/settings state | `pnpm typecheck`, `pnpm test -- tests/plugin.spec.ts tests/identity-policy.spec.ts tests/repo-policy.spec.ts` if using targeted commands |
+| Types/config/settings state | `pnpm typecheck`, `pnpm test -- tests/plugin.spec.ts tests/identity-policy.spec.ts tests/repo-normalization.spec.ts` if using targeted commands |
 | GitHub App manifest flow | `pnpm typecheck`, `pnpm test -- tests/plugin.spec.ts`; manually review settings UI callback path if browser behavior changed |
 | PR tool | `pnpm typecheck`, `pnpm test -- tests/create-pull-request.spec.ts tests/security.spec.ts` |
 | Push tool | `pnpm typecheck`, `pnpm test -- tests/plugin.spec.ts tests/security.spec.ts` |

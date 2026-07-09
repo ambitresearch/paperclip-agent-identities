@@ -163,7 +163,7 @@ Flow state is restored by `get-github-app-manifest-flow`. The current code does 
 ## Tests to inspect before changing this domain
 
 - `/tests/identity-policy.spec.ts`: config parsing, missing agent fail-closed behavior, repo normalization, sidecar parsing, token-source precedence, GitHub App token minting.
-- `/tests/repo-policy.spec.ts`: repository reference normalization.
+- `/tests/repo-normalization.spec.ts`: repository reference normalization.
 - `/tests/plugin.spec.ts`: settings save/load/delete, sidecar writes/deletes, agent dropdown data, provider-aware settings fallback, GitHub App manifest creation/conversion, and propagation ID dedupe.
 
 ## Change guidance

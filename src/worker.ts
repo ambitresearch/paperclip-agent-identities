@@ -351,7 +351,7 @@ function readRequiredString(value: unknown, field: string): string {
 }
 
 function validateSinglePathSegment(value: string, field: string): string {
-  if (value === "." || value === ".." || /[\\/]/.test(value)) {
+  if (!value || value === "." || value === ".." || /[\\/]/.test(value)) {
     throw new Error(`${field} must be a single path segment.`);
   }
   return value;

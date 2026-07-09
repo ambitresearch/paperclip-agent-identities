@@ -172,7 +172,7 @@ const plugin = definePlugin({
 
       const conversion = await response.json();
       const converted = await persistGitHubAppManifestConversion(flow, conversion);
-      await ctx.state.set(githubAppManifestFlowScope(flow.state), { ...flow, conversion: converted });
+      await ctx.state.delete(githubAppManifestFlowScope(flow.state));
       ctx.logger.info("GitHub App manifest converted", { agentId: converted.agentId, appId: converted.appId, appSlug: converted.appSlug });
       return converted;
     });

@@ -863,10 +863,9 @@ describe("agent identity settings", () => {
     });
     await expect(readFile(result.privateKeyFile, "utf8")).resolves.toBe("-----BEGIN RSA PRIVATE KEY-----\ntest-key\n-----END RSA PRIVATE KEY-----\n");
 
-    const restored = await harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
+    await expect(harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
       state: flow.state,
-    });
-    expect(restored.conversion).toEqual(result);
+    })).rejects.toThrow("Unknown or expired GitHub App manifest flow state.");
   });
 
   it("writes GitHub App credential references to the sidecar on save", async () => {

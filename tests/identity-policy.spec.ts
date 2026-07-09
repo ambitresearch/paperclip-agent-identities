@@ -244,6 +244,90 @@ describe("resolveIdentityToken", () => {
     expect(requests[0]?.authorization).toMatch(/^Bearer .+\..+\..+$/);
   });
 
+  it("mints a GitHub App installation token from a private-key secret", async () => {
+    const sidecarPath = join(sidecarDir!, "credentials.json");
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+    await writeFile(sidecarPath, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1:github": {
+          githubApp: {
+            appId: "12345",
+            installationId: "67890",
+            privateKeySecretId: "00000000-0000-4000-8000-000000000005"
+          }
+        }
+      }
+    }), "utf8");
+
+    const resolvedIdentity = {
+      agentId: "agent-1",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot"
+      }
+    };
+    const resolvedSecretRefs: string[] = [];
+
+    const resolved = await resolveIdentityToken(
+      resolvedIdentity,
+      async (secretRef) => {
+        resolvedSecretRefs.push(secretRef);
+        return privateKey;
+      },
+      async () => new Response(JSON.stringify({ token: "ghs_secret_installation_token" }), { status: 201 })
+    );
+
+    expect(resolved).toEqual({ token: "ghs_secret_installation_token", source: "github-app" });
+    expect(resolvedSecretRefs).toEqual(["00000000-0000-4000-8000-000000000005"]);
+  });
+
+  it("falls back to privateKeyFile when private-key secret resolution fails", async () => {
+    const sidecarPath = join(sidecarDir!, "credentials.json");
+    const privateKeyPath = join(sidecarDir!, "github-app.pem");
+    const { privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" }
+    });
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
+    await writeFile(privateKeyPath, privateKey, "utf8");
+    await writeFile(sidecarPath, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1:github": {
+          githubApp: {
+            appId: "12345",
+            installationId: "67890",
+            privateKeySecretId: "00000000-0000-4000-8000-000000000006",
+            privateKeyFile: privateKeyPath
+          }
+        }
+      }
+    }), "utf8");
+
+    const resolvedIdentity = {
+      agentId: "agent-1",
+      identity: {
+        label: "Bot",
+        githubUsername: "bot"
+      }
+    };
+
+    const resolved = await resolveIdentityToken(
+      resolvedIdentity,
+      async () => { throw new Error("secret resolver unavailable"); },
+      async () => new Response(JSON.stringify({ token: "ghs_file_fallback_installation_token" }), { status: 201 })
+    );
+
+    expect(resolved).toEqual({ token: "ghs_file_fallback_installation_token", source: "github-app" });
+  });
+
   it("prefers plugin secret resolution when secretId succeeds even if tokenFile is present", async () => {
     const sidecarPath = join(sidecarDir!, "credentials.json");
     const tokenPath = join(sidecarDir!, "token.txt");

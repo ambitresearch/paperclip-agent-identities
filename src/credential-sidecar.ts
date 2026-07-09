@@ -36,6 +36,8 @@ export type ResolveSecret = (secretRef: string) => Promise<string>;
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export type CredentialSidecarIdentity = z.infer<typeof sidecarIdentitySchema>;
 
+type NodeFsError = Error & { code?: string };
+
 export interface ResolvedIdentityToken {
   token: string;
   source: "plugin-secret" | "token-file" | "github-app";
@@ -63,7 +65,9 @@ export async function readCredentialSidecar(path = getCredentialSidecarPath()): 
     raw = await readFile(path, "utf8");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Unable to read agent identity credential sidecar at '${path}': ${message}`);
+    throw new Error(`Unable to read agent identity credential sidecar at '${path}': ${message}`, {
+      cause: error,
+    });
   }
 
   try {
@@ -81,11 +85,15 @@ export async function readCredentialSidecarIfExists(
   try {
     return await readCredentialSidecar(sidecarPath);
   } catch (error) {
-    if (error instanceof Error && error.message.includes("ENOENT")) {
+    if (error instanceof Error && isNodeFsError(error.cause) && error.cause.code === "ENOENT") {
       return null;
     }
     throw error;
   }
+}
+
+function isNodeFsError(error: unknown): error is NodeFsError {
+  return error instanceof Error && "code" in error;
 }
 
 export async function upsertCredentialSidecarIdentity(

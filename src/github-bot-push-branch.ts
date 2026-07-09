@@ -333,6 +333,11 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets), ctx.http.fetch.bind(ctx.http)));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
+      ctx.logger.error("Failed to resolve agent identity token", {
+        agentId: runCtx.agentId,
+        repository: repository.fullName,
+        reason
+      });
       await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: credential resolution",
         outcome: "credential_resolution_failed",
@@ -340,7 +345,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         branch,
         remote
       });
-      return { error: reason || "Failed to resolve agent identity authentication credentials." };
+      return { error: "Failed to resolve agent identity authentication credentials." };
     }
     let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>>;
 

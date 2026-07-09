@@ -7,11 +7,11 @@ import { githubBotWhoamiManifestTool } from "./shared/github-bot-whoami-tool.js"
 import { githubBotCreatePullRequestManifestTool } from "./shared/github-bot-create-pull-request-tool.js";
 
 const manifest: PaperclipPluginManifestV1 = {
-  id: "roshangautam.paperclip-github-bot-identity",
+  id: "roshangautam.paperclip-agent-identities",
   apiVersion: 1,
-  version: "0.1.2",
-  displayName: "GitHub Bot Identity",
-  description: "Per-agent GitHub bot identity and contribution tools for Paperclip",
+  version: "0.1.3",
+  displayName: "Agent Identities",
+  description: "Per-agent identity providers and contribution tools for Paperclip",
   author: "Roshan Gautam",
   categories: ["connector"],
   instanceConfigSchema: {
@@ -25,14 +25,6 @@ const manifest: PaperclipPluginManifestV1 = {
             properties: {
               label: { type: "string" },
               githubUsername: { type: "string" },
-              allowedOwnerPatterns: {
-                type: "array",
-                items: { type: "string" }
-              },
-              allowedRepos: {
-                type: "array",
-                items: { type: "string" }
-              },
               commitName: { type: "string" },
               commitEmail: { type: "string" }
             },
@@ -52,6 +44,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "instance.settings.register",
     "project.workspaces.read",
     "agent.tools.register",
+    "agents.read",
+    "companies.read",
     "http.outbound",
     "secrets.read-ref",
     "activity.log.write"
@@ -73,13 +67,13 @@ const manifest: PaperclipPluginManifestV1 = {
       {
         type: "dashboardWidget",
         id: "health-widget",
-        displayName: "GitHub Bot Identity Health",
+        displayName: "Agent Identity Coverage",
         exportName: "DashboardWidget"
       },
       {
         type: "settingsPage",
         id: "bot-identity-settings",
-        displayName: "Bot Identity Settings",
+        displayName: "Agent Identities Settings",
         exportName: "SettingsPage"
       }
     ]

@@ -2,7 +2,7 @@ export const GITHUB_BOT_PUSH_BRANCH_TOOL_NAME = "github_bot_push_branch";
 
 export const githubBotPushBranchToolDefinition = {
   displayName: "Push Branch",
-  description: "Push HEAD to a branch in an allowed roshangautam/* GitHub repository.",
+  description: "Push HEAD to a branch in a GitHub repository using the configured agent identity.",
   parametersSchema: {
     type: "object",
     additionalProperties: false,

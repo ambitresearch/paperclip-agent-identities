@@ -1,14 +1,8 @@
 import { z, type ToolRunContext } from "@paperclipai/plugin-sdk";
 
-export const DEFAULT_ALLOWED_OWNER_PATTERNS = ["^roshangautam$"] as const;
-const HARD_ALLOWED_OWNER = "roshangautam";
-
 const githubIdentitySchema = z.object({
   label: z.string().trim().min(1),
   githubUsername: z.string().trim().min(1),
-  tokenSecretRef: z.string().trim().min(1).optional(),
-  allowedOwnerPatterns: z.array(z.string().trim().min(1)).default([...DEFAULT_ALLOWED_OWNER_PATTERNS]),
-  allowedRepos: z.array(z.string().trim().min(1)).optional(),
   commitName: z.string().trim().min(1).optional(),
   commitEmail: z.string().trim().min(1).optional()
 });
@@ -17,8 +11,14 @@ const pluginConfigSchema = z.object({
   identities: z.record(z.string().trim().min(1), githubIdentitySchema)
 });
 
-export type GitHubAgentIdentity = z.infer<typeof githubIdentitySchema>;
-export type GitHubBotIdentityPluginConfig = z.infer<typeof pluginConfigSchema>;
+type ParsedGitHubAgentIdentity = z.infer<typeof githubIdentitySchema>;
+type ParsedGitHubBotIdentityPluginConfig = z.infer<typeof pluginConfigSchema>;
+
+export type GitHubAgentIdentity = ParsedGitHubAgentIdentity;
+
+export type GitHubBotIdentityPluginConfig = {
+  identities: Record<string, GitHubAgentIdentity>;
+};
 
 export interface ResolvedAgentIdentity {
   agentId: string;
@@ -31,14 +31,8 @@ export interface GitHubRepoRef {
   fullName: string;
 }
 
-export interface RepoPolicyDecision {
-  allowed: boolean;
-  reason: string;
-  repo?: GitHubRepoRef;
-}
-
 export function parseGitHubBotIdentityPluginConfig(rawConfig: unknown): GitHubBotIdentityPluginConfig {
-  return pluginConfigSchema.parse(rawConfig);
+  return normalizePluginConfig(pluginConfigSchema.parse(rawConfig));
 }
 
 export function resolveAgentIdentityFromToolRunContext(
@@ -48,14 +42,15 @@ export function resolveAgentIdentityFromToolRunContext(
   const parsed = pluginConfigSchema.safeParse(rawConfig);
   if (!parsed.success) {
     throw new Error(
-      `Invalid GitHub bot identity config: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`
+      `Invalid agent identity config: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`
     );
   }
 
-  const identity = parsed.data.identities[runContext.agentId];
+  const config = normalizePluginConfig(parsed.data);
+  const identity = config.identities[runContext.agentId];
   if (!identity) {
     throw new Error(
-      `Missing GitHub bot identity config for agent '${runContext.agentId}'. Expected identities.${runContext.agentId}.`
+      `Missing agent identity config for agent '${runContext.agentId}'. Expected identities.${runContext.agentId}.`
     );
   }
 
@@ -95,57 +90,12 @@ export function normalizeGitHubRepoRef(input: string): GitHubRepoRef | null {
   return parseOwnerRepoPair(trimmed);
 }
 
-export function evaluateRepoPolicy(identity: GitHubAgentIdentity, repoInput: string): RepoPolicyDecision {
-  const normalizedRepo = normalizeGitHubRepoRef(repoInput);
-  if (!normalizedRepo) {
-    return { allowed: false, reason: "Invalid repository format" };
+function normalizePluginConfig(config: ParsedGitHubBotIdentityPluginConfig): GitHubBotIdentityPluginConfig {
+  const identities: Record<string, GitHubAgentIdentity> = {};
+  for (const [agentId, identity] of Object.entries(config.identities)) {
+    identities[agentId] = identity;
   }
-
-  if (normalizedRepo.owner !== HARD_ALLOWED_OWNER) {
-    return {
-      allowed: false,
-      reason: `Repository owner '${normalizedRepo.owner}' is outside MVP allowed scope '${HARD_ALLOWED_OWNER}/*'`,
-      repo: normalizedRepo
-    };
-  }
-
-  const ownerPatterns = identity.allowedOwnerPatterns;
-
-  let ownerAllowed = false;
-  for (const pattern of ownerPatterns) {
-    try {
-      if (new RegExp(pattern).test(normalizedRepo.owner)) {
-        ownerAllowed = true;
-        break;
-      }
-    } catch {
-      return { allowed: false, reason: `Invalid owner pattern '${pattern}'`, repo: normalizedRepo };
-    }
-  }
-
-  if (!ownerAllowed) {
-    return {
-      allowed: false,
-      reason: `Repository owner '${normalizedRepo.owner}' does not match allowedOwnerPatterns`,
-      repo: normalizedRepo
-    };
-  }
-
-  if (identity.allowedRepos && identity.allowedRepos.length > 0) {
-    const normalizedAllowedRepos = identity.allowedRepos
-      .map(normalizeGitHubRepoRef)
-      .filter((value): value is GitHubRepoRef => Boolean(value));
-    const allowedSet = new Set(normalizedAllowedRepos.map((entry) => entry.fullName));
-    if (!allowedSet.has(normalizedRepo.fullName)) {
-      return {
-        allowed: false,
-        reason: `Repository '${normalizedRepo.fullName}' is not present in allowedRepos`,
-        repo: normalizedRepo
-      };
-    }
-  }
-
-  return { allowed: true, reason: "Repository allowed", repo: normalizedRepo };
+  return { identities };
 }
 
 function isUrlLikeRepoRef(value: string): boolean {

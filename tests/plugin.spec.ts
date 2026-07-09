@@ -1,11 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
-import plugin, { DEFAULT_ALLOWED_OWNER_PATTERN } from "../src/worker.js";
-import type { BotIdentityConfig } from "../src/worker.js";
+import plugin from "../src/worker.js";
+import { CONFIG_SCOPE } from "../src/config-source.js";
+import type { BotIdentityConfig, BotIdentitySettingsData, ConvertGitHubAppManifestResult, CreateGitHubAppManifestResult, GetGitHubAppManifestFlowResult } from "../src/shared/types.js";
 import { __resetGitCommandRunnerForTests, __setGitCommandRunnerForTests } from "../src/github-bot-push-branch.js";
 import { CREDENTIAL_SIDECAR_PATH_ENV } from "../src/credential-sidecar.js";
 
@@ -24,18 +25,19 @@ afterEach(async () => {
 
 const TOOL_AGENT_ID = "agent-test";
 const TEST_SECRET_ID = "00000000-0000-4000-8000-000000000001";
+const TEST_SECRET_ID_2 = "00000000-0000-4000-8000-000000000002";
 let credentialSidecarDir: string | null = null;
 const originalCredentialSidecarPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
 
 beforeEach(async () => {
-  credentialSidecarDir = await mkdtemp(join(tmpdir(), "github-bot-identity-test-"));
+  credentialSidecarDir = await mkdtemp(join(tmpdir(), "agent-identities-test-"));
   const sidecarPath = join(credentialSidecarDir, "credentials.json");
   process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
   await writeFile(sidecarPath, JSON.stringify({
     version: 1,
     identities: {
-      [TOOL_AGENT_ID]: { secretId: TEST_SECRET_ID },
-      agent_1: { secretId: TEST_SECRET_ID }
+      [`${TOOL_AGENT_ID}:github`]: { secretId: TEST_SECRET_ID },
+      "agent_1:github": { secretId: TEST_SECRET_ID }
     }
   }), "utf8");
 });
@@ -45,7 +47,7 @@ function pushToolConfig() {
     identities: {
       [TOOL_AGENT_ID]: {
         label: "Push Bot",
-        githubUsername: "roshan-bot"
+        githubUsername: "paperclip-push-bot",
       }
     }
   };
@@ -76,6 +78,8 @@ describe("plugin scaffold", () => {
     expect(manifest.capabilities).toContain("events.subscribe");
     expect(manifest.capabilities).toContain("ui.dashboardWidget.register");
     expect(manifest.capabilities).toContain("agent.tools.register");
+    expect(manifest.capabilities).toContain("agents.read");
+    expect(manifest.capabilities).toContain("companies.read");
     expect(manifest.capabilities).toContain("instance.settings.register");
   });
 
@@ -93,6 +97,69 @@ describe("plugin scaffold", () => {
     expect(action.pong).toBe(true);
   });
 
+  it("lists Paperclip agents for the settings dropdown", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
+    harness.seed({
+      agents: [
+        {
+          id: "agent-2",
+          companyId: "company_1",
+          name: "Zulu Bot",
+          role: "Engineer",
+          title: null,
+          status: "idle"
+        } as never,
+        {
+          id: "agent-1",
+          companyId: "company_1",
+          name: "Alpha Bot",
+          role: "QA",
+          title: "Quality Pilot",
+          status: "paused"
+        } as never,
+        {
+          id: "agent-other-company",
+          companyId: "company_2",
+          name: "Other Company Bot",
+          role: "Ops",
+          title: null,
+          status: "idle"
+        } as never
+      ]
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const data = await harness.getData<{ agents: Array<{ id: string; name: string; title?: string | null }> }>(
+      "paperclip-agents",
+      { companyId: "company_1" }
+    );
+
+    expect(data.agents).toEqual([
+      expect.objectContaining({ id: "agent-1", name: "Alpha Bot", title: "Quality Pilot" }),
+      expect.objectContaining({ id: "agent-2", name: "Zulu Bot" })
+    ]);
+  });
+
+
+  it("returns the full company name for settings labels", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
+    harness.seed({
+      companies: [
+        {
+          id: "company-dro",
+          name: "DRO",
+          issuePrefix: "DRO",
+          status: "active",
+        } as never,
+      ],
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const data = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company-dro" });
+
+    expect(data.companyName).toBe("DRO");
+  });
+
   it("returns a safe identity summary for configured agents", async () => {
     const harness = createTestHarness({
       manifest,
@@ -100,10 +167,8 @@ describe("plugin scaffold", () => {
       config: {
         identities: {
           agent_1: {
-            label: "Droidshop CTO",
+            label: "Example CTO",
             githubUsername: "paperclip-kiln-lathe",
-            allowedOwnerPatterns: ["^roshangautam$"],
-            allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"],
             commitName: "Kiln Lathe",
             commitEmail: "kiln@example.com"
           }
@@ -120,16 +185,13 @@ describe("plugin scaffold", () => {
 
     expect(whoami.error).toBeUndefined();
     expect(whoami.data).toEqual({
-      label: "Droidshop CTO",
+      label: "Example CTO",
       githubUsername: "paperclip-kiln-lathe",
-      allowedOwners: ["^roshangautam$"],
-      allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"],
       hasCommitName: true,
       hasCommitEmail: true
     });
-    expect(whoami.content).toContain("Droidshop CTO");
+    expect(whoami.content).toContain("Example CTO");
     expect(whoami.content).toContain("@paperclip-kiln-lathe");
-    expect(whoami.data?.tokenSecretRef).toBeUndefined();
     expect(whoami.data?.token).toBeUndefined();
   });
 
@@ -140,10 +202,8 @@ describe("plugin scaffold", () => {
       config: {
         identities: {
           agent_1: {
-            label: "Droidshop CTO",
+            label: "Example CTO",
             githubUsername: "paperclip-kiln-lathe",
-            allowedOwnerPatterns: ["^roshangautam$"],
-            allowedRepos: ["roshangautam/paperclip-github-bot-identity-plugin"]
           }
         }
       }
@@ -157,12 +217,12 @@ describe("plugin scaffold", () => {
     );
 
     expect(whoami.error).toContain("failed closed");
-    expect(whoami.error).toContain("Missing GitHub bot identity config");
+    expect(whoami.error).toContain("Missing agent identity config");
     expect(whoami.data).toBeUndefined();
     expect(whoami.content).toBeUndefined();
   });
 
-  it("allows mediated push for roshangautam repository", async () => {
+  it("allows mediated push for a configured repository", async () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
@@ -176,7 +236,7 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "git@github.com:roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "git@github.com:my-org/example-repo.git\n",
           stderr: ""
         };
       }
@@ -190,13 +250,13 @@ describe("plugin scaffold", () => {
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool(
       "github_bot_push_branch",
       {
         branch: "feature/tool",
-        expectedRepository: "roshangautam/paperclip-github-bot-identity-plugin"
+        expectedRepository: "my-org/example-repo"
       },
       { agentId: TOOL_AGENT_ID }
     );
@@ -207,7 +267,7 @@ describe("plugin scaffold", () => {
     expect(commands[1].args[0]).toBe("-c");
     expect(commands[1].args[1]).toBe("credential.helper=");
     expect(commands[1].args[2]).toBe("push");
-    expect(commands[1].args[3]).toBe("https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    expect(commands[1].args[3]).toBe("https://github.com/my-org/example-repo.git");
     expect(commands[1].args[4]).toBe("HEAD:refs/heads/feature/tool");
     expect(commands[1].env?.GITHUB_TOKEN).toBe(`resolved:${TEST_SECRET_ID}`);
   });
@@ -232,33 +292,33 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool(
       "github_bot_push_branch",
       {
         branch: "feature/tool",
-        expectedRepository: "roshangautam/some-other-repo"
+        expectedRepository: "my-org/some-other-repo"
       },
       { agentId: TOOL_AGENT_ID }
     );
 
     expect(result.error).toBe(
-      "Push denied: repository mismatch. Expected 'roshangautam/some-other-repo', found 'roshangautam/paperclip-github-bot-identity-plugin'."
+      "Push denied: repository mismatch. Expected 'my-org/some-other-repo', found 'my-org/example-repo'."
     );
     expect(commands).toHaveLength(1);
     expect(commands[0].args).toEqual(["remote", "get-url", "origin"]);
     expect(secretResolveCalls).toBe(0);
   });
 
-  it("denies push to disallowed repository before secret resolution", async () => {
+  it("allows GitHub remotes with provider-controlled access", async () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
@@ -266,17 +326,26 @@ describe("plugin scaffold", () => {
     });
     await plugin.definition.setup(harness.ctx);
 
+    const commands: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
     let secretResolveCalls = 0;
-    harness.ctx.secrets.resolve = async () => {
+    harness.ctx.secrets.resolve = async (secretId: string) => {
       secretResolveCalls += 1;
-      return "should-not-be-used";
+      return `resolved:${secretId}`;
     };
 
-    __setGitCommandRunnerForTests(async ({ args }) => {
+    __setGitCommandRunnerForTests(async ({ args, env }) => {
+      commands.push({ args, env });
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
           stdout: "https://github.com/paperclipai/paperclip.git\n",
+          stderr: ""
+        };
+      }
+      if (args[0] === "-c" && args[2] === "push") {
+        return {
+          exitCode: 0,
+          stdout: "pushed\n",
           stderr: ""
         };
       }
@@ -287,8 +356,10 @@ describe("plugin scaffold", () => {
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
-    expect(result.error).toContain("Push denied");
-    expect(secretResolveCalls).toBe(0);
+    expect(result.error).toBeUndefined();
+    expect(result.content).toContain("Push succeeded");
+    expect(secretResolveCalls).toBe(1);
+    expect(commands[1].args[3]).toBe("https://github.com/paperclipai/paperclip.git");
   });
 
   it("denies non-GitHub remotes before secret resolution", async () => {
@@ -311,14 +382,14 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://gitlab.com/roshangautam/repo.git\n",
+          stdout: "https://gitlab.com/my-org/repo.git\n",
           stderr: ""
         };
       }
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://gitlab.com/roshangautam/repo.git");
+    seedPrimaryWorkspace(harness, "https://gitlab.com/my-org/repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
@@ -360,17 +431,17 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
-    expect(result.error).toContain("Invalid GitHub bot identity config");
+    expect(result.error).toContain("Invalid agent identity config");
   });
 
   it("returns a stable error and logs outcome when secret resolution fails", async () => {
@@ -396,22 +467,22 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
-    expect(result.error).toBe("Failed to resolve bot authentication credentials.");
+    expect(result.error).toBe("Failed to resolve agent identity authentication credentials.");
     expect(activityLogs).toContainEqual(expect.objectContaining({
-      message: "github_bot_push_branch failed: secret resolution",
+      message: "github_bot_push_branch failed: credential resolution",
       metadata: expect.objectContaining({
-        outcome: "secret_resolution_failed"
+        outcome: "credential_resolution_failed"
       })
     }));
   });
@@ -428,7 +499,7 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "ssh://git@github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "ssh://git@github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
@@ -442,7 +513,7 @@ describe("plugin scaffold", () => {
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
@@ -464,7 +535,7 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
@@ -478,13 +549,13 @@ describe("plugin scaffold", () => {
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool(
       "github_bot_push_branch",
       {
         branch: "feature/dry",
-        expectedRepository: "roshangautam/paperclip-github-bot-identity-plugin",
+        expectedRepository: "my-org/example-repo",
         dryRun: true
       },
       { agentId: TOOL_AGENT_ID }
@@ -497,7 +568,7 @@ describe("plugin scaffold", () => {
     expect(commands[1].args[1]).toBe("credential.helper=");
     expect(commands[1].args[2]).toBe("push");
     expect(commands[1].args[3]).toBe("--dry-run");
-    expect(commands[1].args[4]).toBe("https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    expect(commands[1].args[4]).toBe("https://github.com/my-org/example-repo.git");
     expect(commands[1].args[5]).toBe("HEAD:refs/heads/feature/dry");
   });
 
@@ -515,7 +586,7 @@ describe("plugin scaffold", () => {
       if (args[0] === "remote" && args[1] === "get-url") {
         return {
           exitCode: 0,
-          stdout: "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git\n",
+          stdout: "https://github.com/my-org/example-repo.git\n",
           stderr: ""
         };
       }
@@ -529,7 +600,7 @@ describe("plugin scaffold", () => {
       throw new Error(`Unexpected git command: ${args.join(" ")}`);
     });
 
-    seedPrimaryWorkspace(harness, "https://github.com/roshangautam/paperclip-github-bot-identity-plugin.git");
+    seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
 
@@ -540,7 +611,7 @@ describe("plugin scaffold", () => {
   });
 });
 
-describe("bot identity settings", () => {
+describe("agent identity settings", () => {
   it("declares settingsPage UI slot", () => {
     const settingsSlot = manifest.ui?.slots?.find(s => s.id === "bot-identity-settings");
     expect(settingsSlot).toBeDefined();
@@ -548,33 +619,431 @@ describe("bot identity settings", () => {
     expect(settingsSlot!.exportName).toBe("SettingsPage");
   });
 
-  it("returns null config when nothing is saved", async () => {
+  it("returns an empty settings list when nothing is saved", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
 
-    const config = await harness.getData("bot-identity-config");
-    expect(config).toBeNull();
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    expect(config.version).toBe(3);
+    expect(config.providers.map((provider) => provider.id)).toContain("github");
+    expect(config.identities).toEqual([]);
+    expect(config.credentialSidecarPath).toBe(process.env[CREDENTIAL_SIDECAR_PATH_ENV]);
   });
 
-  it("saves and retrieves bot identity config", async () => {
+  it("returns supported identity providers with current availability", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+
+    expect(config.providers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "github", name: "GitHub", status: "enabled" }),
+      expect.objectContaining({ id: "slack", name: "Slack", status: "coming-soon" }),
+      expect.objectContaining({ id: "mattermost", name: "Mattermost", status: "coming-soon" }),
+      expect.objectContaining({ id: "entra", name: "Microsoft Entra", status: "coming-soon" }),
+      expect.objectContaining({ id: "gcp", name: "Google Cloud", status: "coming-soon" }),
+      expect.objectContaining({ id: "aws", name: "AWS", status: "coming-soon" }),
+    ]));
+  });
+
+  it("rejects identities for providers that are not enabled yet", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await expect(harness.performAction("save-bot-identity-config", {
+      provider: "slack",
+      agentId: "agent-slack",
+      label: "Slack Identity",
+      githubUsername: "slack-agent",
+    })).rejects.toThrow("Slack identities are not supported yet.");
+  });
+
+  it("saves and retrieves multiple agent identity configs", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
 
     const saved = await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      provider: "github",
       agentId: "agent-uuid-123",
       label: "QA Bot",
       githubUsername: "paperclip-qa-bot",
-      allowedOwnerPattern: DEFAULT_ALLOWED_OWNER_PATTERN,
+    });
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-uuid-456",
+      label: "Deploy Bot",
+      githubUsername: "paperclip-deploy-bot",
     });
 
     expect(saved.agentId).toBe("agent-uuid-123");
     expect(saved.label).toBe("QA Bot");
     expect(saved.githubUsername).toBe("paperclip-qa-bot");
-    expect(saved.allowedOwnerPattern).toBe(DEFAULT_ALLOWED_OWNER_PATTERN);
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    expect(config.identities.map((identity) => identity.agentId).sort()).toEqual(["agent-uuid-123", "agent-uuid-456"]);
+    expect(config.identities.find((identity) => identity.agentId === "agent-uuid-123")?.githubUsername).toBe("paperclip-qa-bot");
+  });
 
-    const config = await harness.getData<BotIdentityConfig>("bot-identity-config");
-    expect(config.agentId).toBe("agent-uuid-123");
-    expect(config.githubUsername).toBe("paperclip-qa-bot");
+  it("filters configured identities to the current settings company", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    harness.seed({
+      agents: [
+        { id: "agent-company-1", companyId: "company_1", name: "Company One Bot" } as never,
+        { id: "agent-company-2", companyId: "company_2", name: "Company Two Bot" } as never,
+      ],
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-company-1",
+      label: "Company One Identity",
+      githubUsername: "company-one-bot",
+    });
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-company-2",
+      label: "Company Two Identity",
+      githubUsername: "company-two-bot",
+    });
+
+    const companyOneConfig = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company_1" });
+    const companyTwoConfig = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company_2" });
+    const unscopedConfig = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+
+    expect(companyOneConfig.identities.map((identity) => identity.agentId)).toEqual(["agent-company-1"]);
+    expect(companyTwoConfig.identities.map((identity) => identity.agentId)).toEqual(["agent-company-2"]);
+    expect(unscopedConfig.identities.map((identity) => identity.agentId).sort()).toEqual(["agent-company-1", "agent-company-2"]);
+  });
+
+  it("keeps configured identities visible when company agent lookup is empty", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-with-saved-config",
+      label: "Saved Identity",
+      githubUsername: "saved-identity-bot",
+    });
+
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company-with-empty-agent-list" });
+
+    expect(config.identities.map((identity) => identity.agentId)).toEqual(["agent-with-saved-config"]);
+  });
+
+  it("persists GitHub App credential propagation agent selections", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-with-env",
+      label: "Env Bot",
+      githubUsername: "paperclip-env-bot",
+      githubAppCredentialPropagationAgentIds: ["agent-with-env", "agent-reviewer", "agent-with-env"],
+    });
+
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    expect(config.identities.find((identity) => identity.agentId === "agent-with-env")?.githubAppCredentialPropagationAgentIds)
+      .toEqual(["agent-with-env", "agent-reviewer"]);
+  });
+
+  it("creates a valid GitHub App manifest without webhook attributes", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    const result = await harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      provider: "github",
+      agentId: "agent-manifest",
+      label: "Sterling Hale",
+    });
+
+    const manifestBody = JSON.parse(result.manifest);
+    expect(result.provider).toBe("github");
+    expect(result.agentId).toBe("agent-manifest");
+    expect(result.appName).toBe("Sterling Hale Paperclip Agent");
+    expect(result.label).toBe("Sterling Hale");
+    expect(result.postUrl).toBe(`https://github.com/settings/apps/new?state=${encodeURIComponent(result.state)}`);
+    expect(manifestBody).toMatchObject({
+      name: "Sterling Hale Paperclip Agent",
+      description: "Paperclip-managed GitHub App identity provider for Sterling Hale.",
+      url: "https://paperclip.example.com",
+      redirect_url: "https://paperclip.example.com",
+      callback_urls: ["https://paperclip.example.com"],
+      setup_url: expect.stringMatching(/^https:\/\/paperclip\.example\.com\/?\?githubAppManifest=install&state=pc_/),
+      setup_on_update: true,
+      request_oauth_on_install: false,
+      public: false,
+      default_permissions: {
+        contents: "write",
+        pull_requests: "write",
+        issues: "write",
+        workflows: "write",
+      },
+      default_events: [],
+    });
+    expect(manifestBody.hook_attributes).toBeUndefined();
+    expect(manifestBody.default_events).toEqual([]);
+  });
+
+  it("uses separate homepage and callback URLs in the GitHub App manifest", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    const result = await harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      agentId: "sterling-hale",
+      label: "Sterling Hale",
+      homepageUrl: "https://paperclip.example.com/WAT/agents/sterling-hale/dashboard",
+      callbackUrl: "https://paperclip.example.com/WAT/settings?tab=plugins&githubAppManifest=1",
+    });
+
+    const manifestBody = JSON.parse(result.manifest);
+    expect(manifestBody.url).toBe("https://paperclip.example.com/WAT/agents/sterling-hale/dashboard");
+    expect(manifestBody.redirect_url).toBe("https://paperclip.example.com/WAT/settings?tab=plugins&githubAppManifest=1");
+    expect(manifestBody.callback_urls).toEqual(["https://paperclip.example.com/WAT/settings?tab=plugins&githubAppManifest=1"]);
+    expect(manifestBody.setup_url).toBe(`${result.setupUrl}`);
+    expect(manifestBody.setup_url).toContain("githubAppManifest=install");
+    expect(manifestBody.setup_url).toContain(`state=${encodeURIComponent(result.state)}`);
+  });
+
+  it("rejects GitHub App manifest agent IDs that are not a single path segment", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await expect(harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      provider: "github",
+      agentId: "../agent-manifest",
+      label: "Sterling Hale",
+    })).rejects.toThrow("agentId must be a single path segment.");
+
+    await expect(harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      provider: "github",
+      agentId: "nested/agent-manifest",
+      label: "Sterling Hale",
+    })).rejects.toThrow("agentId must be a single path segment.");
+  });
+
+
+  it("returns a stored GitHub App manifest flow by state", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    const flow = await harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      provider: "github",
+      agentId: "agent-manifest",
+      label: "Sterling Hale",
+    });
+
+    const restored = await harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
+      state: flow.state,
+    });
+
+    expect(restored).toEqual(flow);
+  });
+
+  it("converts a GitHub App manifest code and stores the generated private key file", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    const flow = await harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      provider: "github",
+      agentId: "agent-manifest",
+      label: "Sterling Hale",
+    });
+    const fetchSpy = vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({
+        id: 12345,
+        slug: "sterling-hale-paperclip-agent",
+        name: "Sterling Hale Paperclip Agent",
+        pem: "-----BEGIN RSA PRIVATE KEY-----\ntest-key\n-----END RSA PRIVATE KEY-----",
+      }), { status: 201 }),
+    );
+
+    const result = await harness.performAction<ConvertGitHubAppManifestResult>("convert-github-app-manifest", {
+      state: flow.state,
+      code: "one-time-code",
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://api.github.com/app-manifests/one-time-code/conversions",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result).toEqual({
+      provider: "github",
+      agentId: "agent-manifest",
+      appId: "12345",
+      appSlug: "sterling-hale-paperclip-agent",
+      appName: "Sterling Hale Paperclip Agent",
+      githubUsername: "sterling-hale-paperclip-agent[bot]",
+      privateKeyFile: join(credentialSidecarDir!, "github-apps", "agent-manifest", "private-key.pem"),
+      installUrl: `https://github.com/apps/sterling-hale-paperclip-agent/installations/new?state=${encodeURIComponent(flow.state)}`,
+    });
+    await expect(readFile(result.privateKeyFile, "utf8")).resolves.toBe("-----BEGIN RSA PRIVATE KEY-----\ntest-key\n-----END RSA PRIVATE KEY-----\n");
+
+    await expect(harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
+      state: flow.state,
+    })).rejects.toThrow("Unknown or expired GitHub App manifest flow state.");
+  });
+
+  it("writes GitHub App credential references to the sidecar on save", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-with-github-app",
+      label: "GitHub App Bot",
+      githubUsername: "paperclip-github-app-bot",
+      githubAppCredentialPropagationAgentIds: ["agent-with-github-app"],
+      credential: {
+        githubApp: {
+          appId: "12345",
+          installationId: "67890",
+          privateKeySecretId: TEST_SECRET_ID,
+          privateKeyFile: "/paperclip/.paperclip/agent-identities/github-apps/agent-with-github-app/private-key.pem",
+        },
+      },
+    });
+
+    const sidecar = JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"));
+    expect(sidecar.identities["agent-with-github-app:github"]).toEqual({
+      githubApp: {
+        appId: "12345",
+        installationId: "67890",
+        privateKeySecretId: TEST_SECRET_ID,
+        privateKeyFile: "/paperclip/.paperclip/agent-identities/github-apps/agent-with-github-app/private-key.pem",
+      },
+    });
+
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    const entry = config.identities.find((identity) => identity.agentId === "agent-with-github-app");
+    expect(entry?.credentialStatus).toBe("configured");
+    expect(entry?.githubAppCredentialPropagationAgentIds).toEqual(["agent-with-github-app"]);
+  });
+
+  it("writes credential references to the sidecar on save", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-with-credential",
+      label: "Credential Bot",
+      githubUsername: "paperclip-credential-bot",
+      credential: {
+        secretId: TEST_SECRET_ID,
+        tokenFile: "/paperclip/.paperclip/agent-identities/tokens/agent-with-credential.token",
+      },
+    });
+
+    const sidecar = JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"));
+    expect(sidecar.identities["agent-with-credential:github"]).toEqual({
+      secretId: TEST_SECRET_ID,
+      tokenFile: "/paperclip/.paperclip/agent-identities/tokens/agent-with-credential.token",
+    });
+
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    expect(config.identities.find((identity) => identity.agentId === "agent-with-credential")?.credentialStatus).toBe("configured");
+  });
+
+  it("moves an edited identity to the selected agent without leaving the old key", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-before-move",
+      label: "Move Bot",
+      githubUsername: "paperclip-move-bot",
+      credential: { secretId: TEST_SECRET_ID },
+    });
+    await harness.performAction("save-bot-identity-config", {
+      provider: "github",
+      previousAgentId: "agent-before-move",
+      agentId: "agent-after-move",
+      label: "Move Bot",
+      githubUsername: "paperclip-move-bot",
+      credential: { secretId: TEST_SECRET_ID_2 },
+    });
+
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    expect(config.identities.map((identity) => identity.agentId)).toEqual(["agent-after-move"]);
+    const sidecar = JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"));
+    expect(sidecar.identities["agent-before-move:github"]).toBeUndefined();
+    expect(sidecar.identities["agent-after-move:github"]).toEqual({ secretId: TEST_SECRET_ID_2 });
+  });
+
+  it("deletes agent identity config and matching sidecar entry", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-delete-me",
+      label: "Delete Bot",
+      githubUsername: "paperclip-delete-bot",
+      credential: { secretId: TEST_SECRET_ID },
+    });
+    await harness.performAction("delete-bot-identity-config", { provider: "github",
+      agentId: "agent-delete-me" });
+
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    expect(config.identities.some((identity) => identity.agentId === "agent-delete-me")).toBe(false);
+    const sidecar = JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"));
+    expect(sidecar.identities["agent-delete-me:github"]).toBeUndefined();
+  });
+
+  it("uses provider settings-page state for agent tools", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 3,
+      identities: {
+        "settings-agent:github": {
+          id: "settings-agent:github",
+          agentId: "settings-agent",
+          provider: "github",
+          label: "Settings Bot",
+          githubUsername: "paperclip-settings-bot",
+        },
+      },
+    });
+
+    const whoami = await harness.executeTool<{ data?: Record<string, unknown>; error?: string }>(
+      "github_bot_whoami",
+      {},
+      { agentId: "settings-agent" }
+    );
+
+    expect(whoami.error).toBeUndefined();
+    expect(whoami.data).toEqual(expect.objectContaining({
+      label: "Settings Bot",
+      githubUsername: "paperclip-settings-bot",
+    }));
+  });
+
+  it("uses settings-page state for agent tools when instance config is empty", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-from-settings",
+      label: "Settings Bot",
+      githubUsername: "paperclip-settings-bot",
+    });
+
+    const whoami = await harness.executeTool<{ data?: Record<string, unknown>; error?: string }>(
+      "github_bot_whoami",
+      {},
+      { agentId: "agent-from-settings" }
+    );
+
+    expect(whoami.error).toBeUndefined();
+    expect(whoami.data).toEqual(expect.objectContaining({
+      label: "Settings Bot",
+      githubUsername: "paperclip-settings-bot",
+    }));
   });
 
   it("rejects save when required fields are missing", async () => {
@@ -590,32 +1059,15 @@ describe("bot identity settings", () => {
     ).rejects.toThrow("Required fields");
   });
 
-  it("defaults allowedOwnerPattern when empty", async () => {
-    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
-    await plugin.definition.setup(harness.ctx);
-
-    const saved = await harness.performAction<{ allowedOwnerPattern: string }>(
-      "save-bot-identity-config",
-      {
-        agentId: "agent-1",
-        label: "Test",
-        githubUsername: "bot",
-        allowedOwnerPattern: "",
-      }
-    );
-
-    expect(saved.allowedOwnerPattern).toBe(DEFAULT_ALLOWED_OWNER_PATTERN);
-  });
-
   it("stores optional commit identity fields", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
 
     const saved = await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
+      provider: "github",
       agentId: "agent-1",
       label: "Deploy Bot",
       githubUsername: "paperclip-deploy",
-      allowedOwnerPattern: DEFAULT_ALLOWED_OWNER_PATTERN,
       commitName: "Paperclip Deploy",
       commitEmail: "deploy@paperclip.ai",
     });

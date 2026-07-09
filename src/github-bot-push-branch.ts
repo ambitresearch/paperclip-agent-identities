@@ -3,8 +3,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { evaluateRepoPolicy, normalizeGitHubRepoRef, resolveAgentIdentityFromToolRunContext } from "./identity-policy.js";
-import { resolveIdentitySecretRef } from "./credential-sidecar.js";
+import { normalizeGitHubRepoRef } from "./identity-policy.js";
+import { resolveAgentIdentityFromPluginSettings } from "./config-source.js";
+import { resolveIdentityToken } from "./credential-sidecar.js";
 
 type GitCommandResult = {
   exitCode: number;
@@ -287,11 +288,9 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       return { error: "Push denied: remote must be a GitHub repository URL." };
     }
 
-    const config = await ctx.config.get();
-
-    let resolvedIdentity: ReturnType<typeof resolveAgentIdentityFromToolRunContext>;
+    let resolvedIdentity: Awaited<ReturnType<typeof resolveAgentIdentityFromPluginSettings>>;
     try {
-      resolvedIdentity = resolveAgentIdentityFromToolRunContext(config, runCtx);
+      resolvedIdentity = await resolveAgentIdentityFromPluginSettings(ctx, runCtx);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       await logPushBranchOutcome(ctx, runCtx, {
@@ -302,18 +301,6 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         remote
       });
       return { error: reason };
-    }
-
-    const policyDecision = evaluateRepoPolicy(resolvedIdentity.identity, repository.fullName);
-    if (!policyDecision.allowed) {
-      await logPushBranchOutcome(ctx, runCtx, {
-        message: "github_bot_push_branch denied: owner policy",
-        outcome: "denied_owner_policy",
-        repository: repository.fullName,
-        branch,
-        remote
-      });
-      return { error: `Push denied for '${repository.fullName}': ${policyDecision.reason}.` };
     }
 
     if (expectedRepository) {
@@ -341,33 +328,24 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       }
     }
 
-    let secretRef: string;
-    try {
-      secretRef = await resolveIdentitySecretRef(resolvedIdentity);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      await logPushBranchOutcome(ctx, runCtx, {
-        message: "github_bot_push_branch failed: credential mapping",
-        outcome: "credential_mapping_failed",
-        repository: repository.fullName,
-        branch,
-        remote
-      });
-      return { error: reason };
-    }
-
     let token: string;
     try {
-      token = await ctx.secrets.resolve(secretRef);
-    } catch {
+      ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets), ctx.http.fetch.bind(ctx.http)));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      ctx.logger.error("Failed to resolve agent identity token", {
+        agentId: runCtx.agentId,
+        repository: repository.fullName,
+        reason
+      });
       await logPushBranchOutcome(ctx, runCtx, {
-        message: "github_bot_push_branch failed: secret resolution",
-        outcome: "secret_resolution_failed",
+        message: "github_bot_push_branch failed: credential resolution",
+        outcome: "credential_resolution_failed",
         repository: repository.fullName,
         branch,
         remote
       });
-      return { error: "Failed to resolve bot authentication credentials." };
+      return { error: "Failed to resolve agent identity authentication credentials." };
     }
     let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>>;
 

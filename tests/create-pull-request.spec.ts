@@ -15,13 +15,13 @@ describe("github_bot_create_pull_request tool", () => {
   let credentialSidecarDir: string | null = null;
 
   beforeEach(async () => {
-    credentialSidecarDir = await mkdtemp(join(tmpdir(), "github-bot-identity-pr-test-"));
+    credentialSidecarDir = await mkdtemp(join(tmpdir(), "agent-identities-pr-test-"));
     const sidecarPath = join(credentialSidecarDir, "credentials.json");
     process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
     await writeFile(sidecarPath, JSON.stringify({
       version: 1,
       identities: {
-        "agent-1": { secretId: TEST_SECRET_ID }
+        "agent-1:github": { secretId: TEST_SECRET_ID }
       }
     }), "utf8");
 
@@ -32,8 +32,7 @@ describe("github_bot_create_pull_request tool", () => {
         identities: {
           "agent-1": {
             label: "PR Bot",
-            githubUsername: "paperclip-pr-bot",
-            allowedOwnerPatterns: ["^roshangautam$"]
+            githubUsername: "paperclip-pr-bot"
           }
         }
       }
@@ -54,6 +53,7 @@ describe("github_bot_create_pull_request tool", () => {
   });
 
   const validRunCtx = {
+    provider: "github",
     agentId: "agent-1",
     runId: "run-1",
     companyId: "company-1",
@@ -73,7 +73,7 @@ describe("github_bot_create_pull_request tool", () => {
     it("rejects missing head branch", async () => {
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "roshangautam/repo", base: "main", title: "PR" },
+        { repository: "my-org/repo", base: "main", title: "PR" },
         validRunCtx,
       );
       expect(result.error).toMatch(/head branch is required/);
@@ -82,7 +82,7 @@ describe("github_bot_create_pull_request tool", () => {
     it("rejects missing base branch", async () => {
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "roshangautam/repo", head: "feat", title: "PR" },
+        { repository: "my-org/repo", head: "feat", title: "PR" },
         validRunCtx,
       );
       expect(result.error).toMatch(/base branch is required/);
@@ -91,7 +91,7 @@ describe("github_bot_create_pull_request tool", () => {
     it("rejects missing title", async () => {
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "roshangautam/repo", head: "feat", base: "main" },
+        { repository: "my-org/repo", head: "feat", base: "main" },
         validRunCtx,
       );
       expect(result.error).toMatch(/title is required/);
@@ -107,14 +107,13 @@ describe("github_bot_create_pull_request tool", () => {
     });
   });
 
-  describe("repository policy enforcement", () => {
-    it("allows roshangautam/* repositories", async () => {
-      // Mock the secrets resolve to confirm policy passes before secrets
+  describe("repository normalization", () => {
+    it("allows valid repositories and leaves access decisions to GitHub", async () => {
       vi.spyOn(harness.ctx.secrets, "resolve").mockResolvedValue("fake-token");
-      vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
+      const fetchSpy = vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
         new Response(JSON.stringify({
           number: 42,
-          html_url: "https://github.com/roshangautam/repo/pull/42",
+          html_url: "https://github.com/paperclipai/paperclip/pull/42",
           state: "open",
           draft: false,
           head: { ref: "feat" },
@@ -124,39 +123,19 @@ describe("github_bot_create_pull_request tool", () => {
 
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "roshangautam/repo", head: "feat", base: "main", title: "PR" },
-        validRunCtx,
-      );
-      expect(result.error).toBeUndefined();
-      expect(result.data).toBeDefined();
-    });
-
-    it("denies paperclipai/* repositories before secret resolution", async () => {
-      const secretsSpy = vi.spyOn(harness.ctx.secrets, "resolve");
-
-      const result = await harness.executeTool<ToolResult>(
-        "github_bot_create_pull_request",
         { repository: "paperclipai/paperclip", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
-      expect(result.error).toMatch(/outside MVP allowed scope/);
-      // Secrets should never be resolved for denied repos
-      expect(secretsSpy).not.toHaveBeenCalled();
-    });
 
-    it("denies arbitrary owner repos before secret resolution", async () => {
-      const secretsSpy = vi.spyOn(harness.ctx.secrets, "resolve");
-
-      const result = await harness.executeTool<ToolResult>(
-        "github_bot_create_pull_request",
-        { repository: "attacker/evil-repo", head: "feat", base: "main", title: "PR" },
-        validRunCtx,
+      expect(result.error).toBeUndefined();
+      expect(result.data).toEqual(expect.objectContaining({ number: 42 }));
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "https://api.github.com/repos/paperclipai/paperclip/pulls",
+        expect.objectContaining({ method: "POST" }),
       );
-      expect(result.error).toMatch(/outside MVP allowed scope/);
-      expect(secretsSpy).not.toHaveBeenCalled();
     });
 
-    it("rejects malformed repository format", async () => {
+    it("rejects malformed repository format before secret resolution", async () => {
       const secretsSpy = vi.spyOn(harness.ctx.secrets, "resolve");
 
       const result = await harness.executeTool<ToolResult>(
@@ -175,7 +154,7 @@ describe("github_bot_create_pull_request tool", () => {
       vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
         new Response(JSON.stringify({
           number: 7,
-          html_url: "https://github.com/roshangautam/my-repo/pull/7",
+          html_url: "https://github.com/my-org/my-repo/pull/7",
           state: "open",
           draft: false,
           head: { ref: "feature-branch" },
@@ -186,7 +165,7 @@ describe("github_bot_create_pull_request tool", () => {
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
         {
-          repository: "roshangautam/my-repo",
+          repository: "my-org/my-repo",
           head: "feature-branch",
           base: "main",
           title: "Add new feature",
@@ -198,10 +177,10 @@ describe("github_bot_create_pull_request tool", () => {
 
       expect(result.error).toBeUndefined();
       expect(result.content).toContain("#7");
-      expect(result.content).toContain("https://github.com/roshangautam/my-repo/pull/7");
+      expect(result.content).toContain("https://github.com/my-org/my-repo/pull/7");
       expect(result.data).toEqual({
         number: 7,
-        url: "https://github.com/roshangautam/my-repo/pull/7",
+        url: "https://github.com/my-org/my-repo/pull/7",
         state: "open",
         draft: false,
         head: "feature-branch",
@@ -214,7 +193,7 @@ describe("github_bot_create_pull_request tool", () => {
       const fetchSpy = vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
         new Response(JSON.stringify({
           number: 8,
-          html_url: "https://github.com/roshangautam/my-repo/pull/8",
+          html_url: "https://github.com/my-org/my-repo/pull/8",
           state: "open",
           draft: true,
           head: { ref: "wip" },
@@ -225,7 +204,7 @@ describe("github_bot_create_pull_request tool", () => {
       await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
         {
-          repository: "roshangautam/my-repo",
+          repository: "my-org/my-repo",
           head: "wip",
           base: "main",
           title: "WIP: Draft PR",
@@ -243,7 +222,7 @@ describe("github_bot_create_pull_request tool", () => {
       vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
         new Response(JSON.stringify({
           number: 10,
-          html_url: "https://github.com/roshangautam/my-repo/pull/10",
+          html_url: "https://github.com/my-org/my-repo/pull/10",
           state: "open",
           draft: false,
           head: { ref: "feat" },
@@ -253,13 +232,13 @@ describe("github_bot_create_pull_request tool", () => {
 
       await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "roshangautam/my-repo", head: "feat", base: "main", title: "PR" },
+        { repository: "my-org/my-repo", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
 
       expect(harness.activity).toHaveLength(1);
       expect(harness.activity[0].message).toContain("Created PR #10");
-      expect(harness.activity[0].metadata?.repository).toBe("roshangautam/my-repo");
+      expect(harness.activity[0].metadata?.repository).toBe("my-org/my-repo");
     });
 
     it("normalizes full GitHub URL to canonical owner/repo for API call", async () => {
@@ -267,7 +246,7 @@ describe("github_bot_create_pull_request tool", () => {
       const fetchSpy = vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
         new Response(JSON.stringify({
           number: 11,
-          html_url: "https://github.com/roshangautam/my-repo/pull/11",
+          html_url: "https://github.com/my-org/my-repo/pull/11",
           state: "open",
           draft: false,
           head: { ref: "feat" },
@@ -278,7 +257,7 @@ describe("github_bot_create_pull_request tool", () => {
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
         {
-          repository: "https://github.com/roshangautam/my-repo",
+          repository: "https://github.com/my-org/my-repo",
           head: "feat",
           base: "main",
           title: "PR via URL",
@@ -289,7 +268,7 @@ describe("github_bot_create_pull_request tool", () => {
       expect(result.error).toBeUndefined();
       // Verify the fetch was called with the canonical API URL
       const calledUrl = fetchSpy.mock.calls[0][0] as string;
-      expect(calledUrl).toBe("https://api.github.com/repos/roshangautam/my-repo/pulls");
+      expect(calledUrl).toBe("https://api.github.com/repos/my-org/my-repo/pulls");
     });
   });
 
@@ -299,11 +278,11 @@ describe("github_bot_create_pull_request tool", () => {
 
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "roshangautam/my-repo", head: "feat", base: "main", title: "PR" },
+        { repository: "my-org/my-repo", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
 
-      expect(result.error).toMatch(/Failed to resolve bot authentication credentials/);
+      expect(result.error).toMatch(/Failed to resolve agent identity authentication credentials/);
       // Should NOT contain any token or secret details
       expect(result.error).not.toContain("vault");
     });
@@ -319,7 +298,7 @@ describe("github_bot_create_pull_request tool", () => {
 
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "roshangautam/my-repo", head: "feat", base: "main", title: "PR" },
+        { repository: "my-org/my-repo", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
 
@@ -335,7 +314,7 @@ describe("github_bot_create_pull_request tool", () => {
 
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "roshangautam/my-repo", head: "feat", base: "main", title: "PR" },
+        { repository: "my-org/my-repo", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
 
@@ -351,7 +330,7 @@ describe("github_bot_create_pull_request tool", () => {
       vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
         new Response(JSON.stringify({
           number: 1,
-          html_url: "https://github.com/roshangautam/r/pull/1",
+          html_url: "https://github.com/my-org/r/pull/1",
           state: "open",
           draft: false,
           head: { ref: "h" },
@@ -361,7 +340,7 @@ describe("github_bot_create_pull_request tool", () => {
 
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "roshangautam/r", head: "h", base: "b", title: "T" },
+        { repository: "my-org/r", head: "h", base: "b", title: "T" },
         validRunCtx,
       );
 

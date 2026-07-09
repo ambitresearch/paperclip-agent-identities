@@ -1,8 +1,8 @@
 export const githubBotWhoamiToolName = "github_bot_whoami";
 
 export const githubBotWhoamiToolMetadata = {
-  displayName: "GitHub Bot Who Am I",
-  description: "Returns the calling agent's configured GitHub bot identity metadata.",
+  displayName: "GitHub Identity Who Am I",
+  description: "Returns the calling agent's configured GitHub identity metadata.",
   parametersSchema: {
     type: "object",
     properties: {},

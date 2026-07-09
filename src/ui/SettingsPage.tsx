@@ -1468,28 +1468,28 @@ async function syncGitHubAppCredentialPropagationForAgents(input: {
   const removeAgentIds = previousAgentIds.filter((agentId) => !selectedAgentIdSet.has(agentId));
   const operations: Array<{ agentId: string; mode: AgentPropagationMode; githubApp: GitHubAppPropagationConfig }> = [];
 
-  if (selectedAgentIds.length > 0 && hasCompleteGitHubAppValues(input.githubAppId, input.githubInstallationId, input.privateKeySecretRef, input.privateKeyFile)) {
-    const githubApp = buildGitHubAppPropagationConfig({
+  if (selectedAgentIds.length > 0) {
+    const selectedConfig = {
       appId: input.githubAppId,
       installationId: input.githubInstallationId,
       privateKeySecretRef: input.privateKeySecretRef,
       privateKeyFile: input.privateKeyFile,
-    });
-    operations.push(...selectedAgentIds.map((agentId) => ({ agentId, mode: "ensure" as const, githubApp })));
+    };
+    if (hasCompleteGitHubAppValues(selectedConfig)) {
+      const githubApp = buildGitHubAppPropagationConfig(selectedConfig);
+      operations.push(...selectedAgentIds.map((agentId) => ({ agentId, mode: "ensure" as const, githubApp })));
+    }
   }
 
   if (removeAgentIds.length > 0) {
-    const prevAppId = input.previousGithubAppId ?? input.githubAppId;
-    const prevInstallationId = input.previousGithubInstallationId ?? input.githubInstallationId;
-    const prevPrivateKeySecretRef = input.previousPrivateKeySecretRef ?? input.privateKeySecretRef;
-    const prevPrivateKeyFile = input.previousPrivateKeyFile ?? input.privateKeyFile;
-    if (hasCompleteGitHubAppValues(prevAppId, prevInstallationId, prevPrivateKeySecretRef, prevPrivateKeyFile)) {
-      const githubApp = buildGitHubAppPropagationConfig({
-        appId: prevAppId,
-        installationId: prevInstallationId,
-        privateKeySecretRef: prevPrivateKeySecretRef,
-        privateKeyFile: prevPrivateKeyFile,
-      });
+    const removeConfig = {
+      appId: input.previousGithubAppId ?? input.githubAppId,
+      installationId: input.previousGithubInstallationId ?? input.githubInstallationId,
+      privateKeySecretRef: input.previousPrivateKeySecretRef ?? input.privateKeySecretRef,
+      privateKeyFile: input.previousPrivateKeyFile ?? input.privateKeyFile,
+    };
+    if (hasCompleteGitHubAppValues(removeConfig)) {
+      const githubApp = buildGitHubAppPropagationConfig(removeConfig);
       operations.push(...removeAgentIds.map((agentId) => ({ agentId, mode: "remove" as const, githubApp })));
     }
   }
@@ -1508,8 +1508,8 @@ async function syncGitHubAppCredentialPropagationForAgents(input: {
   }
 }
 
-function hasCompleteGitHubAppValues(appId?: string, installationId?: string, privateKeySecretRef?: string, privateKeyFile?: string): boolean {
-  return Boolean(appId?.trim() && installationId?.trim() && (privateKeySecretRef?.trim() || privateKeyFile?.trim()));
+function hasCompleteGitHubAppValues(input: { appId?: string; installationId?: string; privateKeySecretRef?: string; privateKeyFile?: string }): boolean {
+  return Boolean(input.appId?.trim() && input.installationId?.trim() && (input.privateKeySecretRef?.trim() || input.privateKeyFile?.trim()));
 }
 
 function buildGitHubAppPropagationConfig(

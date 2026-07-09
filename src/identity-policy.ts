@@ -3,7 +3,6 @@ import { z, type ToolRunContext } from "@paperclipai/plugin-sdk";
 const githubIdentitySchema = z.object({
   label: z.string().trim().min(1),
   githubUsername: z.string().trim().min(1),
-  tokenSecretRef: z.string().trim().min(1).optional(),
   commitName: z.string().trim().min(1).optional(),
   commitEmail: z.string().trim().min(1).optional()
 });

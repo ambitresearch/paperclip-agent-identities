@@ -1,14 +1,12 @@
 import { createSign } from "node:crypto";
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "@paperclipai/plugin-sdk";
 import type { ResolvedAgentIdentity } from "./identity-policy.js";
 import { GITHUB_IDENTITY_PROVIDER_ID, getIdentityKey, type IdentityProviderId } from "./shared/types.js";
 
 export const CREDENTIAL_SIDECAR_PATH_ENV = "PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS";
-export const LEGACY_CREDENTIAL_SIDECAR_PATH_ENV = "PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS";
 export const DEFAULT_CREDENTIAL_SIDECAR_PATH = "/paperclip/.paperclip/agent-identities/credentials.json";
-export const LEGACY_DEFAULT_CREDENTIAL_SIDECAR_PATH = "/paperclip/.paperclip/github-bot-identity/credentials.json";
 
 const githubAppCredentialSchema = z.object({
   appId: z.string().trim().min(1),
@@ -44,36 +42,15 @@ export interface ResolvedIdentityToken {
 }
 
 export function getCredentialSidecarPath(): string {
-  return (
-    process.env[CREDENTIAL_SIDECAR_PATH_ENV]?.trim() ||
-    process.env[LEGACY_CREDENTIAL_SIDECAR_PATH_ENV]?.trim() ||
-    DEFAULT_CREDENTIAL_SIDECAR_PATH
-  );
+  return process.env[CREDENTIAL_SIDECAR_PATH_ENV]?.trim() || DEFAULT_CREDENTIAL_SIDECAR_PATH;
 }
 
 export async function resolveCredentialSidecarPath(
-  defaultPath = DEFAULT_CREDENTIAL_SIDECAR_PATH,
-  legacyDefaultPath = LEGACY_DEFAULT_CREDENTIAL_SIDECAR_PATH
+  defaultPath = DEFAULT_CREDENTIAL_SIDECAR_PATH
 ): Promise<string> {
-  const explicitPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV]?.trim() || process.env[LEGACY_CREDENTIAL_SIDECAR_PATH_ENV]?.trim();
+  const explicitPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV]?.trim();
   if (explicitPath) return explicitPath;
-  if (await pathExists(defaultPath)) return defaultPath;
-  if (await pathExists(legacyDefaultPath)) return legacyDefaultPath;
   return defaultPath;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return false;
-    throw error;
-  }
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
 }
 
 export function parseCredentialSidecar(rawConfig: unknown): GitHubBotIdentityCredentialSidecar {
@@ -160,35 +137,11 @@ async function writeCredentialSidecar(
   await writeFile(tempPath, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   await rename(tempPath, path);
 }
-
-export async function resolveIdentitySecretRef(resolvedIdentity: ResolvedAgentIdentity): Promise<string> {
-  const inlineSecretRef = resolvedIdentity.identity.tokenSecretRef?.trim();
-  if (inlineSecretRef) {
-    return inlineSecretRef;
-  }
-
-  const sidecarPath = await resolveCredentialSidecarPath();
-  const sidecarIdentity = await readSidecarIdentity(resolvedIdentity, sidecarPath);
-  if (!sidecarIdentity.secretId) {
-    throw new Error(
-      `Missing GitHub provider credential secretId for agent '${resolvedIdentity.agentId}'. ` +
-      `Expected identities.${getIdentityKey(resolvedIdentity.agentId, GITHUB_IDENTITY_PROVIDER_ID)}.secretId in ${sidecarPath}.`
-    );
-  }
-
-  return sidecarIdentity.secretId;
-}
-
 export async function resolveIdentityToken(
   resolvedIdentity: ResolvedAgentIdentity,
   resolveSecret: ResolveSecret,
   fetchImpl: FetchLike = fetch
 ): Promise<ResolvedIdentityToken> {
-  const inlineSecretRef = resolvedIdentity.identity.tokenSecretRef?.trim();
-  if (inlineSecretRef) {
-    return { token: await resolveSecret(inlineSecretRef), source: "plugin-secret" };
-  }
-
   const sidecarPath = await resolveCredentialSidecarPath();
   const sidecarIdentity = await readSidecarIdentity(resolvedIdentity, sidecarPath);
   if (sidecarIdentity.githubApp) {

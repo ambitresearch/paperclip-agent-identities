@@ -359,6 +359,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       const previousAgentIds = config.previousAgentId && config.previousAgentId !== targetAgentId ? [config.previousAgentId] : [];
       const payload: SaveBotIdentityConfigInput = {
         agentId: config.agentId.trim(),
+        previousAgentId: config.previousAgentId.trim() || undefined,
         provider: config.provider,
         label: config.label.trim(),
         githubUsername: config.githubUsername.trim(),
@@ -851,7 +852,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                     placeholder="/paperclip/.paperclip/agent-identities/tokens/<agent-id>.token"
                     style={inputStyle}
                   />
-                  <span style={hintStyle}>Compatibility only. Prefer GitHub App credentials above.</span>
+                  <span style={hintStyle}>Fallback token files are available for dev and recovery flows. Prefer GitHub App credentials above.</span>
                 </label>
               </div>
             </details>

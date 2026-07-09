@@ -25,6 +25,7 @@ afterEach(async () => {
 
 const TOOL_AGENT_ID = "agent-test";
 const TEST_SECRET_ID = "00000000-0000-4000-8000-000000000001";
+const TEST_SECRET_ID_2 = "00000000-0000-4000-8000-000000000002";
 let credentialSidecarDir: string | null = null;
 const originalCredentialSidecarPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
 
@@ -191,7 +192,6 @@ describe("plugin scaffold", () => {
     });
     expect(whoami.content).toContain("Example CTO");
     expect(whoami.content).toContain("@paperclip-kiln-lathe");
-    expect(whoami.data?.tokenSecretRef).toBeUndefined();
     expect(whoami.data?.token).toBeUndefined();
   });
 
@@ -930,6 +930,33 @@ describe("agent identity settings", () => {
     expect(config.identities.find((identity) => identity.agentId === "agent-with-credential")?.credentialStatus).toBe("configured");
   });
 
+  it("moves an edited identity to the selected agent without leaving the old key", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction("save-bot-identity-config", {
+      provider: "github",
+      agentId: "agent-before-move",
+      label: "Move Bot",
+      githubUsername: "paperclip-move-bot",
+      credential: { secretId: TEST_SECRET_ID },
+    });
+    await harness.performAction("save-bot-identity-config", {
+      provider: "github",
+      previousAgentId: "agent-before-move",
+      agentId: "agent-after-move",
+      label: "Move Bot",
+      githubUsername: "paperclip-move-bot",
+      credential: { secretId: TEST_SECRET_ID_2 },
+    });
+
+    const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    expect(config.identities.map((identity) => identity.agentId)).toEqual(["agent-after-move"]);
+    const sidecar = JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"));
+    expect(sidecar.identities["agent-before-move:github"]).toBeUndefined();
+    expect(sidecar.identities["agent-after-move:github"]).toEqual({ secretId: TEST_SECRET_ID_2 });
+  });
+
   it("deletes agent identity config and matching sidecar entry", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
@@ -956,12 +983,12 @@ describe("agent identity settings", () => {
     await harness.ctx.state.set(CONFIG_SCOPE, {
       version: 3,
       identities: {
-        "legacy-agent:github": {
-          id: "legacy-agent:github",
-          agentId: "legacy-agent",
+        "settings-agent:github": {
+          id: "settings-agent:github",
+          agentId: "settings-agent",
           provider: "github",
-          label: "Legacy Bot",
-          githubUsername: "paperclip-legacy-bot",
+          label: "Settings Bot",
+          githubUsername: "paperclip-settings-bot",
         },
       },
     });
@@ -969,13 +996,13 @@ describe("agent identity settings", () => {
     const whoami = await harness.executeTool<{ data?: Record<string, unknown>; error?: string }>(
       "github_bot_whoami",
       {},
-      { agentId: "legacy-agent" }
+      { agentId: "settings-agent" }
     );
 
     expect(whoami.error).toBeUndefined();
     expect(whoami.data).toEqual(expect.objectContaining({
-      label: "Legacy Bot",
-      githubUsername: "paperclip-legacy-bot",
+      label: "Settings Bot",
+      githubUsername: "paperclip-settings-bot",
     }));
   });
 

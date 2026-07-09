@@ -62,10 +62,7 @@ Private credential references live outside plugin state in a local JSON sidecar 
 Path resolution order:
 
 1. `PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS`
-2. legacy `PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS`
-3. `/paperclip/.paperclip/agent-identities/credentials.json` when present
-4. legacy `/paperclip/.paperclip/github-bot-identity/credentials.json` when the renamed default is absent
-5. `/paperclip/.paperclip/agent-identities/credentials.json` for new sidecars
+2. `/paperclip/.paperclip/agent-identities/credentials.json`
 
 Sidecar schema version 1 maps provider-aware identity keys to credential sources:
 
@@ -90,7 +87,6 @@ Supported credential sources:
 - `githubApp`: preferred source. Requires `appId`, `installationId`, and either `privateKeySecretId` or `privateKeyFile`.
 - `secretId`: fallback Paperclip secret containing a token.
 - `tokenFile`: fallback token file path.
-- inline `tokenSecretRef` in plugin config: legacy/static config path that takes precedence over sidecar reads.
 
 Sidecar writes use a temp file followed by rename and mode `0600`. The settings worker actions upsert or delete individual sidecar identity entries when the UI saves or deletes identities.
 
@@ -98,10 +94,9 @@ Sidecar writes use a temp file followed by rename and mode `0600`. The settings 
 
 `resolveIdentityToken()` in `/src/credential-sidecar.ts` resolves credentials just in time:
 
-1. inline `tokenSecretRef` secret, if configured;
-2. sidecar GitHub App credentials;
-3. sidecar `secretId`;
-4. sidecar `tokenFile` if secret resolution fails or no secret ID exists.
+1. sidecar GitHub App credentials;
+2. sidecar `secretId`;
+3. sidecar `tokenFile` if secret resolution fails or no secret ID exists.
 
 For GitHub App credentials, the code:
 

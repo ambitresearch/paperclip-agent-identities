@@ -125,5 +125,5 @@ When changing runtime contracts:
 - Update `/src/manifest.ts` when adding capabilities, tools, or UI slots.
 - Update shared tool metadata files and worker registration together.
 - Keep `/src/shared/types.ts` aligned with UI form data, worker actions, and tests.
-- If adding state, choose a scoped state key deliberately and document migration/compatibility behavior.
+- If adding state, choose a scoped state key deliberately and document the current state contract.
 - Run `pnpm typecheck` and `pnpm test`; run `pnpm build` when entrypoints or bundling change.

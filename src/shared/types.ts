@@ -113,6 +113,7 @@ export type BotIdentitySettingsData = {
 
 export type SaveBotIdentityConfigInput = Omit<BotIdentityConfig, "id"> & {
   id?: string;
+  previousAgentId?: string;
   credential?: BotIdentityCredentialConfig;
 };
 
@@ -152,8 +153,6 @@ export type CreateGitHubAppManifestInput = {
   label: string;
   homepageUrl?: string;
   callbackUrl?: string;
-  /** Compatibility alias for older callers. Prefer callbackUrl. */
-  appUrl?: string;
 };
 
 export type CreateGitHubAppManifestResult = GitHubAppManifestFlowState & {

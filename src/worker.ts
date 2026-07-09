@@ -6,7 +6,6 @@ import {
 } from "./github-bot-push-branch-tool-definition.js";
 import {
   CONFIG_SCOPE,
-  botIdentityStateToPluginConfig,
   normalizeBotIdentitySettingsState,
   resolveAgentIdentityFromPluginSettings
 } from "./config-source.js";
@@ -83,16 +82,25 @@ const plugin = definePlugin({
       const input = params as SaveBotIdentityConfigInput;
       const identity = normalizeIdentityInput(input);
       const previousState = normalizeBotIdentitySettingsState(await ctx.state.get(CONFIG_SCOPE));
+      const previousAgentId = typeof input.previousAgentId === "string" ? input.previousAgentId.trim() : "";
+      const previousIdentityKey = previousAgentId && previousAgentId !== identity.agentId
+        ? getIdentityKey(previousAgentId, identity.provider)
+        : "";
+      const nextIdentities = { ...previousState.identities };
+      if (previousIdentityKey) {
+        delete nextIdentities[previousIdentityKey];
+      }
+      nextIdentities[identity.id] = identity;
       const nextState: BotIdentitySettingsState = {
         version: 3,
-        identities: {
-          ...previousState.identities,
-          [identity.id]: identity,
-        },
+        identities: nextIdentities,
       };
 
       await ctx.state.set(CONFIG_SCOPE, nextState);
       const credential = normalizeCredentialInput(input.credential);
+      if (previousAgentId && previousAgentId !== identity.agentId) {
+        await deleteCredentialSidecarIdentity(previousAgentId, identity.provider);
+      }
       if (input.credential !== undefined) {
         if (credential) {
           await upsertCredentialSidecarIdentity(identity.agentId, identity.provider, credential);
@@ -364,7 +372,7 @@ function createGitHubAppManifestFlow(input: CreateGitHubAppManifestInput): Creat
     throw new Error("GitHub App manifest flow only supports the GitHub provider.");
   }
   const label = readRequiredString(input.label, "label");
-  const callbackUrl = readOptionalUrl(input.callbackUrl ?? input.appUrl, input.callbackUrl ? "callbackUrl" : "appUrl") ?? DEFAULT_GITHUB_APP_URL;
+  const callbackUrl = readOptionalUrl(input.callbackUrl, "callbackUrl") ?? DEFAULT_GITHUB_APP_URL;
   const homepageUrl = readOptionalUrl(input.homepageUrl, "homepageUrl") ?? callbackUrl;
   const appName = normalizeGitHubAppName(label);
   const state = `pc_${createHash("sha256").update(`${agentId}:${provider}:${Date.now()}:${randomBytes(16).toString("hex")}`).digest("hex").slice(0, 32)}`;

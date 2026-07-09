@@ -25,18 +25,6 @@ const manifest: PaperclipPluginManifestV1 = {
             properties: {
               label: { type: "string" },
               githubUsername: { type: "string" },
-              allowedRepoPatterns: {
-                type: "array",
-                items: { type: "string" }
-              },
-              allowedOwnerPatterns: {
-                type: "array",
-                items: { type: "string" }
-              },
-              allowedRepos: {
-                type: "array",
-                items: { type: "string" }
-              },
               commitName: { type: "string" },
               commitEmail: { type: "string" }
             },
@@ -57,6 +45,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "project.workspaces.read",
     "agent.tools.register",
     "agents.read",
+    "companies.read",
     "http.outbound",
     "secrets.read-ref",
     "activity.log.write"

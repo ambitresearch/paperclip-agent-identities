@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolRunContext } from "@paperclipai/plugin-sdk";
 import {
-  evaluateRepoPolicy,
   normalizeGitHubRepoRef,
   parseGitHubBotIdentityPluginConfig,
   resolveAgentIdentityFromToolRunContext
@@ -26,7 +25,7 @@ const baseRunCtx: ToolRunContext = {
 };
 
 describe("github identity config", () => {
-  it("resolves configured agent identity and applies default repo pattern", () => {
+  it("resolves configured agent identity without adding repository authorization", () => {
     const resolved = resolveAgentIdentityFromToolRunContext(
       {
         identities: {
@@ -39,7 +38,10 @@ describe("github identity config", () => {
       baseRunCtx
     );
 
-    expect(resolved.identity.allowedRepoPatterns).toEqual(["*/*"]);
+    expect(resolved.identity).toEqual({
+      label: "Default Bot",
+      githubUsername: "roshan-bot"
+    });
   });
 
   it("fails closed when calling agent has no config", () => {
@@ -64,7 +66,6 @@ describe("github identity config", () => {
         "agent-1": {
           label: "Primary",
           githubUsername: "roshan-bot",
-          allowedRepoPatterns: ["my-org/*", "octo-org/example-repo"],
           commitName: "Roshan Bot",
           commitEmail: "bot@users.noreply.github.com"
         }
@@ -81,29 +82,29 @@ describe("github credential sidecar", () => {
     const parsed = parseCredentialSidecar({
       version: 1,
       identities: {
-        "agent-1": { secretId: "00000000-0000-4000-8000-000000000001" }
+        "agent-1:github": { secretId: "00000000-0000-4000-8000-000000000001" }
       }
     });
 
-    expect(parsed.identities["agent-1"].secretId).toBe("00000000-0000-4000-8000-000000000001");
+    expect(parsed.identities["agent-1:github"].secretId).toBe("00000000-0000-4000-8000-000000000001");
   });
 
   it("parses tokenFile-only fallback mappings", () => {
     const parsed = parseCredentialSidecar({
       version: 1,
       identities: {
-        "agent-1": { tokenFile: "/run/paperclip/github-bot.token" }
+        "agent-1:github": { tokenFile: "/run/paperclip/github-bot.token" }
       }
     });
 
-    expect(parsed.identities["agent-1"].tokenFile).toBe("/run/paperclip/github-bot.token");
+    expect(parsed.identities["agent-1:github"].tokenFile).toBe("/run/paperclip/github-bot.token");
   });
 
   it("rejects entries without secretId or tokenFile", () => {
     expect(() => parseCredentialSidecar({
       version: 1,
       identities: {
-        "agent-1": {}
+        "agent-1:github": {}
       }
     })).toThrow();
   });
@@ -112,7 +113,7 @@ describe("github credential sidecar", () => {
     expect(() => parseCredentialSidecar({
       version: 1,
       identities: {
-        "agent-1": { secretId: "GITHUB_TOKEN" }
+        "agent-1:github": { secretId: "GITHUB_TOKEN" }
       }
     })).toThrow();
   });
@@ -148,42 +149,6 @@ describe("github repo normalization", () => {
   });
 });
 
-describe("github repo policy", () => {
-  const identity = {
-    label: "Default",
-    githubUsername: "default-bot",
-    allowedRepoPatterns: ["my-org/*"]
-  };
-
-  it("allows repositories matching configured owner patterns", () => {
-    expect(evaluateRepoPolicy(identity, "my-org/example-repo").allowed).toBe(true);
-  });
-
-  it("allows repositories matching configured patterns without a hard-coded owner", () => {
-    const multiOwnerIdentity = { ...identity, allowedRepoPatterns: ["my-org/*", "octo-org/example-repo"] };
-    expect(evaluateRepoPolicy(multiOwnerIdentity, "octo-org/example-repo").allowed).toBe(true);
-    expect(evaluateRepoPolicy(multiOwnerIdentity, "octo-org/other-repo").allowed).toBe(false);
-    expect(evaluateRepoPolicy(multiOwnerIdentity, "other-org/other-repo").allowed).toBe(false);
-  });
-
-  it("allows only explicitly approved repositories when exact repo patterns are configured", () => {
-    const repoScopedIdentity = { ...identity, allowedRepoPatterns: ["my-org/example-repo"] };
-
-    expect(evaluateRepoPolicy(repoScopedIdentity, "my-org/example-repo").allowed).toBe(true);
-    expect(evaluateRepoPolicy(repoScopedIdentity, "other-org/other-repo").allowed).toBe(false);
-    expect(evaluateRepoPolicy(repoScopedIdentity, "another-org/another-repo").allowed).toBe(false);
-    expect(evaluateRepoPolicy(repoScopedIdentity, "openai/plugins").allowed).toBe(false);
-    expect(evaluateRepoPolicy(repoScopedIdentity, "NousResearch/hermes-agent").allowed).toBe(false);
-  });
-
-  it("fails closed when allowedRepoPatterns is explicitly empty", () => {
-    const denyAllIdentity = { ...identity, allowedRepoPatterns: [] as string[] };
-    expect(evaluateRepoPolicy(denyAllIdentity, "my-org/example-repo").allowed).toBe(
-      false
-    );
-  });
-});
-
 describe("resolveIdentitySecretRef", () => {
   const originalCredentialSidecarPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
   let sidecarDir: string | null = null;
@@ -213,8 +178,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        tokenSecretRef: "inline-secret-ref-uuid",
-        allowedRepoPatterns: ["my-org/*"]
+        tokenSecretRef: "inline-secret-ref-uuid"
       }
     };
 
@@ -239,7 +203,7 @@ describe("resolveIdentitySecretRef", () => {
     await writeFile(sidecarPath, JSON.stringify({
       version: 1,
       identities: {
-        "agent-1": { secretId: "00000000-0000-4000-8000-000000000001" }
+        "agent-1:github": { secretId: "00000000-0000-4000-8000-000000000001" }
       }
     }), "utf8");
 
@@ -247,8 +211,7 @@ describe("resolveIdentitySecretRef", () => {
       agentId: "agent-1",
       identity: {
         label: "Bot",
-        githubUsername: "bot",
-        allowedRepoPatterns: ["my-org/*"]
+        githubUsername: "bot"
       }
     };
 
@@ -262,7 +225,7 @@ describe("resolveIdentitySecretRef", () => {
     await writeFile(sidecarPath, JSON.stringify({
       version: 1,
       identities: {
-        "agent-other": { secretId: "00000000-0000-4000-8000-000000000099" }
+        "agent-other:github": { secretId: "00000000-0000-4000-8000-000000000099" }
       }
     }), "utf8");
 
@@ -270,8 +233,7 @@ describe("resolveIdentitySecretRef", () => {
       agentId: "agent-missing",
       identity: {
         label: "Bot",
-        githubUsername: "bot",
-        allowedRepoPatterns: ["my-org/*"]
+        githubUsername: "bot"
       }
     };
 
@@ -286,7 +248,7 @@ describe("resolveIdentitySecretRef", () => {
     await writeFile(sidecarPath, JSON.stringify({
       version: 1,
       identities: {
-        "agent-1": { secretId: "00000000-0000-4000-8000-000000000002" }
+        "agent-1:github": { secretId: "00000000-0000-4000-8000-000000000002" }
       }
     }), "utf8");
 
@@ -295,8 +257,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        tokenSecretRef: "   ",
-        allowedRepoPatterns: ["my-org/*"]
+        tokenSecretRef: "   "
       }
     };
 
@@ -312,7 +273,7 @@ describe("resolveIdentitySecretRef", () => {
     await writeFile(sidecarPath, JSON.stringify({
       version: 1,
       identities: {
-        "agent-1": {
+        "agent-1:github": {
           secretId: "00000000-0000-4000-8000-000000000003",
           tokenFile: tokenPath
         }
@@ -323,8 +284,7 @@ describe("resolveIdentitySecretRef", () => {
       agentId: "agent-1",
       identity: {
         label: "Bot",
-        githubUsername: "bot",
-        allowedRepoPatterns: ["my-org/*"]
+        githubUsername: "bot"
       }
     };
 
@@ -348,7 +308,7 @@ describe("resolveIdentitySecretRef", () => {
     await writeFile(sidecarPath, JSON.stringify({
       version: 1,
       identities: {
-        "agent-1": {
+        "agent-1:github": {
           githubApp: {
             appId: "12345",
             installationId: "67890",
@@ -362,8 +322,7 @@ describe("resolveIdentitySecretRef", () => {
       agentId: "agent-1",
       identity: {
         label: "Bot",
-        githubUsername: "bot",
-        allowedRepoPatterns: ["my-org/*"]
+        githubUsername: "bot"
       }
     };
     const requests: Array<{ url: string; authorization?: string }> = [];
@@ -390,7 +349,7 @@ describe("resolveIdentitySecretRef", () => {
     await writeFile(sidecarPath, JSON.stringify({
       version: 1,
       identities: {
-        "agent-1": {
+        "agent-1:github": {
           secretId: "00000000-0000-4000-8000-000000000004",
           tokenFile: tokenPath
         }
@@ -401,8 +360,7 @@ describe("resolveIdentitySecretRef", () => {
       agentId: "agent-1",
       identity: {
         label: "Bot",
-        githubUsername: "bot",
-        allowedRepoPatterns: ["my-org/*"]
+        githubUsername: "bot"
       }
     };
 
@@ -421,8 +379,7 @@ describe("resolveIdentitySecretRef", () => {
       identity: {
         label: "Bot",
         githubUsername: "bot",
-        tokenSecretRef: "inline-secret-ref",
-        allowedRepoPatterns: ["my-org/*"]
+        tokenSecretRef: "inline-secret-ref"
       }
     };
 

@@ -14,11 +14,11 @@ export function DashboardWidget(_props: PluginWidgetProps) {
     <div style={widgetStyle}>
       <div>
         <strong>Agent Identities</strong>
-        <div style={mutedStyle}>GitHub bot identity coverage</div>
+        <div style={mutedStyle}>Identity provider coverage</div>
       </div>
 
       <div style={metricGridStyle}>
-        <Metric label="Agents" value={summary.total} tone="neutral" />
+        <Metric label="Identities" value={summary.total} tone="neutral" />
         <Metric label="GitHub Apps" value={summary.githubApps} tone={summary.githubApps > 0 ? "good" : "neutral"} />
         <Metric label="Need setup" value={summary.needsSetup} tone={summary.needsSetup > 0 ? "warn" : "good"} />
       </div>
@@ -26,14 +26,14 @@ export function DashboardWidget(_props: PluginWidgetProps) {
       {data?.credentialSidecarError ? (
         <div style={warningStyle}>Credential sidecar unavailable. Saves may not update private key references.</div>
       ) : identities.length === 0 ? (
-        <div style={hintBoxStyle}>No agent identities configured yet. Open plugin settings to add a GitHub App-backed bot identity.</div>
+        <div style={hintBoxStyle}>No agent identities configured yet. Open plugin settings to add a provider-backed agent identity.</div>
       ) : (
         <div style={identityListStyle}>
           {identities.slice(0, 3).map((identity) => (
-            <div key={identity.agentId} style={identityRowStyle}>
+            <div key={identity.id} style={identityRowStyle}>
               <div style={{ minWidth: 0 }}>
                 <div style={identityNameStyle}>{identity.label}</div>
-                <div style={mutedStyle}>{identity.githubUsername}</div>
+                <div style={mutedStyle}>{formatProviderIdentity(identity)}</div>
               </div>
               <span style={badgeStyle(identityTone(identity))}>{formatIdentityCredential(identity)}</span>
             </div>
@@ -65,6 +65,11 @@ function hasCompleteGitHubApp(identity: BotIdentitySettingsEntry): boolean {
 
 function hasFallbackCredential(identity: BotIdentitySettingsEntry): boolean {
   return Boolean(identity.credential?.secretId || identity.credential?.tokenFile);
+}
+
+function formatProviderIdentity(identity: BotIdentitySettingsEntry): string {
+  const provider = identity.provider === "github" ? "GitHub" : identity.provider;
+  return `${provider}: ${identity.githubUsername}`;
 }
 
 function formatIdentityCredential(identity: BotIdentitySettingsEntry): string {

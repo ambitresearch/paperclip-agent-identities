@@ -3,6 +3,7 @@ import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "@paperclipai/plugin-sdk";
 import type { ResolvedAgentIdentity } from "./identity-policy.js";
+import { GITHUB_IDENTITY_PROVIDER_ID, getIdentityKey, type IdentityProviderId } from "./shared/types.js";
 
 export const CREDENTIAL_SIDECAR_PATH_ENV = "PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS";
 export const LEGACY_CREDENTIAL_SIDECAR_PATH_ENV = "PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS";
@@ -112,17 +113,19 @@ export async function readCredentialSidecarIfExists(
 
 export async function upsertCredentialSidecarIdentity(
   agentId: string,
+  provider: IdentityProviderId,
   identity: CredentialSidecarIdentity,
   path?: string
 ): Promise<GitHubBotIdentityCredentialSidecar> {
   const sidecarPath = path ?? await resolveCredentialSidecarPath();
   const parsedIdentity = sidecarIdentitySchema.parse(identity);
+  const identityKey = getIdentityKey(agentId, provider);
   const existing = await readCredentialSidecarIfExists(sidecarPath) ?? { version: 1 as const, identities: {} };
   const next: GitHubBotIdentityCredentialSidecar = {
     version: 1,
     identities: {
       ...existing.identities,
-      [agentId]: parsedIdentity,
+      [identityKey]: parsedIdentity,
     },
   };
   await writeCredentialSidecar(next, sidecarPath);
@@ -131,15 +134,17 @@ export async function upsertCredentialSidecarIdentity(
 
 export async function deleteCredentialSidecarIdentity(
   agentId: string,
+  provider: IdentityProviderId,
   path?: string
 ): Promise<GitHubBotIdentityCredentialSidecar | null> {
   const sidecarPath = path ?? await resolveCredentialSidecarPath();
   const existing = await readCredentialSidecarIfExists(sidecarPath);
-  if (!existing || !existing.identities[agentId]) {
+  const identityKey = getIdentityKey(agentId, provider);
+  if (!existing || !existing.identities[identityKey]) {
     return existing;
   }
 
-  const { [agentId]: _removed, ...identities } = existing.identities;
+  const { [identityKey]: _removed, ...identities } = existing.identities;
   const next: GitHubBotIdentityCredentialSidecar = { version: 1, identities };
   await writeCredentialSidecar(next, sidecarPath);
   return next;
@@ -166,8 +171,8 @@ export async function resolveIdentitySecretRef(resolvedIdentity: ResolvedAgentId
   const sidecarIdentity = await readSidecarIdentity(resolvedIdentity, sidecarPath);
   if (!sidecarIdentity.secretId) {
     throw new Error(
-      `Missing GitHub bot credential secretId for agent '${resolvedIdentity.agentId}'. ` +
-      `Expected identities.${resolvedIdentity.agentId}.secretId in ${sidecarPath}.`
+      `Missing GitHub provider credential secretId for agent '${resolvedIdentity.agentId}'. ` +
+      `Expected identities.${getIdentityKey(resolvedIdentity.agentId, GITHUB_IDENTITY_PROVIDER_ID)}.secretId in ${sidecarPath}.`
     );
   }
 
@@ -198,15 +203,15 @@ export async function resolveIdentityToken(
       return { token: await resolveSecret(sidecarIdentity.secretId), source: "plugin-secret" };
     } catch {
       if (!sidecarIdentity.tokenFile) {
-        throw new Error("Failed to resolve bot authentication credentials.");
+        throw new Error("Failed to resolve agent identity authentication credentials.");
       }
     }
   }
 
   if (!sidecarIdentity.tokenFile) {
     throw new Error(
-      `Missing GitHub bot credential tokenFile for agent '${resolvedIdentity.agentId}'. ` +
-      `Expected identities.${resolvedIdentity.agentId}.tokenFile in ${sidecarPath}.`
+      `Missing GitHub provider credential tokenFile for agent '${resolvedIdentity.agentId}'. ` +
+      `Expected identities.${getIdentityKey(resolvedIdentity.agentId, GITHUB_IDENTITY_PROVIDER_ID)}.tokenFile in ${sidecarPath}.`
     );
   }
 
@@ -215,11 +220,12 @@ export async function resolveIdentityToken(
 
 async function readSidecarIdentity(resolvedIdentity: ResolvedAgentIdentity, sidecarPath: string) {
   const sidecar = await readCredentialSidecar(sidecarPath);
-  const sidecarIdentity = sidecar.identities[resolvedIdentity.agentId];
+  const identityKey = getIdentityKey(resolvedIdentity.agentId, GITHUB_IDENTITY_PROVIDER_ID);
+  const sidecarIdentity = sidecar.identities[identityKey];
   if (!sidecarIdentity) {
     throw new Error(
-      `Missing agent identity credential sidecar entry for agent '${resolvedIdentity.agentId}'. ` +
-      `Expected identities.${resolvedIdentity.agentId} in ${sidecarPath}.`
+      `Missing agent identity credential sidecar entry for agent '${resolvedIdentity.agentId}' and provider '${GITHUB_IDENTITY_PROVIDER_ID}'. ` +
+      `Expected identities.${identityKey} in ${sidecarPath}.`
     );
   }
   return sidecarIdentity;
@@ -301,12 +307,12 @@ async function readTokenFile(tokenFile: string): Promise<string> {
     raw = await readFile(tokenFile, "utf8");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Unable to read GitHub bot token file '${tokenFile}': ${message}`);
+    throw new Error(`Unable to read GitHub provider token file '${tokenFile}': ${message}`);
   }
 
   const token = raw.trim();
   if (!token) {
-    throw new Error(`GitHub bot token file '${tokenFile}' is empty`);
+    throw new Error(`GitHub provider token file '${tokenFile}' is empty`);
   }
   return token;
 }

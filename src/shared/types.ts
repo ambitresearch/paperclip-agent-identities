@@ -1,16 +1,79 @@
-export type BotIdentityConfig = {
+export type IdentityProviderId = "github" | "slack" | "mattermost" | "entra" | "gcp" | "aws";
+
+export type IdentityProviderStatus = "enabled" | "coming-soon";
+
+export type IdentityProviderDefinition = {
+  id: IdentityProviderId;
+  name: string;
+  description: string;
+  status: IdentityProviderStatus;
+};
+
+export const GITHUB_IDENTITY_PROVIDER_ID = "github" satisfies IdentityProviderId;
+
+export const SUPPORTED_IDENTITY_PROVIDERS: readonly IdentityProviderDefinition[] = [
+  {
+    id: "github",
+    name: "GitHub",
+    description: "GitHub App identity for repositories, pull requests, branch pushes, and commit attribution.",
+    status: "enabled",
+  },
+  {
+    id: "slack",
+    name: "Slack",
+    description: "Workspace identity for Slack messages and app-mediated actions.",
+    status: "coming-soon",
+  },
+  {
+    id: "mattermost",
+    name: "Mattermost",
+    description: "Team identity for Mattermost posts and channel operations.",
+    status: "coming-soon",
+  },
+  {
+    id: "entra",
+    name: "Microsoft Entra",
+    description: "Cloud directory identity for Microsoft Graph and Azure-backed workflows.",
+    status: "coming-soon",
+  },
+  {
+    id: "gcp",
+    name: "Google Cloud",
+    description: "Service account identity for Google Cloud APIs.",
+    status: "coming-soon",
+  },
+  {
+    id: "aws",
+    name: "AWS",
+    description: "IAM-backed identity for AWS APIs.",
+    status: "coming-soon",
+  },
+] as const;
+
+export function isIdentityProviderId(value: string): value is IdentityProviderId {
+  return SUPPORTED_IDENTITY_PROVIDERS.some((provider) => provider.id === value);
+}
+
+export function getIdentityProviderDefinition(providerId: IdentityProviderId): IdentityProviderDefinition {
+  return SUPPORTED_IDENTITY_PROVIDERS.find((provider) => provider.id === providerId)!;
+}
+
+export function getIdentityKey(agentId: string, provider: IdentityProviderId): string {
+  return `${agentId.trim()}:${provider}`;
+}
+
+export type AgentIdentityConfig = {
+  id: string;
   agentId: string;
+  provider: IdentityProviderId;
   label: string;
   githubUsername: string;
-  allowedRepoPatterns?: string[];
-  /** Compatibility input for settings saved before repository patterns were unified. */
-  allowedOwnerPattern?: string;
-  /** Compatibility input for settings saved before repository patterns were unified. */
-  allowedRepos?: string[];
   githubAppCredentialPropagationAgentIds?: string[];
   commitName?: string;
   commitEmail?: string;
 };
+
+export type BotIdentityConfig = AgentIdentityConfig;
 
 export type BotIdentityGitHubAppCredentialConfig = {
   appId?: string;
@@ -27,10 +90,12 @@ export type BotIdentityCredentialConfig = {
   githubApp?: BotIdentityGitHubAppCredentialConfig;
 };
 
-export type BotIdentitySettingsState = {
-  version: 2;
-  identities: Record<string, BotIdentityConfig>;
+export type AgentIdentitySettingsState = {
+  version: 3;
+  identities: Record<string, AgentIdentityConfig>;
 };
+
+export type BotIdentitySettingsState = AgentIdentitySettingsState;
 
 export type BotIdentitySettingsEntry = BotIdentityConfig & {
   credential?: BotIdentityCredentialConfig;
@@ -38,24 +103,23 @@ export type BotIdentitySettingsEntry = BotIdentityConfig & {
 };
 
 export type BotIdentitySettingsData = {
-  version: 2;
+  version: 3;
   identities: BotIdentitySettingsEntry[];
+  providers: readonly IdentityProviderDefinition[];
+  companyName?: string;
   credentialSidecarPath: string;
   credentialSidecarError?: string;
 };
 
-export type SaveBotIdentityConfigInput = BotIdentityConfig & {
+export type SaveBotIdentityConfigInput = Omit<BotIdentityConfig, "id"> & {
+  id?: string;
   credential?: BotIdentityCredentialConfig;
 };
 
 export type DeleteBotIdentityConfigInput = {
   agentId: string;
+  provider: IdentityProviderId;
 };
-
-export const DEFAULT_ALLOWED_REPO_PATTERNS = ["*/*"] as const;
-export const DEFAULT_ALLOWED_REPO_PATTERN = DEFAULT_ALLOWED_REPO_PATTERNS[0];
-/** Compatibility alias for older config callers. Prefer DEFAULT_ALLOWED_REPO_PATTERN. */
-export const DEFAULT_ALLOWED_OWNER_PATTERN = "^.*$";
 
 export type PaperclipAgentOption = {
   id: string;
@@ -71,6 +135,7 @@ export type PaperclipAgentsData = {
 
 export type GitHubAppManifestFlowState = {
   agentId: string;
+  provider: IdentityProviderId;
   state: string;
   manifest: string;
   postUrl: string;
@@ -83,6 +148,7 @@ export type GitHubAppManifestFlowState = {
 
 export type CreateGitHubAppManifestInput = {
   agentId: string;
+  provider?: IdentityProviderId;
   label: string;
   homepageUrl?: string;
   callbackUrl?: string;
@@ -107,6 +173,7 @@ export type ConvertGitHubAppManifestInput = {
 
 export type ConvertGitHubAppManifestResult = {
   agentId: string;
+  provider: IdentityProviderId;
   appId: string;
   appSlug: string;
   appName: string;
@@ -116,52 +183,12 @@ export type ConvertGitHubAppManifestResult = {
 };
 
 export const DEFAULT_BOT_IDENTITY_CONFIG: BotIdentityConfig = {
+  id: "",
   agentId: "",
+  provider: GITHUB_IDENTITY_PROVIDER_ID,
   label: "",
   githubUsername: "",
-  allowedRepoPatterns: [...DEFAULT_ALLOWED_REPO_PATTERNS],
   githubAppCredentialPropagationAgentIds: [],
   commitName: "",
   commitEmail: "",
 };
-
-/**
- * Validate that a repository string matches configured owner/repo glob patterns.
- * Returns an error message if invalid, or null if valid.
- */
-export function validateRepoPolicy(
-  repository: string,
-  allowedPatterns: readonly string[] = DEFAULT_ALLOWED_REPO_PATTERNS,
-): string | null {
-  if (!repository || typeof repository !== "string") {
-    return "repository is required and must be a non-empty string";
-  }
-  const parts = repository.split("/");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    return `repository must be in "owner/repo" format, got "${repository}"`;
-  }
-  if (allowedPatterns.length === 0) {
-    return "no allowed repository patterns configured";
-  }
-  for (const pattern of allowedPatterns) {
-    const regex = repoPatternToRegExp(pattern);
-    if (regex instanceof Error) {
-      return regex.message;
-    }
-    if (regex.test(repository.toLowerCase())) {
-      return null;
-    }
-  }
-  return `repository "${repository}" does not match allowed repository patterns`;
-}
-
-function repoPatternToRegExp(pattern: string): RegExp | Error {
-  const normalized = pattern.trim().toLowerCase();
-  const parts = normalized.split("/");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    return new Error(`allowed repository pattern must be in "owner/repo" format, got "${pattern}"`);
-  }
-  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  const globbed = escaped.replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
-  return new RegExp(`^${globbed}$`);
-}

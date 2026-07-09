@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: Agent Identities
-  text: Per-agent GitHub identities for Paperclip
-  tagline: Configure GitHub App-backed bot identities, repository policy, and contribution tools for each Paperclip agent.
+  text: Provider-backed agent identities for Paperclip
+  tagline: Configure provider-backed agent identities, GitHub App credentials, and contribution tools.
   actions:
     - theme: brand
       text: Read the quickstart
@@ -15,7 +15,7 @@ hero:
 
 features:
   - title: Identity mapping
-    details: Map Paperclip agents to GitHub usernames, repository allow-lists, and commit author metadata.
+    details: Map Paperclip agents to provider identities. GitHub is enabled first; Slack, Mattermost, Entra, GCP, and AWS are planned.
   - title: GitHub App credentials
     details: Bootstrap private GitHub Apps and mint short-lived installation tokens just in time for tools.
   - title: Agent-ready docs

@@ -2,58 +2,48 @@
 
 ## Core model
 
-The canonical identity types live in `/src/shared/types.ts`.
+The canonical identity and provider types live in `/src/shared/types.ts`.
 
-A `BotIdentityConfig` represents one Paperclip agent's GitHub identity:
+An `AgentIdentityConfig` represents one Paperclip agent's identity for one provider. The durable identity key is `${agentId}:${provider}`.
 
-- `agentId`: Paperclip agent ID and the key used in state/config maps.
-- `label`: human-readable name shown in settings and tool output.
-- `githubUsername`: GitHub bot username, commonly `<app-slug>[bot]` for GitHub Apps.
-- `allowedRepoPatterns`: `owner/repo` glob allow-list. Default is `*/*` when unset.
+- `id`: stable identity key, for example `agent-123:github`.
+- `agentId`: Paperclip agent ID.
+- `provider`: identity provider ID. GitHub is enabled today; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are listed as coming soon.
+- `label`: human-readable name shown in settings and tool output. The UI convention is `Agent Name [Company Name]`.
+- `githubUsername`: GitHub App login for GitHub identities, commonly `<app-slug>[bot]`.
 - `commitName` / `commitEmail`: optional commit author metadata.
-- `allowedOwnerPattern` / `allowedRepos`: legacy compatibility fields.
 
 Settings state is versioned:
 
 ```ts
 {
-  version: 2,
-  identities: Record<string, BotIdentityConfig>
+  version: 3,
+  identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>
 }
 ```
 
-The worker stores this under `CONFIG_SCOPE` from `/src/config-source.ts`: `{ scopeKind: "instance", stateKey: "bot-identity-config" }`.
+The worker stores this under `CONFIG_SCOPE` from `/src/config-source.ts`: `{ scopeKind: "instance", stateKey: "bot-identity-config" }`. Runtime GitHub tools filter this provider-aware state to `provider: "github"` and project it into their GitHub-specific config shape by `agentId`.
 
-## Repository policy
+## Provider authorization
 
-Repository policy is intentionally enforced before credentials are resolved.
+Agent Identities does not implement repository/resource authorization. It maps agents to provider identities and credentials, then lets the provider enforce access through installation permissions, scopes, provider APIs, and tool-specific responses.
 
 `/src/identity-policy.ts` is used by runtime tools. It:
 
 - parses plugin config with a zod schema;
-- resolves the calling `runContext.agentId` to `identities[agentId]`;
+- resolves the calling `runContext.agentId` to the GitHub provider identity projected as `identities[agentId]`;
 - normalizes GitHub repository references from inputs such as:
   - `owner/repo`
   - `https://github.com/owner/repo(.git)`
   - `github.com/owner/repo`
   - `git@github.com:owner/repo.git`
   - `ssh://git@github.com/owner/repo.git`
-  - `git://github.com/owner/repo.git`
-- rejects non-GitHub URL-like repository inputs;
-- evaluates `allowedRepoPatterns` against the normalized lowercase `owner/repo` full name.
+  - `git://github.com/owner/repo.git`;
+- rejects malformed or non-GitHub URL-like repository inputs before resolving credentials.
 
-`/src/shared/types.ts` also exports `validateRepoPolicy()` for settings-level validation. It uses the same `owner/repo` glob idea but returns form-oriented error messages.
+For GitHub, repository access is controlled by the GitHub App installation and GitHub API permissions. The push tool also supports `expectedRepository` as a caller-supplied remote mismatch guard; it is not an authorization policy.
 
-Pattern semantics are simple:
-
-- Pattern must be `owner/repo` shape.
-- `*` matches any non-slash characters.
-- `?` matches one non-slash character.
-- Examples: `my-org/*`, `my-org/my-repo`, `*/*`.
-
-Current default behavior is broad: if no repository policy is supplied, normalization returns `DEFAULT_ALLOWED_REPO_PATTERNS`, currently `['*/*']`. Treat this as current source behavior, not as a recommendation for production scoping.
-
-## Config source compatibility
+## Config source behavior
 
 `/src/config-source.ts` bridges static plugin config and settings UI state.
 
@@ -63,13 +53,7 @@ Current default behavior is broad: if no repository policy is supplied, normaliz
 2. if that fails and settings state exists, normalizes settings state and retries;
 3. if both fail, throws an error containing the primary and fallback reasons.
 
-Compatibility behavior includes:
-
-- version-2 settings state is normalized identity by identity;
-- legacy single-agent settings state is accepted if it has required identity fields;
-- old owner policy fields convert only exact owner patterns into `owner/*` repo patterns;
-- wildcard legacy owner patterns such as `.*`, `^.*$`, and `*` convert to `*/*`;
-- duplicate repository patterns are removed. Legacy propagation target IDs are normalized for backward compatibility but the current settings UI cascades credentials to the selected agent identity.
+Current behavior accepts version 3 provider-aware settings state only. GitHub tool config is derived by filtering identities to `provider: "github"`; disabled or unknown provider records are ignored during normalization. The current settings UI cascades GitHub App credentials to the selected agent identity.
 
 ## Credential sidecar
 
@@ -83,13 +67,13 @@ Path resolution order:
 4. legacy `/paperclip/.paperclip/github-bot-identity/credentials.json` when the renamed default is absent
 5. `/paperclip/.paperclip/agent-identities/credentials.json` for new sidecars
 
-Sidecar schema version 1 maps agent IDs to credential sources:
+Sidecar schema version 1 maps provider-aware identity keys to credential sources:
 
 ```json
 {
   "version": 1,
   "identities": {
-    "<agent-id>": {
+    "<agent-id>:github": {
       "githubApp": {
         "appId": "<github-app-id>",
         "installationId": "<github-installation-id>",
@@ -138,7 +122,7 @@ It reads:
 - `bot-identity-config` for saved identities, sidecar path, and credential status;
 - `paperclip-agents` for the company-scoped agent dropdown.
 
-The form supports adding, editing, and deleting one agent identity at a time. When agents are available, selecting an agent prefills defaults derived from the agent display name, including a GitHub App-ish label, bot username, commit identity, and private key file path under `/paperclip/.paperclip/agent-identities/github-apps/<agent-id>/private-key.pem`.
+The form supports adding, editing, and deleting one provider identity at a time. It prevents duplicate identities for the same agent/provider pair. When agents are available, selecting an agent prefills defaults derived from the agent display name and company, including the label convention `Agent Name [Company Name]`, GitHub App login, commit identity, and private key file path under `/paperclip/.paperclip/agent-identities/github-apps/<agent-id>/private-key.pem`.
 
 The UI also tries to load selectable Paperclip secrets from host REST endpoints for company and user secrets. If company context or secret API access is unavailable, operators can still enter a secret UUID manually.
 
@@ -175,7 +159,7 @@ The settings UI and worker actions implement GitHub's App Manifest flow.
 7. Worker exchanges the code through `POST https://api.github.com/app-manifests/{code}/conversions`.
 8. Worker requires `id`, `slug`, `name`, and `pem` in the conversion response.
 9. Worker writes the PEM to `<credential-sidecar-dir>/github-apps/<agent-id>/private-key.pem` with mode `0600`.
-10. Worker returns app ID, app slug, derived bot username `<slug>[bot]`, private key file path, and install URL.
+10. Worker returns app ID, app slug, derived GitHub App login `<slug>[bot]`, private key file path, and install URL.
 11. UI sends the operator to install the app; GitHub redirects back with `installation_id`.
 12. UI restores the flow and pre-fills Installation ID before the operator saves the identity.
 
@@ -184,16 +168,16 @@ Flow state is restored by `get-github-app-manifest-flow`. The current code does 
 ## Tests to inspect before changing this domain
 
 - `/tests/identity-policy.spec.ts`: config parsing, missing agent fail-closed behavior, repo normalization, sidecar parsing, token-source precedence, GitHub App token minting.
-- `/tests/repo-policy.spec.ts`: shared settings repo policy validation.
-- `/tests/plugin.spec.ts`: settings save/load/delete, sidecar writes/deletes, agent dropdown data, GitHub App manifest creation/conversion, legacy settings fallback, propagation ID dedupe.
+- `/tests/repo-policy.spec.ts`: repository reference normalization.
+- `/tests/plugin.spec.ts`: settings save/load/delete, sidecar writes/deletes, agent dropdown data, provider-aware settings fallback, GitHub App manifest creation/conversion, and propagation ID dedupe.
 
 ## Change guidance
 
 When changing this domain:
 
 - Keep `/src/shared/types.ts`, `/src/config-source.ts`, `/src/worker.ts`, and `/src/ui/SettingsPage.tsx` in sync.
-- Preserve fail-closed behavior for missing agent identity and empty/invalid allow-list configuration.
-- Enforce repository policy before credential resolution.
+- Preserve fail-closed behavior for missing agent identity and malformed repository inputs.
+- Validate and normalize repository inputs before credential resolution.
 - Never add generated installation tokens to plugin state or tool outputs.
-- Add tests for legacy migration behavior whenever changing config shape.
+- Add tests for provider normalization behavior whenever changing config shape.
 - Be careful with UI-only host REST behavior because it may need manual validation beyond the existing Node tests.

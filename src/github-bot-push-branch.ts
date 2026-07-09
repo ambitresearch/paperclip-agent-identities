@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { evaluateRepoPolicy, normalizeGitHubRepoRef } from "./identity-policy.js";
+import { normalizeGitHubRepoRef } from "./identity-policy.js";
 import { resolveAgentIdentityFromPluginSettings } from "./config-source.js";
 import { resolveIdentityToken } from "./credential-sidecar.js";
 
@@ -303,18 +303,6 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       return { error: reason };
     }
 
-    const policyDecision = evaluateRepoPolicy(resolvedIdentity.identity, repository.fullName);
-    if (!policyDecision.allowed) {
-      await logPushBranchOutcome(ctx, runCtx, {
-        message: "github_bot_push_branch denied: owner policy",
-        outcome: "denied_owner_policy",
-        repository: repository.fullName,
-        branch,
-        remote
-      });
-      return { error: `Push denied for '${repository.fullName}': ${policyDecision.reason}.` };
-    }
-
     if (expectedRepository) {
       const normalizedExpected = normalizeExpectedRepository(expectedRepository);
       if (!normalizedExpected) {
@@ -352,7 +340,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         branch,
         remote
       });
-      return { error: reason || "Failed to resolve bot authentication credentials." };
+      return { error: reason || "Failed to resolve agent identity authentication credentials." };
     }
     let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>>;
 

@@ -13,7 +13,7 @@ import {
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { DEFAULT_ALLOWED_REPO_PATTERNS } from "./shared/types.js";
+import { GITHUB_IDENTITY_PROVIDER_ID, SUPPORTED_IDENTITY_PROVIDERS, getIdentityKey, getIdentityProviderDefinition, isIdentityProviderId, type IdentityProviderId } from "./shared/types.js";
 import type {
   BotIdentityConfig,
   BotIdentityCredentialConfig,
@@ -43,7 +43,6 @@ import { githubBotWhoamiToolMetadata, githubBotWhoamiToolName } from "./shared/g
 import { registerCreatePullRequestTool } from "./tools/create-pull-request.js";
 
 export type { BotIdentityConfig } from "./shared/types.js";
-export { DEFAULT_ALLOWED_REPO_PATTERN, DEFAULT_ALLOWED_REPO_PATTERNS, DEFAULT_ALLOWED_OWNER_PATTERN } from "./shared/types.js";
 
 const plugin = definePlugin({
   async setup(ctx) {
@@ -85,10 +84,10 @@ const plugin = definePlugin({
       const identity = normalizeIdentityInput(input);
       const previousState = normalizeBotIdentitySettingsState(await ctx.state.get(CONFIG_SCOPE));
       const nextState: BotIdentitySettingsState = {
-        version: 2,
+        version: 3,
         identities: {
           ...previousState.identities,
-          [identity.agentId]: identity,
+          [identity.id]: identity,
         },
       };
 
@@ -96,29 +95,31 @@ const plugin = definePlugin({
       const credential = normalizeCredentialInput(input.credential);
       if (input.credential !== undefined) {
         if (credential) {
-          await upsertCredentialSidecarIdentity(identity.agentId, credential);
+          await upsertCredentialSidecarIdentity(identity.agentId, identity.provider, credential);
         } else {
-          await deleteCredentialSidecarIdentity(identity.agentId);
+          await deleteCredentialSidecarIdentity(identity.agentId, identity.provider);
         }
       }
 
-      ctx.logger.info("Bot identity config saved", { agentId: identity.agentId, label: identity.label, githubUsername: identity.githubUsername });
-      return (await buildSettingsData(ctx, nextState)).identities.find((entry) => entry.agentId === identity.agentId) ?? identity;
+      ctx.logger.info("Agent identity config saved", { agentId: identity.agentId, provider: identity.provider, label: identity.label, githubUsername: identity.githubUsername });
+      return (await buildSettingsData(ctx, nextState)).identities.find((entry) => entry.id === identity.id) ?? identity;
     });
 
     ctx.actions.register("delete-bot-identity-config", async (params) => {
       const input = params as DeleteBotIdentityConfigInput;
       const agentId = typeof input.agentId === "string" ? input.agentId.trim() : "";
+      const provider = normalizeProviderInput(input.provider);
       if (!agentId) {
         throw new Error("agentId is required");
       }
+      const identityKey = getIdentityKey(agentId, provider);
 
       const previousState = normalizeBotIdentitySettingsState(await ctx.state.get(CONFIG_SCOPE));
-      const { [agentId]: _removed, ...identities } = previousState.identities;
-      const nextState: BotIdentitySettingsState = { version: 2, identities };
+      const { [identityKey]: _removed, ...identities } = previousState.identities;
+      const nextState: BotIdentitySettingsState = { version: 3, identities };
       await ctx.state.set(CONFIG_SCOPE, nextState);
-      await deleteCredentialSidecarIdentity(agentId);
-      ctx.logger.info("Bot identity config deleted", { agentId });
+      await deleteCredentialSidecarIdentity(agentId, provider);
+      ctx.logger.info("Agent identity config deleted", { agentId, provider });
       return await buildSettingsData(ctx, nextState);
     });
 
@@ -185,7 +186,6 @@ const plugin = definePlugin({
         data: {
           label: identity.label,
           githubUsername: identity.githubUsername,
-          allowedRepoPatterns: identity.allowedRepoPatterns,
           hasCommitName: Boolean(identity.commitName),
           hasCommitEmail: Boolean(identity.commitEmail)
         }
@@ -204,6 +204,7 @@ export default plugin;
 runWorker(plugin, import.meta.url);
 
 async function buildSettingsData(ctx: PluginContext, state: BotIdentitySettingsState, companyId = ""): Promise<BotIdentitySettingsData> {
+  const companyName = companyId ? await resolveCompanyName(ctx, companyId) : "";
   const credentialSidecarPath = await resolveCredentialSidecarPath();
   let sidecar: GitHubBotIdentityCredentialSidecar | null = null;
   let credentialSidecarError: string | undefined;
@@ -221,7 +222,7 @@ async function buildSettingsData(ctx: PluginContext, state: BotIdentitySettingsS
   const identities: BotIdentitySettingsEntry[] = Object.values(state.identities)
     .filter((identity) => !companyAgentIds || companyAgentIds.has(identity.agentId))
     .map((identity) => {
-      const credential = sidecar?.identities[identity.agentId];
+      const credential = sidecar?.identities[identity.id];
       return {
         ...identity,
         credential,
@@ -235,11 +236,18 @@ async function buildSettingsData(ctx: PluginContext, state: BotIdentitySettingsS
     .sort((left, right) => left.label.localeCompare(right.label));
 
   return {
-    version: 2,
+    version: 3,
     identities,
+    providers: SUPPORTED_IDENTITY_PROVIDERS,
+    ...(companyName ? { companyName } : {}),
     credentialSidecarPath,
     ...(credentialSidecarError ? { credentialSidecarError } : {}),
   };
+}
+
+async function resolveCompanyName(ctx: PluginContext, companyId: string): Promise<string> {
+  const company = await ctx.companies.get(companyId);
+  return readString(company?.name);
 }
 
 async function listCompanyAgentOptions(ctx: PluginContext, companyId: string): Promise<PaperclipAgentOption[]> {
@@ -261,13 +269,20 @@ async function listCompanyAgentOptions(ctx: PluginContext, companyId: string): P
 
 function normalizeIdentityInput(input: SaveBotIdentityConfigInput): BotIdentityConfig {
   const agentId = readRequiredString(input.agentId, "agentId");
+  const provider = normalizeProviderInput(input.provider);
+  const providerDefinition = getIdentityProviderDefinition(provider);
+  if (providerDefinition.status !== "enabled") {
+    throw new Error(`${providerDefinition.name} identities are not supported yet.`);
+  }
   const label = readRequiredString(input.label, "label");
   const githubUsername = readRequiredString(input.githubUsername, "githubUsername");
+  const id = getIdentityKey(agentId, provider);
   return {
+    id,
     agentId,
+    provider,
     label,
     githubUsername,
-    allowedRepoPatterns: normalizeAllowedRepoPatternsInput(input),
     githubAppCredentialPropagationAgentIds: Array.isArray(input.githubAppCredentialPropagationAgentIds)
       ? input.githubAppCredentialPropagationAgentIds.map((agentId) => agentId.trim()).filter(Boolean).filter((agentId, index, entries) => entries.indexOf(agentId) === index)
       : [],
@@ -276,24 +291,12 @@ function normalizeIdentityInput(input: SaveBotIdentityConfigInput): BotIdentityC
   };
 }
 
-function normalizeAllowedRepoPatternsInput(input: SaveBotIdentityConfigInput): string[] {
-  if (Array.isArray(input.allowedRepoPatterns)) {
-    return dedupeStrings(input.allowedRepoPatterns);
+function normalizeProviderInput(value: unknown): IdentityProviderId {
+  const provider = typeof value === "string" ? value.trim() : "";
+  if (!isIdentityProviderId(provider)) {
+    throw new Error("provider is required and must be a supported identity provider");
   }
-  if (Array.isArray(input.allowedRepos) && input.allowedRepos.length > 0) {
-    return dedupeStrings(input.allowedRepos);
-  }
-  const ownerPattern = input.allowedOwnerPattern?.trim();
-  if (ownerPattern) {
-    const exactOwner = ownerPattern.match(/^\^?([a-zA-Z0-9][a-zA-Z0-9-]*)\$?$/);
-    return exactOwner ? [`${exactOwner[1].toLowerCase()}/*`] : [];
-  }
-  return [...DEFAULT_ALLOWED_REPO_PATTERNS];
-}
-
-function dedupeStrings(values: string[]): string[] {
-  const entries = values.map((value) => value.trim()).filter(Boolean);
-  return entries.filter((entry, index) => entries.indexOf(entry) === index);
+  return provider;
 }
 
 function normalizeCredentialInput(input: BotIdentityCredentialConfig | undefined): CredentialSidecarIdentity | null {
@@ -327,6 +330,11 @@ function normalizeGitHubAppCredentialInput(input: BotIdentityCredentialConfig["g
   };
 }
 
+function readProvider(value: unknown): IdentityProviderId | null {
+  const provider = readString(value);
+  return isIdentityProviderId(provider) ? provider : null;
+}
+
 function readRequiredString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`Required fields: ${field}`);
@@ -351,15 +359,19 @@ function githubAppManifestFlowScope(state: string) {
 
 function createGitHubAppManifestFlow(input: CreateGitHubAppManifestInput): CreateGitHubAppManifestResult {
   const agentId = readRequiredString(input.agentId, "agentId");
+  const provider = input.provider ? normalizeProviderInput(input.provider) : GITHUB_IDENTITY_PROVIDER_ID;
+  if (provider !== GITHUB_IDENTITY_PROVIDER_ID) {
+    throw new Error("GitHub App manifest flow only supports the GitHub provider.");
+  }
   const label = readRequiredString(input.label, "label");
   const callbackUrl = readOptionalUrl(input.callbackUrl ?? input.appUrl, input.callbackUrl ? "callbackUrl" : "appUrl") ?? DEFAULT_GITHUB_APP_URL;
   const homepageUrl = readOptionalUrl(input.homepageUrl, "homepageUrl") ?? callbackUrl;
   const appName = normalizeGitHubAppName(label);
-  const state = `pc_${createHash("sha256").update(`${agentId}:${Date.now()}:${randomBytes(16).toString("hex")}`).digest("hex").slice(0, 32)}`;
+  const state = `pc_${createHash("sha256").update(`${agentId}:${provider}:${Date.now()}:${randomBytes(16).toString("hex")}`).digest("hex").slice(0, 32)}`;
   const setupUrl = getGitHubAppSetupUrl(callbackUrl, state);
   const manifest = JSON.stringify({
     name: appName,
-    description: `Paperclip-managed GitHub bot identity for ${label}.`,
+    description: `Paperclip-managed GitHub App identity provider for ${label}.`,
     url: homepageUrl,
     redirect_url: callbackUrl,
     callback_urls: [callbackUrl],
@@ -378,6 +390,7 @@ function createGitHubAppManifestFlow(input: CreateGitHubAppManifestInput): Creat
 
   return {
     agentId,
+    provider,
     state,
     manifest,
     postUrl: `https://github.com/settings/apps/new?state=${encodeURIComponent(state)}`,
@@ -397,6 +410,7 @@ function normalizeGitHubAppName(label: string): string {
 function normalizeGitHubAppManifestFlowState(raw: unknown): GitHubAppManifestFlowState | null {
   if (!isRecord(raw)) return null;
   const agentId = readString(raw.agentId);
+  const provider = readProvider(raw.provider);
   const state = readString(raw.state);
   const manifest = readString(raw.manifest);
   const postUrl = readString(raw.postUrl);
@@ -404,9 +418,9 @@ function normalizeGitHubAppManifestFlowState(raw: unknown): GitHubAppManifestFlo
   const createdAt = readString(raw.createdAt);
   const appName = readString(raw.appName) || readString(parseManifestName(manifest));
   const label = readString(raw.label) || appName;
-  if (!agentId || !state || !manifest || !postUrl || !setupUrl || !createdAt || !appName || !label) return null;
+  if (!agentId || !provider || !state || !manifest || !postUrl || !setupUrl || !createdAt || !appName || !label) return null;
   const conversion = normalizeGitHubAppManifestConversionResult(raw.conversion);
-  return { agentId, state, manifest, postUrl, setupUrl, createdAt, label, appName, ...(conversion ? { conversion } : {}) };
+  return { agentId, provider, state, manifest, postUrl, setupUrl, createdAt, label, appName, ...(conversion ? { conversion } : {}) };
 }
 
 function parseManifestName(manifest: string): unknown {
@@ -440,14 +454,15 @@ function getGitHubAppSetupUrl(appUrl: string, state: string): string {
 function normalizeGitHubAppManifestConversionResult(raw: unknown): ConvertGitHubAppManifestResult | null {
   if (!isRecord(raw)) return null;
   const agentId = readString(raw.agentId);
+  const provider = readProvider(raw.provider);
   const appId = readString(raw.appId);
   const appSlug = readString(raw.appSlug);
   const appName = readString(raw.appName);
   const githubUsername = readString(raw.githubUsername);
   const privateKeyFile = readString(raw.privateKeyFile);
   const installUrl = readString(raw.installUrl);
-  if (!agentId || !appId || !appSlug || !appName || !githubUsername || !privateKeyFile || !installUrl) return null;
-  return { agentId, appId, appSlug, appName, githubUsername, privateKeyFile, installUrl };
+  if (!agentId || !provider || !appId || !appSlug || !appName || !githubUsername || !privateKeyFile || !installUrl) return null;
+  return { agentId, provider, appId, appSlug, appName, githubUsername, privateKeyFile, installUrl };
 }
 
 async function persistGitHubAppManifestConversion(flow: GitHubAppManifestFlowState, rawConversion: unknown): Promise<ConvertGitHubAppManifestResult> {
@@ -468,6 +483,7 @@ async function persistGitHubAppManifestConversion(flow: GitHubAppManifestFlowSta
 
   return {
     agentId: flow.agentId,
+    provider: flow.provider,
     appId,
     appSlug,
     appName,

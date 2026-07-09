@@ -1,10 +1,10 @@
 /**
  * github_bot_create_pull_request — Creates a GitHub pull request using the
- * configured agent identity. Enforces repository owner policy before resolving
+ * configured agent identity. Normalizes repository input before resolving
  * any secrets.
  */
 import type { PluginContext, ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
-import { evaluateRepoPolicy } from "../identity-policy.js";
+import { normalizeGitHubRepoRef } from "../identity-policy.js";
 import { resolveAgentIdentityFromPluginSettings } from "../config-source.js";
 import { resolveIdentityToken } from "../credential-sidecar.js";
 import { githubBotCreatePullRequestToolMetadata, githubBotCreatePullRequestToolName } from "../shared/github-bot-create-pull-request-tool.js";
@@ -76,10 +76,9 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
         return { error: reason };
       }
 
-      // Enforce repo policy BEFORE resolving any secrets.
-      const policyDecision = evaluateRepoPolicy(resolvedIdentity.identity, validated.repository);
-      if (!policyDecision.allowed) {
-        return { error: policyDecision.reason };
+      const repository = normalizeGitHubRepoRef(validated.repository);
+      if (!repository) {
+        return { error: "Invalid repository format" };
       }
 
       // Resolve token just-in-time.
@@ -87,18 +86,16 @@ export function registerCreatePullRequestTool(ctx: PluginContext): void {
       try {
         ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets), ctx.http.fetch.bind(ctx.http)));
       } catch (err) {
-        ctx.logger.error("Failed to resolve bot token", {
+        ctx.logger.error("Failed to resolve agent identity token", {
           agentId: runCtx.agentId,
           repository: validated.repository,
           reason: err instanceof Error ? err.message : String(err),
         });
-        return { error: "Failed to resolve bot authentication credentials" };
+        return { error: "Failed to resolve agent identity authentication credentials" };
       }
 
-      // Call GitHub REST API — use the canonical owner/repo from the policy
-      // decision (which normalizes URLs, SSH remotes, etc.) instead of naively
-      // splitting the raw input.
-      const { owner, repo } = policyDecision.repo!;
+      // Use the canonical owner/repo after accepting supported GitHub ref formats.
+      const { owner, repo } = repository;
       const apiUrl = `https://api.github.com/repos/${owner}/${repo}/pulls`;
 
       let response: Response;

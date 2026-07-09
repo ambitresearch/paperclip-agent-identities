@@ -4,12 +4,13 @@ Per-agent identity providers and contribution tools for Paperclip. GitHub is the
 
 ## Features
 
-- Configure one GitHub identity per Paperclip agent.
-- Restrict each identity to explicit `owner/repo` allow-list patterns.
+- Configure one identity per Paperclip agent and provider pair.
+- Choose from a provider registry: GitHub is enabled now; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are tracked as coming soon.
+- Prevent duplicate identities for the same agent/provider pair.
+- Leave repository/resource access decisions to provider permissions such as GitHub App installations and scopes.
 - Create GitHub Apps with GitHub's App Manifest flow from the settings page.
-- Store GitHub App metadata in plugin state, credential references in a local sidecar file, and GitHub App bindings in the selected agent environment.
-- Mint short-lived GitHub App installation tokens on demand for plugin tools.
-- Create pull requests and push branches using the configured agent identity.
+- Store public identity metadata in plugin state, credential references in a local sidecar file, and GitHub App bindings in the selected agent environment.
+- Mint short-lived GitHub App installation tokens on demand for provider-specific tools.
 
 ## Development
 
@@ -29,8 +30,6 @@ When this package is installed from a local path, Paperclip watches that rebuilt
 output and reloads the plugin worker. Local installs run trusted code from this
 folder on your machine.
 
-
-
 ## Install Into Paperclip
 
 ```bash
@@ -40,25 +39,46 @@ paperclipai plugin install . --local
 
 ## Identity Config Model
 
-This repository defines a typed per-agent identity configuration core. The settings page stores a v2 list of agent mappings in plugin state and supports adding, editing, and deleting mappings one agent at a time:
+Agent Identities uses a provider-aware settings state. Each saved identity is keyed by `agentId + provider`, using the identity key format `${agentId}:${provider}`. The settings page stores a version 3 map in Paperclip plugin state:
 
-- `identities[agentId].label`
-- `identities[agentId].githubUsername`
-- `identities[agentId].allowedRepoPatterns` (defaults to `["*/*"]`; supports patterns like `my-org/*` or `my-org/my-repo`)
-- Optional `identities[agentId].commitName`
-- Optional `identities[agentId].commitEmail`
+```ts
+{
+  version: 3,
+  identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>
+}
+```
 
-The worker still reads older single-agent settings state and converts previous `allowedOwnerPattern` / `allowedRepos` values into unified repository patterns at runtime. Repository policy is enforced against the configured `owner/repo` patterns before credentials are resolved.
+Core fields:
+
+- `id`: stable identity key, for example `agent-123:github`
+- `agentId`: Paperclip agent ID
+- `provider`: provider ID such as `github`
+- `label`: human-facing label, conventionally `Agent Name [Company Name]`
+- `githubUsername`: GitHub App login for GitHub identities, commonly `<app-slug>[bot]`
+- Optional `commitName` and `commitEmail`
+
+GitHub tools currently consume only `provider: "github"` identities. At runtime, version 3 settings are filtered to GitHub and projected into the GitHub tool config by `agentId`; the durable settings/sidecar model remains provider-aware. Repository access is controlled by GitHub App installation permissions, scopes, and GitHub API responses, not by Agent Identities.
+
+### Supported providers
+
+| Provider | Status | Notes |
+| --- | --- | --- |
+| GitHub | Enabled | GitHub App identity for repositories, pull requests, branch pushes, and commit attribution. |
+| Slack | Coming soon | Workspace identity for Slack messages and app-mediated actions. |
+| Mattermost | Coming soon | Team identity for posts and channel operations. |
+| Microsoft Entra | Coming soon | Directory identity for Microsoft Graph and Azure-backed workflows. |
+| Google Cloud | Coming soon | Service account identity for Google Cloud APIs. |
+| AWS | Coming soon | IAM-backed identity for AWS APIs. |
 
 ### GitHub App credentials
 
-The settings page stores public GitHub identity metadata in plugin state, writes credential references to an operator-local sidecar file for the plugin worker, and cascades GitHub App bindings into the selected agent environment. Prefer GitHub App credentials so tools mint short-lived installation tokens just-in-time instead of reading generated token files:
+The settings page stores public identity metadata in plugin state, writes credential references to an operator-local sidecar file for the plugin worker, and cascades GitHub App bindings into the selected agent environment. Prefer GitHub App credentials so tools mint short-lived installation tokens just in time instead of reading generated token files:
 
 ```json
 {
   "version": 1,
   "identities": {
-    "<agent-id>": {
+    "<agent-id>:github": {
       "githubApp": {
         "appId": "<github-app-id>",
         "installationId": "<github-installation-id>",
@@ -70,11 +90,11 @@ The settings page stores public GitHub identity metadata in plugin state, writes
 }
 ```
 
-Default sidecar path in Paperclip: `/paperclip/.paperclip/agent-identities/credentials.json`. Override with `PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS` for tests or custom deployments. If the renamed default file is absent but the legacy `/paperclip/.paperclip/github-bot-identity/credentials.json` sidecar exists, the worker reads and updates the legacy file so existing installations keep their saved GitHub App settings. The plugin worker reads this sidecar when its own GitHub tools need credentials. The saved agent environment receives `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, and either `GITHUB_APP_PRIVATE_KEY` as a Paperclip secret reference or `GITHUB_APP_PRIVATE_KEY_FILE` as a private-key file path. The plugin tries the configured private-key secret first and falls back to `privateKeyFile` when a file path is present. It uses those GitHub App credentials to mint a fresh installation token on each GitHub tool call; generated tokens are not stored.
+Default sidecar path in Paperclip: `/paperclip/.paperclip/agent-identities/credentials.json`. Override with `PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS` for tests or custom deployments. The legacy `PAPERCLIP_GITHUB_BOT_IDENTITY_CREDENTIALS` variable and `/paperclip/.paperclip/github-bot-identity/credentials.json` path remain as deployment-level fallback locations when the renamed sidecar is absent. The plugin worker reads this sidecar when its GitHub provider tools need credentials. The saved agent environment receives `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, and either `GITHUB_APP_PRIVATE_KEY` as a Paperclip secret reference or `GITHUB_APP_PRIVATE_KEY_FILE` as a private-key file path. The plugin tries the configured private-key secret first and falls back to `privateKeyFile` when a file path is present. It uses those GitHub App credentials to mint a fresh installation token on each GitHub tool call; generated tokens are not stored.
 
-The settings page includes a **Create GitHub App on GitHub** button for bootstrapping this credential source with GitHub's App Manifest flow. The generated manifest opens GitHub with the required permissions (`contents`, `pull_requests`, `issues`, and `workflows` as `write`), marks the app private, uses the selected agent dashboard as the GitHub App homepage, redirects back to the current settings URL for manifest conversion, configures a GitHub App `setup_url` plus `setup_on_update` for post-install and repository-selection callbacks, explicitly disables OAuth-on-install, and intentionally omits `hook_attributes` for the no-webhook case; GitHub rejects `hook_attributes: { "active": false }` even though the resulting error says the URL is missing. After GitHub creates the app, the callback returns to the settings page and restores the relevant identity form with the one-time code prefilled; if the browser loses that state, paste the returned callback URL or `code=...` value into the field manually. The plugin exchanges that one-time code, writes the returned PEM content to `github-apps/<agent-id>/private-key.pem` beside the sidecar credentials file, prefills the App ID, private key file, and bot username fields, then sends the browser into the GitHub App installation flow. GitHub redirects back to the setup URL with `installation_id`, and the settings page restores the same form with Installation ID prefilled before saving. The generated private key file is the automatic credential source. Operators can also copy that PEM into a Paperclip secret and select its UUID to prefer secret resolution over the file fallback. When editing an agent that already has GitHub App credentials, the manifest creation CTA is treated as a replacement/rotation flow and is tucked behind a disclosure so normal edits focus on the existing App ID, Installation ID, and key source.
+The settings page includes a **Create GitHub App on GitHub** button for bootstrapping this credential source with GitHub's App Manifest flow. The generated manifest opens GitHub with the required permissions (`contents`, `pull_requests`, `issues`, and `workflows` as `write`), marks the app private, uses the selected agent dashboard as the GitHub App homepage, redirects back to the current settings URL for manifest conversion, configures a GitHub App `setup_url` plus `setup_on_update` for post-install and repository-selection callbacks, explicitly disables OAuth-on-install, and intentionally omits `hook_attributes` for the no-webhook case; GitHub rejects `hook_attributes: { "active": false }` even though the resulting error says the URL is missing. After GitHub creates the app, the callback returns to the settings page and restores the relevant identity form with the one-time code prefilled; if the browser loses that state, paste the returned callback URL or `code=...` value into the field manually. The plugin exchanges that one-time code, writes the returned PEM content to `github-apps/<agent-id>/private-key.pem` beside the sidecar credentials file, prefills the App ID, private key file, and GitHub App login fields, then sends the browser into the GitHub App installation flow. GitHub redirects back to the setup URL with `installation_id`, and the settings page restores the same form with Installation ID prefilled before saving. The generated private key file is the automatic credential source. Operators can also copy that PEM into a Paperclip secret and select its UUID to prefer secret resolution over the file fallback. When editing an agent that already has GitHub App credentials, the manifest creation CTA is treated as a replacement/rotation flow and is tucked behind a disclosure so normal edits focus on the existing App ID, Installation ID, and key source.
 
-Saving an identity patches the selected agent environment with the GitHub App bindings:
+Saving a GitHub identity patches the selected agent environment with the GitHub App bindings:
 
 ```json
 {

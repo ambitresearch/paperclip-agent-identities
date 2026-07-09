@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
-import { DEFAULT_ALLOWED_REPO_PATTERNS, DEFAULT_BOT_IDENTITY_CONFIG } from "../shared/types.js";
+import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
 import type {
   BotIdentitySettingsData,
   BotIdentitySettingsEntry,
@@ -23,9 +23,9 @@ type PaperclipSecretOption = {
 
 type IdentityFormState = {
   agentId: string;
+  provider: string;
   label: string;
   githubUsername: string;
-  allowedRepoPatternsText: string;
   commitName: string;
   commitEmail: string;
   githubAppId: string;
@@ -41,10 +41,22 @@ type IdentityFormState = {
   previousPrivateKeyFile: string;
 };
 
+type SettingsSection = "identities" | "setup" | "environment";
+type IdentityFormSection = "identity" | "github" | "commit";
+type IdentityFormValidation = {
+  identityComplete: boolean;
+  credentialComplete: boolean;
+  isComplete: boolean;
+  identityMessage: string;
+  credentialMessage: string;
+  saveMessage: string;
+};
+type IdentityTone = "good" | "warn" | "neutral";
+
 export function SettingsPage(props: PluginSettingsPageProps) {
   const companyId = props.context.companyId ?? "";
-  const companyDisplayName = getCompanyDisplayName(props.context.companyPrefix, companyId);
   const { data, loading, error, refresh } = usePluginData<BotIdentitySettingsData>("bot-identity-config", { companyId });
+  const companyDisplayName = getCompanyDisplayName(data?.companyName, props.context.companyPrefix, companyId);
   const { data: agentsData, loading: agentsLoading, error: agentsError } = usePluginData<PaperclipAgentsData>("paperclip-agents", { companyId });
   const saveConfig = usePluginAction("save-bot-identity-config");
   const deleteConfig = usePluginAction("delete-bot-identity-config");
@@ -65,8 +77,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [manifestCode, setManifestCode] = useState("");
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [manifestResult, setManifestResult] = useState<ConvertGitHubAppManifestResult | null>(null);
+  const [activeSection, setActiveSection] = useState<SettingsSection>("identities");
+  const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
   const agentOptions = agentsData?.agents ?? [];
+  const summary = summarizeIdentitySettings(identities, Boolean(data?.credentialSidecarError));
 
   useEffect(() => {
     const callback = getManifestCallbackParams();
@@ -80,16 +95,18 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       .then((result) => {
         if (cancelled) return;
         const flow = result as GetGitHubAppManifestFlowResult;
-        const savedIdentity = identities.find((entry) => entry.agentId === flow.agentId);
+        const savedIdentity = identities.find((entry) => entry.agentId === flow.agentId && entry.provider === flow.provider);
         const selectedAgent = agentOptions.find((agent) => agent.id === flow.agentId);
         const defaults = selectedAgent ? getAgentIdentityDefaults(selectedAgent, companyDisplayName) : null;
         const restoredForm = toFormState(savedIdentity);
         const draftForm = readManifestDraftForm(callback.state);
         const conversion = flow.conversion;
+        setActiveFormSection("github");
         setFormState({
           ...restoredForm,
           ...draftForm,
           agentId: flow.agentId,
+          provider: flow.provider,
           label: draftForm?.label || restoredForm.label || flow.label,
           githubUsername: conversion?.githubUsername || draftForm?.githubUsername || restoredForm.githubUsername || defaults?.githubUsername || DEFAULT_BOT_IDENTITY_CONFIG.githubUsername,
           commitName: draftForm?.commitName || restoredForm.commitName || defaults?.commitName || "",
@@ -170,18 +187,24 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const hasSavedFallbackSecretOutsideOptions = Boolean(
     config?.fallbackTokenSecretId && !secretOptions.some((secret) => secret.id === config.fallbackTokenSecretId)
   );
-  const isEditingExistingIdentity = Boolean(config && identities.some((entry) => entry.agentId === config.agentId));
+  const isEditingExistingIdentity = Boolean(config && identities.some((entry) => entry.agentId === config.agentId && entry.provider === config.provider));
+  const duplicateIdentity = config ? identities.find((entry) => entry.agentId === config.agentId && entry.provider === config.provider && !(config.previousAgentId === entry.agentId && config.provider === entry.provider)) : undefined;
   const hasExistingGitHubAppCredential = Boolean(
     config?.previousGithubAppId ||
     config?.previousGithubInstallationId ||
     config?.previousPrivateKeySecretId ||
     config?.previousPrivateKeyFile
   );
+  const formValidation = config ? getIdentityFormValidation(config, Boolean(duplicateIdentity)) : null;
+  const activeFormStepIndex = getFormStepIndex(activeFormSection);
+  const canGoNext = formValidation ? canAdvanceFromStep(activeFormSection, formValidation) : false;
+  const canSave = Boolean(formValidation?.isComplete && activeFormSection === "commit" && !saving);
 
   if (loading) return <div>Loading settings...</div>;
   if (error) return <div>Error loading settings: {error.message}</div>;
 
   function startCreate() {
+    setActiveFormSection("identity");
     setFormState(toFormState());
     setSaveError(null);
     setSaveSuccess(false);
@@ -189,6 +212,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   }
 
   function startEdit(entry: BotIdentitySettingsEntry) {
+    setActiveFormSection("identity");
     setFormState(toFormState(entry));
     setSaveError(null);
     setSaveSuccess(false);
@@ -240,12 +264,17 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   async function handleCreateGitHubAppManifest() {
     if (!config) return;
+    if (config.provider !== GITHUB_IDENTITY_PROVIDER_ID) {
+      setManifestError("GitHub App setup is only available for the GitHub provider.");
+      return;
+    }
     setManifestBusy(true);
     setManifestError(null);
     setManifestResult(null);
     try {
       const result = await createGitHubAppManifest({
         agentId: config.agentId.trim(),
+        provider: config.provider,
         label: config.label.trim(),
         homepageUrl: getAgentDashboardUrl(config.agentId.trim()),
         callbackUrl: getManifestReturnUrl(),
@@ -290,17 +319,27 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   async function handleSave() {
     if (!config) return;
+    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity));
+    if (!validation.isComplete) {
+      setSaveSuccess(false);
+      setSaveError(validation.saveMessage);
+      setActiveFormSection(validation.identityComplete ? "github" : "identity");
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     setSaveSuccess(false);
     try {
+      if (!isIdentityProviderId(config.provider)) {
+        throw new Error("Choose a supported identity provider before saving.");
+      }
       const targetAgentId = config.agentId.trim();
       const previousAgentIds = config.previousAgentId && config.previousAgentId !== targetAgentId ? [config.previousAgentId] : [];
       const payload: SaveBotIdentityConfigInput = {
         agentId: config.agentId.trim(),
+        provider: config.provider,
         label: config.label.trim(),
         githubUsername: config.githubUsername.trim(),
-        allowedRepoPatterns: parseAllowedRepoPatterns(config.allowedRepoPatternsText),
         commitName: config.commitName.trim() || undefined,
         commitEmail: config.commitEmail.trim() || undefined,
         credential: {
@@ -353,8 +392,8 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         previousPrivateKeySecretRef: entry.credential?.githubApp?.privateKeySecretId,
         previousPrivateKeyFile: entry.credential?.githubApp?.privateKeyFile,
       });
-      await deleteConfig({ agentId: entry.agentId });
-      if (formState?.agentId === entry.agentId) {
+      await deleteConfig({ agentId: entry.agentId, provider: entry.provider });
+      if (formState?.agentId === entry.agentId && formState.provider === entry.provider) {
         setFormState(null);
       }
       await refresh();
@@ -369,19 +408,25 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     <div style={pageStyle}>
       <div style={headerStyle}>
         <div>
-          <h2 style={{ margin: 0 }}>Agent Identities</h2>
+          <h2 style={pageTitleStyle}>Agent Identities</h2>
           <p style={descriptionStyle}>
-            Configure per-agent identity providers. GitHub is the first provider, with per-agent bot metadata and GitHub App token sources.
+            Connect agents in {companyDisplayName || "this company"} to service-specific identity providers. GitHub is the first provider.
           </p>
         </div>
         <button
           onClick={startCreate}
-          style={iconButtonStyle}
-          title="Add agent"
-          aria-label="Add agent"
+          style={primaryButtonStyle}
+          title="Add identity"
+          aria-label="Add identity"
         >
-          +
+          New identity
         </button>
+      </div>
+
+      <div style={summaryGridStyle}>
+        <SummaryTile label="Identities" value={summary.total} />
+        <SummaryTile label="GitHub Apps" value={summary.githubApps} tone="good" />
+        <SummaryTile label="Need setup" value={summary.needsSetup} tone={summary.needsSetup > 0 ? "warn" : "good"} />
       </div>
 
       {data?.credentialSidecarError && (
@@ -390,42 +435,139 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         </div>
       )}
 
-      <section style={sectionStyle}>
-        <h3 style={sectionTitleStyle}>Configured agents</h3>
-        {identities.length === 0 ? (
-          <p style={hintStyle}>No agents configured yet. Add one to enable provider-backed agent tools.</p>
-        ) : (
-          <div style={listStyle}>
-            {identities.map((entry) => (
-              <div key={entry.agentId} style={rowStyle}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={rowTitleStyle}>{entry.label}</div>
-                  <div style={rowMetaStyle}>
-                    {entry.githubUsername} · {formatAgentName(entry.agentId, agentOptions)} · credential {formatCredentialStatus(entry.credentialStatus)}
-                  </div>
+      <div style={settingsShellStyle}>
+        <nav style={sidebarStyle} aria-label="Agent identity settings sections">
+          <SidebarButton
+            active={activeSection === "identities"}
+            title="Identities"
+            detail={`${identities.length} configured`}
+            onClick={() => setActiveSection("identities")}
+          />
+          <SidebarButton
+            active={activeSection === "setup"}
+            title="GitHub App setup"
+            detail="Create and install apps"
+            onClick={() => setActiveSection("setup")}
+          />
+          <SidebarButton
+            active={activeSection === "environment"}
+            title="Environment"
+            detail="Credential propagation"
+            onClick={() => setActiveSection("environment")}
+          />
+        </nav>
+
+        <main style={workspaceStyle}>
+          {activeSection === "identities" && (
+            <section style={sectionStyle}>
+              <div style={sectionHeaderStyle}>
+                <div>
+                  <h3 style={sectionTitleStyle}>Configured identities</h3>
+                  <p style={sectionDescriptionStyle}>Each row maps one Paperclip agent to a provider account and credential source.</p>
                 </div>
-                <div style={rowActionsStyle}>
-                  <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
-                  <button
-                    onClick={() => void handleDelete(entry)}
-                    disabled={deletingAgentId === entry.agentId}
-                    style={dangerButtonStyle}
-                  >
-                    {deletingAgentId === entry.agentId ? "Deleting..." : "Delete"}
-                  </button>
-                </div>
+                <button onClick={startCreate} style={secondaryButtonStyle}>Add identity</button>
               </div>
-            ))}
-          </div>
-        )}
-      </section>
+              {identities.length === 0 ? (
+                <div style={emptyStateStyle}>
+                  <strong>No identities configured</strong>
+                  <span>Pick an agent, connect its first provider account, then save. Defaults are filled from the selected agent and company.</span>
+                  <button onClick={startCreate} style={primaryButtonStyle}>Create first identity</button>
+                </div>
+              ) : (
+                <div style={listStyle}>
+                  <div style={listHeaderStyle}>
+                    <span>Agent</span>
+                    <span>Provider identity</span>
+                    <span>Status</span>
+                    <span />
+                  </div>
+                  {identities.map((entry) => (
+                    <div key={entry.id} style={rowStyle}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={rowTitleStyle}>{entry.label}</div>
+                        <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
+                      </div>
+                      <div style={rowMetaStyle}>{entry.githubUsername}</div>
+                      <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
+                      <div style={rowActionsStyle}>
+                        <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
+                        <button
+                          onClick={() => void handleDelete(entry)}
+                          disabled={deletingAgentId === entry.agentId}
+                          style={dangerButtonStyle}
+                        >
+                          {deletingAgentId === entry.agentId ? "Deleting..." : "Delete"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
+          {activeSection === "setup" && (
+            <section style={sectionStyle}>
+              <h3 style={sectionTitleStyle}>GitHub App setup</h3>
+              <div style={setupStepsStyle}>
+                <SetupStep index="1" title="Select the Paperclip agent" text="The label, GitHub login, commit name, and private-key file path are prefilled from the agent and company." />
+                <SetupStep index="2" title="Create the GitHub App" text="Paperclip opens GitHub with the required permissions and stores the generated private key in the sidecar path." />
+                <SetupStep index="3" title="Install, return, save" text="GitHub redirects back with the installation ID. Save the identity to propagate the environment values." />
+              </div>
+              <button onClick={startCreate} style={primaryButtonStyle}>Start setup</button>
+            </section>
+          )}
+
+          {activeSection === "environment" && (
+            <section style={sectionStyle}>
+              <h3 style={sectionTitleStyle}>Environment propagation</h3>
+              <div style={inlineNoticeStyle}>
+                Saving an identity updates the selected agent environment with <code>GITHUB_APP_ID</code>, <code>GITHUB_INSTALLATION_ID</code>, and either <code>GITHUB_APP_PRIVATE_KEY</code> or <code>GITHUB_APP_PRIVATE_KEY_FILE</code>.
+              </div>
+              <div style={setupStepsStyle}>
+                <SetupStep index="A" title="Secret first" text="When a Paperclip secret is selected, the agent gets a secret reference instead of a raw private key." />
+                <SetupStep index="B" title="File fallback" text="If secrets are not available, the generated private-key file path keeps the tools working." />
+                <SetupStep index="C" title="Safe removal" text="Deleting an identity removes only matching GitHub App values from that agent." />
+              </div>
+            </section>
+          )}
+        </main>
+      </div>
 
       {config && (
-        <section style={sectionStyle}>
-          <h3 style={sectionTitleStyle}>{isEditingExistingIdentity ? "Edit agent identity" : "Add agent identity"}</h3>
+        <div style={dialogBackdropStyle} role="presentation">
+          <section
+            style={dialogStyle}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="agent-identity-dialog-title"
+          >
+          <header style={dialogHeaderStyle}>
+            <div>
+              <h3 id="agent-identity-dialog-title" style={dialogTitleStyle}>{isEditingExistingIdentity ? "Edit agent identity" : "Add agent identity"}</h3>
+              <p style={sectionDescriptionStyle}>Configure the agent, GitHub App credential, and optional commit metadata.</p>
+            </div>
+            <button onClick={() => setFormState(null)} disabled={saving} style={closeButtonStyle} aria-label="Close identity editor">x</button>
+          </header>
 
+          <div style={dialogBodyStyle}>
+            <div aria-label="Identity setup progress" style={wizardStepListStyle}>
+              {FORM_STEPS.map((step, index) => (
+                <WizardStepIndicator
+                  key={step.id}
+                  index={index + 1}
+                  label={step.label}
+                  active={step.id === activeFormSection}
+                  complete={formValidation ? isWizardStepComplete(step.id, formValidation) : false}
+                />
+              ))}
+            </div>
+
+          {activeFormSection === "identity" && (
+          <>
           <fieldset style={fieldsetStyle}>
-            <legend style={{ fontWeight: 600 }}>Identity</legend>
+            <legend style={legendStyle}>Identity</legend>
+            {formValidation && !formValidation.identityComplete && <div style={validationNoticeStyle}>{formValidation.identityMessage}</div>}
 
             <label style={fieldStyle}>
               <span>Agent <span style={requiredStyle}>*</span></span>
@@ -454,6 +596,20 @@ export function SettingsPage(props: PluginSettingsPageProps) {
             </label>
 
             <label style={fieldStyle}>
+              <span>Provider <span style={requiredStyle}>*</span></span>
+              <select value={config.provider} onChange={(e) => updateField("provider", e.target.value)} style={inputStyle} disabled={isEditingExistingIdentity}>
+                {(data?.providers ?? []).map((provider) => (
+                  <option key={provider.id} value={provider.id} disabled={provider.status !== "enabled"}>
+                    {provider.name}{provider.status === "coming-soon" ? " (coming soon)" : ""}
+                  </option>
+                ))}
+              </select>
+              <span style={hintStyle}>Each agent can have one identity per provider. GitHub is available now; additional providers are listed as they are planned.</span>
+            </label>
+
+            {duplicateIdentity && <div style={validationNoticeStyle}>This agent already has a {getProviderDisplayName(config.provider, data?.providers)} identity. Edit the existing row instead.</div>}
+
+            <label style={fieldStyle}>
               <span>Label <span style={requiredStyle}>*</span></span>
               <input
                 type="text"
@@ -466,7 +622,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
           </fieldset>
 
           <fieldset style={fieldsetStyle}>
-            <legend style={{ fontWeight: 600 }}>GitHub policy</legend>
+            <legend style={legendStyle}>Provider account</legend>
 
             <label style={fieldStyle}>
               <span>GitHub Username <span style={requiredStyle}>*</span></span>
@@ -474,28 +630,19 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 type="text"
                 value={config.githubUsername}
                 onChange={(e) => updateField("githubUsername", e.target.value)}
-                placeholder="e.g. ouroboros-paperclip-bot[bot]"
+                placeholder="e.g. ouroboros-paperclip-agent[bot]"
                 style={inputStyle}
               />
-              <span style={hintStyle}>Public GitHub login expected for this agent's GitHub identity.</span>
-            </label>
-
-            <label style={fieldStyle}>
-              <span>Allowed repository patterns</span>
-              <textarea
-                value={config.allowedRepoPatternsText}
-                onChange={(e) => updateField("allowedRepoPatternsText", e.target.value)}
-                placeholder="my-org/*
-my-org/my-repo"
-                rows={4}
-                style={textareaStyle}
-              />
-              <span style={hintStyle}>One owner/repo pattern per line. Supports * and ? wildcards; examples: my-org/* or my-org/my-repo.</span>
+              <span style={hintStyle}>Public GitHub App login for this agent. GitHub appends [bot] to app account logins. Repository access is controlled by the GitHub App installation and provider permissions.</span>
             </label>
           </fieldset>
+          </>
+          )}
 
+          {activeFormSection === "github" && (
           <fieldset style={fieldsetStyle}>
-            <legend style={{ fontWeight: 600 }}>GitHub App credential source</legend>
+            <legend style={legendStyle}>GitHub App credential source</legend>
+            {formValidation && !formValidation.credentialComplete && <div style={validationNoticeStyle}>{formValidation.credentialMessage}</div>}
 
             {hasExistingGitHubAppCredential ? (
               <div style={inlineNoticeStyle}>
@@ -678,13 +825,12 @@ my-org/my-repo"
               </div>
             </details>
           </fieldset>
+          )}
 
-          <div style={inlineNoticeStyle}>
-            Saving this identity cascades the GitHub App values to the selected agent environment as <code>GITHUB_APP_ID</code>, <code>GITHUB_INSTALLATION_ID</code>, and either <code>GITHUB_APP_PRIVATE_KEY</code> or <code>GITHUB_APP_PRIVATE_KEY_FILE</code>.
-          </div>
-
+          {activeFormSection === "commit" && (
           <fieldset style={fieldsetStyle}>
-            <legend style={{ fontWeight: 600 }}>Commit identity (optional)</legend>
+            <legend style={legendStyle}>Commit identity (optional)</legend>
+            <div style={inlineNoticeStyle}>These fields are optional. Save is available because the required identity and credential steps are complete.</div>
 
             <label style={fieldStyle}>
               <span>Commit Name</span>
@@ -692,7 +838,7 @@ my-org/my-repo"
                 type="text"
                 value={config.commitName}
                 onChange={(e) => updateField("commitName", e.target.value)}
-                placeholder="e.g. Ouroboros Paperclip Bot"
+                placeholder="e.g. Ouroboros Paperclip Agent"
                 style={inputStyle}
               />
             </label>
@@ -703,35 +849,102 @@ my-org/my-repo"
                 type="text"
                 value={config.commitEmail}
                 onChange={(e) => updateField("commitEmail", e.target.value)}
-                placeholder="e.g. bot@example.com"
+                placeholder="e.g. agent@example.com"
                 style={inputStyle}
               />
             </label>
           </fieldset>
+          )}
 
-          <div style={formActionsStyle}>
-            <button
-              onClick={() => void handleSave()}
-              disabled={saving || !config.agentId || !config.label || !config.githubUsername}
-              style={primaryButtonStyle}
-            >
-              {saving ? "Saving..." : "Save agent"}
-            </button>
-            <button onClick={() => setFormState(null)} disabled={saving} style={secondaryButtonStyle}>Cancel</button>
-            {saveSuccess && <span style={successStyle}>Saved successfully.</span>}
-            {saveError && <span style={errorStyle}>{saveError}</span>}
           </div>
-        </section>
+
+          <footer style={dialogFooterStyle}>
+            <div style={saveStatusStyle}>
+              {saveSuccess && <span style={successStyle}>Saved successfully.</span>}
+              {saveError && <span style={errorStyle}>{saveError}</span>}
+              {!saveSuccess && !saveError && formValidation && activeFormSection !== "commit" && <span style={hintStyle}>{formValidation.saveMessage}</span>}
+              {!saveSuccess && !saveError && formValidation && activeFormSection === "commit" && !formValidation.isComplete && <span style={hintStyle}>{formValidation.saveMessage}</span>}
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveFormSection(getPreviousFormStep(activeFormSection))}
+              disabled={saving || activeFormStepIndex === 0}
+              style={buttonStyle(secondaryButtonStyle, saving || activeFormStepIndex === 0)}
+            >
+              Previous
+            </button>
+            {activeFormSection !== "commit" ? (
+              <button
+                type="button"
+                onClick={() => setActiveFormSection(getNextFormStep(activeFormSection))}
+                disabled={saving || !canGoNext}
+                style={buttonStyle(primaryButtonStyle, saving || !canGoNext)}
+              >
+                Next
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => void handleSave()}
+                disabled={!canSave}
+                style={buttonStyle(primaryButtonStyle, !canSave)}
+              >
+                {saving ? "Saving..." : "Save agent"}
+              </button>
+            )}
+            <button type="button" onClick={() => setFormState(null)} disabled={saving} style={secondaryButtonStyle}>Cancel</button>
+          </footer>
+          </section>
+        </div>
       )}
     </div>
   );
 }
 
 
+function SummaryTile(props: { label: string; value: number; tone?: IdentityTone }) {
+  return (
+    <div style={summaryTileStyle(props.tone ?? "neutral")}>
+      <span style={summaryValueStyle}>{props.value}</span>
+      <span style={summaryLabelStyle}>{props.label}</span>
+    </div>
+  );
+}
+
+function SidebarButton(props: { active: boolean; title: string; detail: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={props.onClick} style={sidebarButtonStyle(props.active)}>
+      <span style={sidebarTitleStyle}>{props.title}</span>
+      <span style={sidebarDetailStyle}>{props.detail}</span>
+    </button>
+  );
+}
+
+function SetupStep(props: { index: string; title: string; text: string }) {
+  return (
+    <div style={setupStepStyle}>
+      <span style={setupStepIndexStyle}>{props.index}</span>
+      <div>
+        <strong>{props.title}</strong>
+        <p style={setupStepTextStyle}>{props.text}</p>
+      </div>
+    </div>
+  );
+}
+
+function WizardStepIndicator(props: { index: number; label: string; active: boolean; complete: boolean }) {
+  return (
+    <div style={wizardStepStyle(props.active)}>
+      <span style={wizardStepNumberStyle(props.active, props.complete)}>{props.complete ? "✓" : props.index}</span>
+      <span>{props.label}</span>
+    </div>
+  );
+}
+
 function GitHubAppManifestCreateIntro() {
   return (
     <div style={inlineNoticeStyle}>
-      <strong>Create a GitHub App with a manifest.</strong> This opens GitHub with the required bot permissions prefilled. After GitHub creates the app, Paperclip saves the generated private key file, preloads the App ID, opens the install flow, and restores the form with the Installation ID when GitHub redirects back.
+      <strong>Create a GitHub App with a manifest.</strong> This opens GitHub with the required app permissions prefilled. After GitHub creates the app, Paperclip saves the generated private key file, preloads the App ID, opens the install flow, and restores the form with the Installation ID when GitHub redirects back.
     </div>
   );
 }
@@ -833,7 +1046,7 @@ function getAgentIdentityDefaults(agent: PaperclipAgentOption, companyDisplayNam
   return {
     label: formatIdentityLabel(displayName, companyDisplayName),
     githubUsername: `${slug}[bot]`,
-    commitName: `${displayName} Paperclip Bot`,
+    commitName: `${displayName} Paperclip Agent`,
     commitEmail: `${slug}[bot]@users.noreply.github.com`,
     privateKeyFile: `/paperclip/.paperclip/agent-identities/github-apps/${agent.id}/private-key.pem`,
   };
@@ -852,7 +1065,10 @@ function getAgentDisplayName(agent: PaperclipAgentOption): string {
   return (agent.name || agent.title || agent.role || agent.id).trim();
 }
 
-function getCompanyDisplayName(companyPrefix: string | null | undefined, companyId: string): string {
+function getCompanyDisplayName(companyName: string | null | undefined, companyPrefix: string | null | undefined, companyId: string): string {
+  const resolvedName = (companyName ?? "").trim();
+  if (resolvedName) return resolvedName;
+
   const displayName = titleCaseSlug(companyPrefix ?? "");
   return displayName || companyId.trim();
 }
@@ -877,9 +1093,9 @@ function slugifyGitHubAppName(value: string): string {
 function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState {
   return {
     agentId: entry?.agentId ?? DEFAULT_BOT_IDENTITY_CONFIG.agentId,
+    provider: entry?.provider ?? DEFAULT_BOT_IDENTITY_CONFIG.provider,
     label: entry?.label ?? DEFAULT_BOT_IDENTITY_CONFIG.label,
     githubUsername: entry?.githubUsername ?? DEFAULT_BOT_IDENTITY_CONFIG.githubUsername,
-    allowedRepoPatternsText: (entry?.allowedRepoPatterns ?? DEFAULT_ALLOWED_REPO_PATTERNS).join("\n"),
     commitName: entry?.commitName ?? "",
     commitEmail: entry?.commitEmail ?? "",
     githubAppId: entry?.credential?.githubApp?.appId ?? "",
@@ -932,9 +1148,9 @@ function normalizeManifestDraftForm(raw: unknown): IdentityFormState | null {
   if (!isRecord(raw)) return null;
   return {
     agentId: readString(raw.agentId),
+    provider: readString(raw.provider) || GITHUB_IDENTITY_PROVIDER_ID,
     label: readString(raw.label),
     githubUsername: readString(raw.githubUsername),
-    allowedRepoPatternsText: readString(raw.allowedRepoPatternsText),
     commitName: readString(raw.commitName),
     commitEmail: readString(raw.commitEmail),
     githubAppId: readString(raw.githubAppId),
@@ -951,26 +1167,81 @@ function normalizeManifestDraftForm(raw: unknown): IdentityFormState | null {
   };
 }
 
-function parseAllowedRepoPatterns(value: string): string[] {
-  return parseAgentIds(value);
+const FORM_STEPS: Array<{ id: IdentityFormSection; label: string }> = [
+  { id: "identity", label: "Identity" },
+  { id: "github", label: "GitHub App" },
+  { id: "commit", label: "Commit" },
+];
+
+function getIdentityFormValidation(config: IdentityFormState, hasDuplicate = false): IdentityFormValidation {
+  const hasIdentity = Boolean(config.agentId.trim() && config.provider.trim() && config.label.trim() && config.githubUsername.trim()) && !hasDuplicate;
+  const hasGitHubAppCredential = Boolean(
+    config.githubAppId.trim() &&
+    config.githubInstallationId.trim() &&
+    (config.privateKeySecretId.trim() || config.privateKeyFile.trim())
+  );
+  const hasFallbackCredential = Boolean(config.fallbackTokenSecretId.trim() || config.tokenFile.trim());
+  const identityComplete = hasIdentity;
+  const credentialComplete = hasGitHubAppCredential || hasFallbackCredential;
+  const identityMessage = hasDuplicate
+    ? "This agent already has an identity for the selected provider. Edit the existing identity instead."
+    : !hasIdentity
+      ? "Choose an agent, provider, label, and provider username before continuing."
+    : "Identity details are complete.";
+  const credentialMessage = credentialComplete
+    ? "Credential source is complete."
+    : "Add a complete GitHub App credential, or choose a fallback token source, before this identity can be saved.";
+  const saveMessage = !identityComplete
+    ? identityMessage
+    : !credentialComplete
+      ? credentialMessage
+      : "Required setup is complete. Review optional commit metadata, then save.";
+  return {
+    identityComplete,
+    credentialComplete,
+    isComplete: identityComplete && credentialComplete,
+    identityMessage,
+    credentialMessage,
+    saveMessage,
+  };
 }
 
-function parseAgentIds(value: string): string[] {
-  return value
-    .split(/[\n,]/)
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .filter((entry, index, entries) => entries.indexOf(entry) === index);
+function getFormStepIndex(step: IdentityFormSection): number {
+  return FORM_STEPS.findIndex((entry) => entry.id === step);
+}
+
+function getNextFormStep(step: IdentityFormSection): IdentityFormSection {
+  return FORM_STEPS[Math.min(getFormStepIndex(step) + 1, FORM_STEPS.length - 1)]?.id ?? step;
+}
+
+function getPreviousFormStep(step: IdentityFormSection): IdentityFormSection {
+  return FORM_STEPS[Math.max(getFormStepIndex(step) - 1, 0)]?.id ?? step;
+}
+
+function canAdvanceFromStep(step: IdentityFormSection, validation: IdentityFormValidation): boolean {
+  if (step === "identity") return validation.identityComplete;
+  if (step === "github") return validation.credentialComplete;
+  return validation.isComplete;
+}
+
+function isWizardStepComplete(step: IdentityFormSection, validation: IdentityFormValidation): boolean {
+  if (step === "identity") return validation.identityComplete;
+  if (step === "github") return validation.credentialComplete;
+  return validation.isComplete;
 }
 
 function formatAgentOption(agent: PaperclipAgentOption): string {
-  const detail = agent.title || agent.role || agent.status;
-  return detail ? `${agent.name} - ${detail}` : agent.name;
+  const details = [agent.role, agent.status].filter(Boolean).join(" - ");
+  return details ? `${getAgentDisplayName(agent)} (${details})` : getAgentDisplayName(agent);
 }
 
 function formatAgentName(agentId: string, agents: PaperclipAgentOption[]): string {
   const agent = agents.find((entry) => entry.id === agentId);
-  return agent ? agent.name : agentId;
+  return agent ? getAgentDisplayName(agent) : agentId;
+}
+
+function getProviderDisplayName(providerId: string, providers: BotIdentitySettingsData["providers"] | undefined): string {
+  return providers?.find((provider) => provider.id === providerId)?.name ?? providerId;
 }
 
 function formatSecretOption(secret: PaperclipSecretOption): string {
@@ -1100,9 +1371,27 @@ function readString(value: unknown): string {
 }
 
 function formatCredentialStatus(status: BotIdentitySettingsEntry["credentialStatus"]): string {
-  if (status === "configured") return "configured";
-  if (status === "sidecar-unavailable") return "unavailable";
-  return "missing";
+  if (status === "configured") return "Configured";
+  if (status === "sidecar-unavailable") return "Unavailable";
+  return "Missing";
+}
+
+function getIdentityTone(entry: BotIdentitySettingsEntry): IdentityTone {
+  if (entry.credentialStatus === "configured") return "good";
+  if (entry.credentialStatus === "sidecar-unavailable") return "warn";
+  return "neutral";
+}
+
+function summarizeIdentitySettings(identities: BotIdentitySettingsEntry[], sidecarUnavailable: boolean) {
+  const githubApps = identities.filter((identity) => {
+    const githubApp = identity.credential?.githubApp;
+    return Boolean(githubApp?.appId && githubApp.installationId && (githubApp.privateKeySecretId || githubApp.privateKeyFile));
+  }).length;
+  return {
+    total: identities.length,
+    githubApps,
+    needsSetup: sidecarUnavailable ? identities.length : identities.filter((identity) => identity.credentialStatus !== "configured").length,
+  };
 }
 
 type AgentAdapterConfig = Record<string, unknown> & { env?: Record<string, unknown> };
@@ -1345,11 +1634,31 @@ function getAgentFieldHint(input: {
   return "The Paperclip agent that will use this identity.";
 }
 
+const paperclipSurface = "var(--slate-1, Canvas)";
+const paperclipCanvas = "var(--slate-2, color-mix(in srgb, CanvasText 3%, Canvas))";
+const paperclipPanel = "var(--slate-2, color-mix(in srgb, CanvasText 3%, Canvas))";
+const paperclipMutedPanel = "var(--slate-3, color-mix(in srgb, CanvasText 6%, Canvas))";
+const paperclipBorder = "var(--slate-6, color-mix(in srgb, CanvasText 18%, transparent))";
+const paperclipBorderStrong = "var(--slate-7, color-mix(in srgb, CanvasText 28%, transparent))";
+const paperclipText = "var(--slate-12, CanvasText)";
+const paperclipMutedText = "var(--slate-11, GrayText)";
+const paperclipBlue = "var(--blue-9, #0090ff)";
+const paperclipBlueText = "var(--blue-11, #0d74ce)";
+const paperclipGreen = "var(--grass-9, #46a758)";
+const paperclipAmber = "var(--amber-9, #f59e0b)";
+
 const pageStyle: CSSProperties = {
-  maxWidth: 920,
+  maxWidth: 1160,
   display: "grid",
   gap: "1rem",
-  color: "CanvasText",
+  color: paperclipText,
+};
+
+const pageTitleStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "1.125rem",
+  lineHeight: 1.2,
+  letterSpacing: "-0.02em",
 };
 
 const headerStyle: CSSProperties = {
@@ -1361,81 +1670,359 @@ const headerStyle: CSSProperties = {
 
 const descriptionStyle: CSSProperties = {
   margin: "0.35rem 0 0",
-  color: "CanvasText",
-  opacity: 0.82,
+  color: paperclipMutedText,
+  fontSize: "0.875rem",
+};
+
+const summaryGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: "0.75rem",
+};
+
+function summaryTileStyle(tone: IdentityTone): CSSProperties {
+  return {
+    display: "grid",
+    gap: "0.25rem",
+    padding: "0.85rem 1rem",
+    border: `1px solid ${toneBorder(tone)}`,
+    borderRadius: 12,
+    backgroundColor: toneBackground(tone),
+  };
+}
+
+const summaryValueStyle: CSSProperties = {
+  fontSize: "1.125rem",
+  fontWeight: 700,
+  lineHeight: 1,
+};
+
+const summaryLabelStyle: CSSProperties = {
+  color: paperclipMutedText,
+  fontSize: "0.8125rem",
+  fontWeight: 600,
 };
 
 const credentialErrorStyle: CSSProperties = {
-  padding: "0.65rem 0.85rem",
-  backgroundColor: "rgba(255, 107, 107, 0.12)",
-  border: "1px solid rgba(255, 107, 107, 0.45)",
-  borderRadius: 6,
-  color: "#ff6b6b",
-  fontSize: "0.9rem",
+  padding: "0.75rem 0.9rem",
+  backgroundColor: "color-mix(in srgb, var(--red-9, #e5484d) 12%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--red-9, #e5484d) 45%, transparent)",
+  borderRadius: 10,
+  color: "var(--red-11, #e5484d)",
+  fontSize: "0.875rem",
+};
+
+const settingsShellStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "220px minmax(0, 1fr)",
+  gap: "1rem",
+  alignItems: "start",
+};
+
+const sidebarStyle: CSSProperties = {
+  display: "grid",
+  gap: "0.35rem",
+  padding: "0.5rem",
+  border: `1px solid ${paperclipBorder}`,
+  borderRadius: 14,
+  backgroundColor: paperclipPanel,
+};
+
+function sidebarButtonStyle(active: boolean): CSSProperties {
+  return {
+    display: "grid",
+    gap: "0.15rem",
+    width: "100%",
+    minHeight: 54,
+    padding: "0.65rem 0.75rem",
+    border: `1px solid ${active ? paperclipBorderStrong : "transparent"}`,
+    borderRadius: 10,
+    backgroundColor: active ? paperclipSurface : "transparent",
+    color: paperclipText,
+    textAlign: "left",
+    cursor: "pointer",
+  };
+}
+
+const sidebarTitleStyle: CSSProperties = {
+  fontWeight: 650,
+  fontSize: "0.875rem",
+};
+
+const sidebarDetailStyle: CSSProperties = {
+  color: paperclipMutedText,
+  fontSize: "0.8125rem",
+};
+
+const workspaceStyle: CSSProperties = {
+  minWidth: 0,
 };
 
 const sectionStyle: CSSProperties = {
-  border: "1px solid GrayText",
-  borderRadius: 6,
+  border: `1px solid ${paperclipBorder}`,
+  borderRadius: 14,
   padding: "1rem",
   display: "grid",
-  gap: "0.85rem",
+  gap: "0.9rem",
+  backgroundColor: paperclipSurface,
+};
+
+const sectionHeaderStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: "1rem",
 };
 
 const sectionTitleStyle: CSSProperties = {
   margin: 0,
+  fontSize: "0.875rem",
+  lineHeight: 1.25,
+};
+
+const sectionDescriptionStyle: CSSProperties = {
+  margin: "0.25rem 0 0",
+  color: paperclipMutedText,
+  fontSize: "0.875rem",
 };
 
 const listStyle: CSSProperties = {
   display: "grid",
-  gap: "0.5rem",
+  gap: "0.35rem",
+};
+
+const listHeaderStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(180px, 1.4fr) minmax(160px, 1fr) 110px auto",
+  gap: "0.75rem",
+  padding: "0 0.75rem 0.25rem",
+  color: paperclipMutedText,
+  fontSize: "0.8125rem",
+  fontWeight: 650,
 };
 
 const rowStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: "1rem",
+  display: "grid",
+  gridTemplateColumns: "minmax(180px, 1.4fr) minmax(160px, 1fr) 110px auto",
+  gap: "0.75rem",
   alignItems: "center",
-  border: "1px solid GrayText",
-  borderRadius: 4,
+  border: `1px solid ${paperclipBorder}`,
+  borderRadius: 10,
   padding: "0.75rem",
+  backgroundColor: paperclipPanel,
 };
 
 const rowTitleStyle: CSSProperties = {
-  fontWeight: 700,
+  fontWeight: 650,
+  overflowWrap: "anywhere",
 };
 
 const rowMetaStyle: CSSProperties = {
-  color: "GrayText",
-  fontSize: "0.85rem",
+  color: paperclipMutedText,
+  fontSize: "0.875rem",
   overflowWrap: "anywhere",
 };
 
 const rowActionsStyle: CSSProperties = {
   display: "flex",
   gap: "0.5rem",
+  justifyContent: "flex-end",
+};
+
+const emptyStateStyle: CSSProperties = {
+  display: "grid",
+  justifyItems: "start",
+  gap: "0.5rem",
+  padding: "1.25rem",
+  border: `1px dashed ${paperclipBorderStrong}`,
+  borderRadius: 12,
+  color: paperclipMutedText,
+  backgroundColor: paperclipPanel,
+};
+
+const setupStepsStyle: CSSProperties = {
+  display: "grid",
+  gap: "0.5rem",
+};
+
+const setupStepStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "2rem minmax(0, 1fr)",
+  gap: "0.75rem",
+  alignItems: "start",
+  padding: "0.75rem",
+  border: `1px solid ${paperclipBorder}`,
+  borderRadius: 10,
+  backgroundColor: paperclipPanel,
+};
+
+const setupStepIndexStyle: CSSProperties = {
+  display: "inline-grid",
+  placeItems: "center",
+  width: "2rem",
+  height: "2rem",
+  borderRadius: 999,
+  backgroundColor: paperclipMutedPanel,
+  color: paperclipMutedText,
+  fontWeight: 700,
+  fontSize: "0.8125rem",
+};
+
+const setupStepTextStyle: CSSProperties = {
+  margin: "0.2rem 0 0",
+  color: paperclipMutedText,
+  fontSize: "0.875rem",
+};
+
+const dialogBackdropStyle: CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 1000,
+  display: "grid",
+  placeItems: "start center",
+  padding: "7vh 1rem 1rem",
+  backgroundColor: "rgba(0, 0, 0, 0.42)",
+  overflowY: "auto",
+};
+
+const dialogStyle: CSSProperties = {
+  width: "min(760px, 100%)",
+  maxHeight: "86vh",
+  display: "grid",
+  gridTemplateRows: "auto minmax(0, 1fr) auto",
+  border: `1px solid ${paperclipBorder}`,
+  borderRadius: 16,
+  backgroundColor: paperclipCanvas,
+  color: paperclipText,
+  boxShadow: "0 24px 80px rgba(0, 0, 0, 0.28)",
+  overflow: "hidden",
+};
+
+const dialogHeaderStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: "1rem",
+  padding: "1.1rem 1.25rem 0.9rem",
+  borderBottom: `1px solid ${paperclipBorder}`,
+};
+
+const dialogTitleStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "1.125rem",
+  lineHeight: 1.2,
+  letterSpacing: "-0.015em",
+};
+
+const closeButtonStyle: CSSProperties = {
+  width: 32,
+  height: 32,
+  border: `1px solid ${paperclipBorder}`,
+  borderRadius: 8,
+  backgroundColor: "transparent",
+  color: paperclipMutedText,
+  cursor: "pointer",
+  fontSize: "0.875rem",
+};
+
+const dialogBodyStyle: CSSProperties = {
+  display: "grid",
+  gap: "0.85rem",
+  padding: "1rem 1.25rem",
+  overflowY: "auto",
+};
+
+const wizardStepListStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: "0.5rem",
+};
+
+function wizardStepStyle(active: boolean): CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: "0.5rem",
+    minHeight: 36,
+    padding: "0.45rem 0.6rem",
+    border: `1px solid ${active ? paperclipBorderStrong : paperclipBorder}`,
+    borderRadius: 8,
+    backgroundColor: active ? paperclipSurface : "transparent",
+    color: active ? paperclipText : paperclipMutedText,
+    fontSize: "0.875rem",
+    fontWeight: active ? 600 : 500,
+  };
+}
+
+function wizardStepNumberStyle(active: boolean, complete: boolean): CSSProperties {
+  return {
+    display: "inline-grid",
+    placeItems: "center",
+    width: 22,
+    height: 22,
+    borderRadius: 999,
+    border: `1px solid ${complete ? paperclipGreen : active ? paperclipBorderStrong : paperclipBorder}`,
+    backgroundColor: complete ? "color-mix(in srgb, var(--grass-9, #46a758) 14%, transparent)" : paperclipPanel,
+    color: complete ? paperclipGreen : active ? paperclipText : paperclipMutedText,
+    fontSize: "0.8125rem",
+    fontWeight: 600,
+  };
+}
+
+const dialogFooterStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "flex-end",
+  alignItems: "center",
+  gap: "0.75rem",
+  padding: "0.9rem 1.25rem",
+  borderTop: `1px solid ${paperclipBorder}`,
+  backgroundColor: paperclipPanel,
+};
+
+const saveStatusStyle: CSSProperties = {
+  marginRight: "auto",
+  fontSize: "0.875rem",
+};
+
+const validationNoticeStyle: CSSProperties = {
+  padding: "0.65rem 0.75rem",
+  border: "1px solid color-mix(in srgb, var(--amber-9, #f59e0b) 36%, transparent)",
+  borderRadius: 8,
+  backgroundColor: "color-mix(in srgb, var(--amber-9, #f59e0b) 8%, transparent)",
+  color: paperclipText,
+  fontSize: "0.875rem",
 };
 
 const fieldsetStyle: CSSProperties = {
-  border: "1px solid GrayText",
-  borderRadius: 4,
+  border: `1px solid ${paperclipBorder}`,
+  borderRadius: 12,
   padding: "1rem",
   display: "grid",
   gap: "0.75rem",
 };
 
+const legendStyle: CSSProperties = {
+  padding: "0 0.25rem",
+  color: paperclipText,
+  fontSize: "0.875rem",
+  fontWeight: 600,
+};
+
 const fieldStyle: CSSProperties = {
   display: "grid",
-  gap: "0.25rem",
+  gap: "0.35rem",
+  fontSize: "0.875rem",
+  fontWeight: 600,
 };
 
 const inputStyle: CSSProperties = {
-  padding: "0.4rem 0.6rem",
-  border: "1px solid GrayText",
-  borderRadius: 4,
-  fontSize: "0.9rem",
-  backgroundColor: "Field",
-  color: "FieldText",
+  minHeight: 38,
+  padding: "0.45rem 0.65rem",
+  border: `1px solid ${paperclipBorderStrong}`,
+  borderRadius: 8,
+  fontSize: "0.875rem",
+  backgroundColor: "var(--slate-3, Field)",
+  color: paperclipText,
 };
 
 const textareaStyle: CSSProperties = {
@@ -1452,27 +2039,30 @@ const detailsBodyStyle: CSSProperties = {
 const manifestPanelStyle: CSSProperties = {
   display: "grid",
   gap: "0.75rem",
-  padding: "0.75rem",
-  border: "1px dashed GrayText",
-  borderRadius: 6,
+  padding: "0.85rem",
+  border: `1px dashed ${paperclipBorderStrong}`,
+  borderRadius: 10,
+  backgroundColor: paperclipPanel,
 };
 
 const linkStyle: CSSProperties = {
-  color: "#58a6ff",
+  color: paperclipBlueText,
+  fontWeight: 600,
 };
 
 const inlineNoticeStyle: CSSProperties = {
-  padding: "0.65rem 0.85rem",
-  border: "1px solid color-mix(in srgb, CanvasText 14%, transparent)",
-  borderRadius: 6,
-  backgroundColor: "color-mix(in srgb, CanvasText 5%, transparent)",
-  color: "GrayText",
-  fontSize: "0.86rem",
+  padding: "0.75rem 0.9rem",
+  border: `1px solid ${paperclipBorder}`,
+  borderRadius: 10,
+  backgroundColor: paperclipPanel,
+  color: paperclipMutedText,
+  fontSize: "0.875rem",
 };
 
 const hintStyle: CSSProperties = {
-  fontSize: "0.8rem",
-  color: "GrayText",
+  fontSize: "0.8125rem",
+  fontWeight: 400,
+  color: paperclipMutedText,
 };
 
 const formActionsStyle: CSSProperties = {
@@ -1483,52 +2073,76 @@ const formActionsStyle: CSSProperties = {
 };
 
 const primaryButtonStyle: CSSProperties = {
-  padding: "0.5rem 1rem",
-  backgroundColor: "#0d6efd",
-  color: "#fff",
-  border: "none",
-  borderRadius: 4,
+  minHeight: 38,
+  padding: "0.48rem 0.9rem",
+  backgroundColor: paperclipBlue,
+  color: "white",
+  border: "1px solid color-mix(in srgb, var(--blue-10, #0588f0) 80%, black)",
+  borderRadius: 8,
   cursor: "pointer",
-};
-
-const iconButtonStyle: CSSProperties = {
-  width: 38,
-  height: 38,
-  display: "inline-grid",
-  placeItems: "center",
-  flexShrink: 0,
-  borderRadius: "999px",
-  border: "1px solid color-mix(in srgb, CanvasText 22%, transparent)",
-  backgroundColor: "color-mix(in srgb, CanvasText 8%, transparent)",
-  color: "CanvasText",
-  cursor: "pointer",
-  fontSize: "1.45rem",
-  lineHeight: 1,
-  fontWeight: 500,
+  fontWeight: 650,
 };
 
 const secondaryButtonStyle: CSSProperties = {
-  padding: "0.45rem 0.8rem",
-  backgroundColor: "transparent",
-  color: "CanvasText",
-  border: "1px solid GrayText",
-  borderRadius: 4,
+  minHeight: 34,
+  padding: "0.4rem 0.75rem",
+  backgroundColor: paperclipSurface,
+  color: paperclipText,
+  border: `1px solid ${paperclipBorderStrong}`,
+  borderRadius: 8,
   cursor: "pointer",
+  fontWeight: 600,
 };
 
 const dangerButtonStyle: CSSProperties = {
   ...secondaryButtonStyle,
-  color: "#ff6b6b",
+  color: "var(--red-11, #e5484d)",
 };
 
 const requiredStyle: CSSProperties = {
-  color: "#ff6b6b",
+  color: "var(--red-11, #e5484d)",
 };
 
 const successStyle: CSSProperties = {
-  color: "#2da44e",
+  color: paperclipGreen,
 };
 
 const errorStyle: CSSProperties = {
-  color: "#ff6b6b",
+  color: "var(--red-11, #e5484d)",
 };
+
+function statusBadgeStyle(tone: IdentityTone): CSSProperties {
+  return {
+    justifySelf: "start",
+    border: `1px solid ${toneBorder(tone)}`,
+    borderRadius: 999,
+    padding: "0.2rem 0.55rem",
+    color: toneText(tone),
+    backgroundColor: toneBackground(tone),
+    fontSize: "0.8125rem",
+    fontWeight: 650,
+    whiteSpace: "nowrap",
+  };
+}
+
+function buttonStyle(base: CSSProperties, disabled: boolean): CSSProperties {
+  return disabled ? { ...base, opacity: 0.55, cursor: "not-allowed" } : base;
+}
+
+function toneText(tone: IdentityTone): string {
+  if (tone === "good") return paperclipGreen;
+  if (tone === "warn") return paperclipAmber;
+  return paperclipMutedText;
+}
+
+function toneBorder(tone: IdentityTone): string {
+  if (tone === "good") return "color-mix(in srgb, var(--grass-9, #46a758) 42%, transparent)";
+  if (tone === "warn") return "color-mix(in srgb, var(--amber-9, #f59e0b) 48%, transparent)";
+  return paperclipBorder;
+}
+
+function toneBackground(tone: IdentityTone): string {
+  if (tone === "good") return "color-mix(in srgb, var(--grass-9, #46a758) 10%, transparent)";
+  if (tone === "warn") return "color-mix(in srgb, var(--amber-9, #f59e0b) 12%, transparent)";
+  return paperclipPanel;
+}

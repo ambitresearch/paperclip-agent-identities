@@ -4,7 +4,7 @@ export const githubBotCreatePullRequestToolMetadata = {
   displayName: "Create Pull Request (Agent Identity)",
   description:
     "Creates a GitHub pull request using the configured agent identity. " +
-    "Only repositories matching the configured allowed repository patterns are permitted.",
+    "Repository access is controlled by the provider credential and GitHub App installation permissions.",
   parametersSchema: {
     type: "object",
     properties: {

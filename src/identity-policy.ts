@@ -1,15 +1,9 @@
 import { z, type ToolRunContext } from "@paperclipai/plugin-sdk";
-import { DEFAULT_ALLOWED_REPO_PATTERNS } from "./shared/types.js";
 
 const githubIdentitySchema = z.object({
   label: z.string().trim().min(1),
   githubUsername: z.string().trim().min(1),
   tokenSecretRef: z.string().trim().min(1).optional(),
-  allowedRepoPatterns: z.array(z.string().trim().min(1)).optional(),
-  /** Compatibility config from before owner/repo policy was unified. */
-  allowedOwnerPatterns: z.array(z.string().trim().min(1)).optional(),
-  /** Compatibility config from before owner/repo policy was unified. */
-  allowedRepos: z.array(z.string().trim().min(1)).optional(),
   commitName: z.string().trim().min(1).optional(),
   commitEmail: z.string().trim().min(1).optional()
 });
@@ -21,9 +15,7 @@ const pluginConfigSchema = z.object({
 type ParsedGitHubAgentIdentity = z.infer<typeof githubIdentitySchema>;
 type ParsedGitHubBotIdentityPluginConfig = z.infer<typeof pluginConfigSchema>;
 
-export type GitHubAgentIdentity = Omit<ParsedGitHubAgentIdentity, "allowedRepoPatterns"> & {
-  allowedRepoPatterns: string[];
-};
+export type GitHubAgentIdentity = ParsedGitHubAgentIdentity;
 
 export type GitHubBotIdentityPluginConfig = {
   identities: Record<string, GitHubAgentIdentity>;
@@ -38,12 +30,6 @@ export interface GitHubRepoRef {
   owner: string;
   repo: string;
   fullName: string;
-}
-
-export interface RepoPolicyDecision {
-  allowed: boolean;
-  reason: string;
-  repo?: GitHubRepoRef;
 }
 
 export function parseGitHubBotIdentityPluginConfig(rawConfig: unknown): GitHubBotIdentityPluginConfig {
@@ -105,94 +91,12 @@ export function normalizeGitHubRepoRef(input: string): GitHubRepoRef | null {
   return parseOwnerRepoPair(trimmed);
 }
 
-export function evaluateRepoPolicy(identity: GitHubAgentIdentity, repoInput: string): RepoPolicyDecision {
-  const normalizedRepo = normalizeGitHubRepoRef(repoInput);
-  if (!normalizedRepo) {
-    return { allowed: false, reason: "Invalid repository format" };
-  }
-
-  const patterns = identity.allowedRepoPatterns;
-  if (patterns.length === 0) {
-    return { allowed: false, reason: "No allowed repository patterns configured", repo: normalizedRepo };
-  }
-
-  for (const pattern of patterns) {
-    const matcher = repoPatternToRegExp(pattern);
-    if (matcher instanceof Error) {
-      return { allowed: false, reason: matcher.message, repo: normalizedRepo };
-    }
-    if (matcher.test(normalizedRepo.fullName)) {
-      return { allowed: true, reason: "Repository allowed", repo: normalizedRepo };
-    }
-  }
-
-  return {
-    allowed: false,
-    reason: `Repository '${normalizedRepo.fullName}' does not match allowedRepoPatterns`,
-    repo: normalizedRepo
-  };
-}
-
 function normalizePluginConfig(config: ParsedGitHubBotIdentityPluginConfig): GitHubBotIdentityPluginConfig {
   const identities: Record<string, GitHubAgentIdentity> = {};
   for (const [agentId, identity] of Object.entries(config.identities)) {
-    identities[agentId] = {
-      ...identity,
-      allowedRepoPatterns: resolveAllowedRepoPatterns(identity)
-    };
+    identities[agentId] = identity;
   }
   return { identities };
-}
-
-function resolveAllowedRepoPatterns(identity: ParsedGitHubAgentIdentity): string[] {
-  if (identity.allowedRepoPatterns !== undefined) {
-    return dedupeStrings(identity.allowedRepoPatterns);
-  }
-
-  if (identity.allowedRepos !== undefined) {
-    return dedupeStrings(identity.allowedRepos.map((repo) => normalizeGitHubRepoRef(repo)?.fullName ?? repo.trim().toLowerCase()));
-  }
-
-  if (identity.allowedOwnerPatterns !== undefined) {
-    return legacyOwnerPatternsToRepoPatterns(identity.allowedOwnerPatterns);
-  }
-
-  return [...DEFAULT_ALLOWED_REPO_PATTERNS];
-}
-
-function legacyOwnerPatternsToRepoPatterns(ownerPatterns: string[]): string[] {
-  const converted = ownerPatterns
-    .map((pattern) => exactLegacyOwnerPatternToRepoPattern(pattern))
-    .filter((pattern): pattern is string => Boolean(pattern));
-  return dedupeStrings(converted);
-}
-
-function exactLegacyOwnerPatternToRepoPattern(pattern: string): string | null {
-  const trimmed = pattern.trim();
-  if (trimmed === ".*" || trimmed === "^.*$" || trimmed === "*") {
-    return "*/*";
-  }
-  const exactMatch = trimmed.match(/^\^?([a-zA-Z0-9][a-zA-Z0-9-]*)\$?$/);
-  return exactMatch ? `${exactMatch[1].toLowerCase()}/*` : null;
-}
-
-function dedupeStrings(values: string[]): string[] {
-  return values
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .filter((value, index, entries) => entries.indexOf(value) === index);
-}
-
-function repoPatternToRegExp(pattern: string): RegExp | Error {
-  const normalized = pattern.trim().toLowerCase();
-  const parts = normalized.split("/");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    return new Error(`Invalid allowed repository pattern '${pattern}'. Use 'owner/repo', e.g. '*/*'.`);
-  }
-
-  const escaped = normalized.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  const globbed = escaped.replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
-  return new RegExp(`^${globbed}$`);
 }
 
 function isUrlLikeRepoRef(value: string): boolean {

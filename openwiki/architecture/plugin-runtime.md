@@ -68,7 +68,7 @@ This is scaffold-like behavior but is covered by `/tests/plugin.spec.ts`.
 ### Actions
 
 - `ping`: simple health/debug action.
-- `save-bot-identity-config`: validates and normalizes identity input, stores version-2 settings state under `CONFIG_SCOPE`, and upserts/deletes sidecar credential references when a `credential` field is supplied.
+- `save-bot-identity-config`: validates and normalizes provider-aware identity input, stores version-3 settings state under `CONFIG_SCOPE`, and upserts/deletes sidecar credential references when a `credential` field is supplied.
 - `delete-bot-identity-config`: removes one identity from settings state and deletes its sidecar entry.
 - `create-github-app-manifest`: creates and stores a GitHub App manifest-flow state object.
 - `get-github-app-manifest-flow`: restores a stored manifest flow by state token.
@@ -89,16 +89,16 @@ There are two identity configuration paths:
 
 `resolveAgentIdentityFromPluginSettings()` tries instance config first. If that fails and settings state exists, it normalizes settings state into the same config shape and tries again. This fallback was added so tools can use identities saved by the settings page rather than only static instance config.
 
-Settings state is normalized to version 2:
+Settings state is normalized to version 3 provider-aware records:
 
 ```ts
 {
-  version: 2,
-  identities: Record<string, BotIdentityConfig>
+  version: 3,
+  identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>
 }
 ```
 
-Legacy single-agent state and older owner/repo fields are still normalized for compatibility.
+GitHub tools filter settings state to `provider: "github"` and project it into their runtime config by `agentId`. Older settings-state shapes are not preserved in the current greenfield model.
 
 ## UI architecture
 

@@ -8,7 +8,7 @@ For contribution tools, the intended order is:
 
 1. validate tool parameters;
 2. resolve the calling Paperclip agent's identity;
-3. normalize and enforce repository policy;
+3. normalize repository inputs where applicable;
 4. only then resolve credentials or mint a GitHub App installation token;
 5. call GitHub or git;
 6. redact secret material from returned process output or errors;
@@ -34,7 +34,6 @@ Behavior:
 - returns only safe metadata:
   - label
   - GitHub username
-  - allowed repo patterns
   - booleans for whether commit name/email are present
 - does not return secret references, tokens, or sidecar paths.
 
@@ -51,7 +50,7 @@ Purpose: create a GitHub pull request using the calling agent's configured ident
 
 Required parameters:
 
-- `repository`: target repository, documented as `owner/repo` but implementation also accepts normalized GitHub URL forms through repository policy.
+- `repository`: target repository, documented as `owner/repo` but implementation also accepts normalized GitHub URL forms.
 - `head`: branch containing changes.
 - `base`: branch to merge into.
 - `title`: PR title.
@@ -66,7 +65,7 @@ Runtime behavior:
 
 1. validates parameter types;
 2. resolves the agent identity from instance config or settings state fallback;
-3. evaluates repository policy against `repository`;
+3. normalizes `repository` to canonical GitHub owner/repo form;
 4. resolves credentials just in time through `/src/credential-sidecar.ts`;
 5. calls `POST https://api.github.com/repos/{owner}/{repo}/pulls` with the canonical normalized owner/repo;
 6. logs a `pull_request` activity containing repository, PR number, URL, head/base, draft status, agent ID, and optional Paperclip issue ID;
@@ -75,7 +74,7 @@ Runtime behavior:
 Failure behavior:
 
 - malformed params return direct validation errors;
-- repo policy denial happens before secret resolution;
+- malformed repository inputs fail before secret resolution;
 - credential resolution failures are logged internally and returned as a generic authentication error;
 - network failures return a generic connectivity error;
 - GitHub API non-OK responses return GitHub's message/errors when parseable.
@@ -105,17 +104,16 @@ Runtime behavior:
 3. runs `git remote get-url <remote>` in the workspace;
 4. normalizes the remote URL to a GitHub owner/repo;
 5. resolves the agent identity;
-6. enforces repository policy;
-7. if `expectedRepository` is provided, normalizes it and requires exact match with the resolved remote;
-8. resolves credentials just in time;
-9. creates a temporary `GIT_ASKPASS` script and sets `GIT_TERMINAL_PROMPT=0` plus `GITHUB_TOKEN` in the child environment;
-10. runs `git -c credential.helper= push [--dry-run] https://github.com/{owner}/{repo}.git HEAD:refs/heads/{branch}`;
-11. redacts raw token, URL-encoded token, and basic-auth token forms from stdout/stderr and thrown errors;
-12. cleans the temporary askpass directory in `finally`.
+6. if `expectedRepository` is provided, normalizes it and requires exact match with the resolved remote;
+7. resolves credentials just in time;
+8. creates a temporary `GIT_ASKPASS` script and sets `GIT_TERMINAL_PROMPT=0` plus `GITHUB_TOKEN` in the child environment;
+9. runs `git -c credential.helper= push [--dry-run] https://github.com/{owner}/{repo}.git HEAD:refs/heads/{branch}`;
+10. redacts raw token, URL-encoded token, and basic-auth token forms from stdout/stderr and thrown errors;
+11. cleans the temporary askpass directory in `finally`.
 
-Activity logging captures outcomes such as invalid branch, missing workspace, remote resolution failure, denied remote, denied owner policy, expected-repository mismatch, credential failure, push failure, exception, and success.
+Activity logging captures outcomes such as invalid branch, missing workspace, remote resolution failure, unsupported remote, expected-repository mismatch, credential failure, push failure, exception, and success.
 
-Failure behavior intentionally denies before credential resolution for unsupported remotes, disallowed repositories, and expected-repository mismatches. `/tests/plugin.spec.ts` covers these cases.
+Failure behavior intentionally stops before credential resolution for unsupported remotes, malformed expected repositories, and expected-repository mismatches. GitHub App installation permissions decide whether a normalized GitHub repository is accessible. `/tests/plugin.spec.ts` covers these cases.
 
 Notable limitation from current source: branch validation is conservative but does not call `git check-ref-format`, so unusual invalid refs may still reach `git push` and fail there.
 
@@ -129,7 +127,7 @@ Notable limitation from current source: branch validation is conservative but do
 
 ## Test map
 
-- `/tests/create-pull-request.spec.ts`: PR validation, policy before secrets, malformed repo before secrets, success path, draft flag, activity logging, canonical API URL, credential/API/fetch error behavior, no token leakage.
+- `/tests/create-pull-request.spec.ts`: PR validation, malformed repo before secrets, success path, draft flag, activity logging, canonical API URL, credential/API/fetch error behavior, no token leakage.
 - `/tests/plugin.spec.ts`: `whoami`, push success and denial paths, dry-run behavior, sidecar integration, redaction on push failure.
 - `/tests/security.spec.ts`: generic redaction, PR helper redaction, push helper token handling and cleanup.
 - `/tests/identity-policy.spec.ts`: identity and credential resolution used by all tools.
@@ -141,7 +139,7 @@ When adding or changing a GitHub tool:
 - Add or update a shared metadata file and include it in `/src/manifest.ts`.
 - Register the runtime implementation in `/src/worker.ts`.
 - Reuse `/src/identity-policy.ts` and `/src/credential-sidecar.ts` rather than resolving tokens directly.
-- Keep repository policy checks before credential resolution.
-- Include tests that prove secrets are not resolved on denial paths.
+- Keep input validation and repository normalization before credential resolution.
+- Include tests that prove secrets are not resolved for malformed inputs and other pre-credential denial paths.
 - Redact token forms from any command output returned to agents.
 - Log useful activity metadata, but never log or return tokens/private keys.

@@ -21,7 +21,7 @@ describe("github_bot_create_pull_request tool", () => {
     await writeFile(sidecarPath, JSON.stringify({
       version: 1,
       identities: {
-        "agent-1": { secretId: TEST_SECRET_ID }
+        "agent-1:github": { secretId: TEST_SECRET_ID }
       }
     }), "utf8");
 
@@ -32,8 +32,7 @@ describe("github_bot_create_pull_request tool", () => {
         identities: {
           "agent-1": {
             label: "PR Bot",
-            githubUsername: "paperclip-pr-bot",
-            allowedOwnerPatterns: ["^my-org$"]
+            githubUsername: "paperclip-pr-bot"
           }
         }
       }
@@ -54,6 +53,7 @@ describe("github_bot_create_pull_request tool", () => {
   });
 
   const validRunCtx = {
+    provider: "github",
     agentId: "agent-1",
     runId: "run-1",
     companyId: "company-1",
@@ -107,14 +107,13 @@ describe("github_bot_create_pull_request tool", () => {
     });
   });
 
-  describe("repository policy enforcement", () => {
-    it("allows my-org/* repositories", async () => {
-      // Mock the secrets resolve to confirm policy passes before secrets
+  describe("repository normalization", () => {
+    it("allows valid repositories and leaves access decisions to GitHub", async () => {
       vi.spyOn(harness.ctx.secrets, "resolve").mockResolvedValue("fake-token");
-      vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
+      const fetchSpy = vi.spyOn(harness.ctx.http, "fetch").mockResolvedValue(
         new Response(JSON.stringify({
           number: 42,
-          html_url: "https://github.com/my-org/repo/pull/42",
+          html_url: "https://github.com/paperclipai/paperclip/pull/42",
           state: "open",
           draft: false,
           head: { ref: "feat" },
@@ -124,39 +123,19 @@ describe("github_bot_create_pull_request tool", () => {
 
       const result = await harness.executeTool<ToolResult>(
         "github_bot_create_pull_request",
-        { repository: "my-org/repo", head: "feat", base: "main", title: "PR" },
-        validRunCtx,
-      );
-      expect(result.error).toBeUndefined();
-      expect(result.data).toBeDefined();
-    });
-
-    it("denies repositories outside configured patterns before secret resolution", async () => {
-      const secretsSpy = vi.spyOn(harness.ctx.secrets, "resolve");
-
-      const result = await harness.executeTool<ToolResult>(
-        "github_bot_create_pull_request",
         { repository: "paperclipai/paperclip", head: "feat", base: "main", title: "PR" },
         validRunCtx,
       );
-      expect(result.error).toMatch(/does not match allowedRepoPatterns/);
-      // Secrets should never be resolved for denied repos
-      expect(secretsSpy).not.toHaveBeenCalled();
-    });
 
-    it("denies arbitrary repos outside configured patterns before secret resolution", async () => {
-      const secretsSpy = vi.spyOn(harness.ctx.secrets, "resolve");
-
-      const result = await harness.executeTool<ToolResult>(
-        "github_bot_create_pull_request",
-        { repository: "attacker/evil-repo", head: "feat", base: "main", title: "PR" },
-        validRunCtx,
+      expect(result.error).toBeUndefined();
+      expect(result.data).toEqual(expect.objectContaining({ number: 42 }));
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "https://api.github.com/repos/paperclipai/paperclip/pulls",
+        expect.objectContaining({ method: "POST" }),
       );
-      expect(result.error).toMatch(/does not match allowedRepoPatterns/);
-      expect(secretsSpy).not.toHaveBeenCalled();
     });
 
-    it("rejects malformed repository format", async () => {
+    it("rejects malformed repository format before secret resolution", async () => {
       const secretsSpy = vi.spyOn(harness.ctx.secrets, "resolve");
 
       const result = await harness.executeTool<ToolResult>(
@@ -303,7 +282,7 @@ describe("github_bot_create_pull_request tool", () => {
         validRunCtx,
       );
 
-      expect(result.error).toMatch(/Failed to resolve bot authentication credentials/);
+      expect(result.error).toMatch(/Failed to resolve agent identity authentication credentials/);
       // Should NOT contain any token or secret details
       expect(result.error).not.toContain("vault");
     });

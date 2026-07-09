@@ -1,7 +1,17 @@
 import { usePluginData, type PluginWidgetProps } from "@paperclipai/plugin-sdk/ui";
+import {
+  createPaperclipThemeStyle,
+  uiBorderStrong,
+  uiMutedText,
+  uiPanel,
+  uiSuccess,
+  uiWarning,
+  usePaperclipThemeMode,
+} from "./theme.js";
 import type { BotIdentitySettingsData, BotIdentitySettingsEntry } from "../shared/types.js";
 
 export function DashboardWidget(_props: PluginWidgetProps) {
+  const themeMode = usePaperclipThemeMode();
   const { data, loading, error } = usePluginData<BotIdentitySettingsData>("bot-identity-config");
 
   if (loading) return <div>Loading agent identities...</div>;
@@ -11,7 +21,7 @@ export function DashboardWidget(_props: PluginWidgetProps) {
   const summary = summarizeIdentities(identities, Boolean(data?.credentialSidecarError));
 
   return (
-    <div style={widgetStyle}>
+    <div style={{ ...createPaperclipThemeStyle(themeMode), ...widgetStyle }} data-agent-identities-theme={themeMode}>
       <div>
         <strong>Agent Identities</strong>
         <div style={mutedStyle}>Identity provider coverage</div>
@@ -102,7 +112,7 @@ const widgetStyle = {
 } as const;
 
 const mutedStyle = {
-  color: "GrayText",
+  color: uiMutedText,
   fontSize: "0.85rem",
   overflowWrap: "anywhere",
 } as const;
@@ -129,7 +139,7 @@ const metricValueStyle = {
 } as const;
 
 const metricLabelStyle = {
-  color: "GrayText",
+  color: uiMutedText,
   fontSize: "0.75rem",
   marginTop: "0.25rem",
 } as const;
@@ -163,30 +173,30 @@ function badgeStyle(tone: MetricTone) {
 }
 
 const hintBoxStyle = {
-  border: "1px dashed GrayText",
+  border: `1px dashed ${uiBorderStrong}`,
   borderRadius: 8,
   padding: "0.65rem",
-  color: "GrayText",
+  color: uiMutedText,
   fontSize: "0.9rem",
 } as const;
 
 const warningStyle = {
-  border: "1px solid rgba(255, 193, 7, 0.75)",
+  border: `1px solid ${uiWarning}`,
   borderRadius: 8,
   padding: "0.65rem",
-  color: "#ffc107",
-  background: "rgba(255, 193, 7, 0.12)",
+  color: uiWarning,
+  background: "color-mix(in srgb, var(--agent-identities-warning) 12%, transparent)",
   fontSize: "0.9rem",
 } as const;
 
 function toneColor(tone: MetricTone): string {
-  if (tone === "good") return "#4ade80";
-  if (tone === "warn") return "#fbbf24";
-  return "GrayText";
+  if (tone === "good") return uiSuccess;
+  if (tone === "warn") return uiWarning;
+  return uiMutedText;
 }
 
 function toneBackground(tone: MetricTone): string {
-  if (tone === "good") return "rgba(74, 222, 128, 0.10)";
-  if (tone === "warn") return "rgba(251, 191, 36, 0.12)";
-  return "rgba(128, 128, 128, 0.08)";
+  if (tone === "good") return "color-mix(in srgb, var(--agent-identities-success) 10%, transparent)";
+  if (tone === "warn") return "color-mix(in srgb, var(--agent-identities-warning) 12%, transparent)";
+  return uiPanel;
 }

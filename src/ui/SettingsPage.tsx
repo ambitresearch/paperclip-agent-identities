@@ -1,6 +1,27 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
+import {
+  createPaperclipThemeStyle,
+  uiBorder,
+  uiBorderStrong,
+  uiCanvas,
+  uiDanger,
+  uiInput,
+  uiLink,
+  uiMutedPanel,
+  uiMutedText,
+  uiOverlay,
+  uiPanel,
+  uiPrimary,
+  uiPrimaryText,
+  uiShadow,
+  uiSuccess,
+  uiSurface,
+  uiText,
+  uiWarning,
+  usePaperclipThemeMode,
+} from "./theme.js";
 import type {
   BotIdentitySettingsData,
   BotIdentitySettingsEntry,
@@ -55,6 +76,7 @@ type IdentityTone = "good" | "warn" | "neutral";
 
 export function SettingsPage(props: PluginSettingsPageProps) {
   const companyId = props.context.companyId ?? "";
+  const themeMode = usePaperclipThemeMode();
   const { data, loading, error, refresh } = usePluginData<BotIdentitySettingsData>("bot-identity-config", { companyId });
   const companyDisplayName = getCompanyDisplayName(data?.companyName, props.context.companyPrefix, companyId);
   const { data: agentsData, loading: agentsLoading, error: agentsError } = usePluginData<PaperclipAgentsData>("paperclip-agents", { companyId });
@@ -384,19 +406,26 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setSaveError(null);
     setSaveSuccess(false);
     try {
-      await syncGitHubAppCredentialPropagationForAgents({
-        selectedAgentIds: [],
-        previousAgentIds: [entry.agentId],
-        previousGithubAppId: entry.credential?.githubApp?.appId,
-        previousGithubInstallationId: entry.credential?.githubApp?.installationId,
-        previousPrivateKeySecretRef: entry.credential?.githubApp?.privateKeySecretId,
-        previousPrivateKeyFile: entry.credential?.githubApp?.privateKeyFile,
-      });
       await deleteConfig({ agentId: entry.agentId, provider: entry.provider });
       if (formState?.agentId === entry.agentId && formState.provider === entry.provider) {
         setFormState(null);
       }
       await refresh();
+
+      if (hasGitHubAppPropagationValues(entry)) {
+        try {
+          await syncGitHubAppCredentialPropagationForAgents({
+            selectedAgentIds: [],
+            previousAgentIds: [entry.agentId],
+            previousGithubAppId: entry.credential?.githubApp?.appId,
+            previousGithubInstallationId: entry.credential?.githubApp?.installationId,
+            previousPrivateKeySecretRef: entry.credential?.githubApp?.privateKeySecretId,
+            previousPrivateKeyFile: entry.credential?.githubApp?.privateKeyFile,
+          });
+        } catch (err) {
+          setSaveError(`Deleted identity, but could not clean the agent environment: ${err instanceof Error ? err.message : "unknown error"}`);
+        }
+      }
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Failed to delete");
     } finally {
@@ -405,7 +434,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   }
 
   return (
-    <div style={pageStyle}>
+    <div style={{ ...createPaperclipThemeStyle(themeMode), ...pageStyle }} data-agent-identities-theme={themeMode}>
       <div style={headerStyle}>
         <div>
           <h2 style={pageTitleStyle}>Agent Identities</h2>
@@ -467,6 +496,8 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 </div>
                 <button onClick={startCreate} style={secondaryButtonStyle}>Add identity</button>
               </div>
+              {saveError && !formState && <div style={errorStyle}>{saveError}</div>}
+              {saveSuccess && !formState && <div style={successStyle}>Saved successfully.</div>}
               {identities.length === 0 ? (
                 <div style={emptyStateStyle}>
                   <strong>No identities configured</strong>
@@ -1394,6 +1425,11 @@ function summarizeIdentitySettings(identities: BotIdentitySettingsEntry[], sidec
   };
 }
 
+function hasGitHubAppPropagationValues(entry: BotIdentitySettingsEntry): boolean {
+  const githubApp = entry.credential?.githubApp;
+  return Boolean(githubApp?.appId && githubApp.installationId && (githubApp.privateKeySecretId || githubApp.privateKeyFile));
+}
+
 type AgentAdapterConfig = Record<string, unknown> & { env?: Record<string, unknown> };
 
 type AgentPropagationMode = "ensure" | "remove";
@@ -1634,24 +1670,11 @@ function getAgentFieldHint(input: {
   return "The Paperclip agent that will use this identity.";
 }
 
-const paperclipSurface = "var(--slate-1, Canvas)";
-const paperclipCanvas = "var(--slate-2, color-mix(in srgb, CanvasText 3%, Canvas))";
-const paperclipPanel = "var(--slate-2, color-mix(in srgb, CanvasText 3%, Canvas))";
-const paperclipMutedPanel = "var(--slate-3, color-mix(in srgb, CanvasText 6%, Canvas))";
-const paperclipBorder = "var(--slate-6, color-mix(in srgb, CanvasText 18%, transparent))";
-const paperclipBorderStrong = "var(--slate-7, color-mix(in srgb, CanvasText 28%, transparent))";
-const paperclipText = "var(--slate-12, CanvasText)";
-const paperclipMutedText = "var(--slate-11, GrayText)";
-const paperclipBlue = "var(--blue-9, #0090ff)";
-const paperclipBlueText = "var(--blue-11, #0d74ce)";
-const paperclipGreen = "var(--grass-9, #46a758)";
-const paperclipAmber = "var(--amber-9, #f59e0b)";
-
 const pageStyle: CSSProperties = {
   maxWidth: 1160,
   display: "grid",
   gap: "1rem",
-  color: paperclipText,
+  color: uiText,
 };
 
 const pageTitleStyle: CSSProperties = {
@@ -1670,7 +1693,7 @@ const headerStyle: CSSProperties = {
 
 const descriptionStyle: CSSProperties = {
   margin: "0.35rem 0 0",
-  color: paperclipMutedText,
+  color: uiMutedText,
   fontSize: "0.875rem",
 };
 
@@ -1698,17 +1721,17 @@ const summaryValueStyle: CSSProperties = {
 };
 
 const summaryLabelStyle: CSSProperties = {
-  color: paperclipMutedText,
+  color: uiMutedText,
   fontSize: "0.8125rem",
   fontWeight: 600,
 };
 
 const credentialErrorStyle: CSSProperties = {
   padding: "0.75rem 0.9rem",
-  backgroundColor: "color-mix(in srgb, var(--red-9, #e5484d) 12%, transparent)",
-  border: "1px solid color-mix(in srgb, var(--red-9, #e5484d) 45%, transparent)",
+  backgroundColor: "color-mix(in srgb, var(--agent-identities-danger) 12%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--agent-identities-danger) 45%, transparent)",
   borderRadius: 10,
-  color: "var(--red-11, #e5484d)",
+  color: uiDanger,
   fontSize: "0.875rem",
 };
 
@@ -1723,9 +1746,9 @@ const sidebarStyle: CSSProperties = {
   display: "grid",
   gap: "0.35rem",
   padding: "0.5rem",
-  border: `1px solid ${paperclipBorder}`,
+  border: `1px solid ${uiBorder}`,
   borderRadius: 14,
-  backgroundColor: paperclipPanel,
+  backgroundColor: uiPanel,
 };
 
 function sidebarButtonStyle(active: boolean): CSSProperties {
@@ -1735,10 +1758,10 @@ function sidebarButtonStyle(active: boolean): CSSProperties {
     width: "100%",
     minHeight: 54,
     padding: "0.65rem 0.75rem",
-    border: `1px solid ${active ? paperclipBorderStrong : "transparent"}`,
+    border: `1px solid ${active ? uiBorderStrong : "transparent"}`,
     borderRadius: 10,
-    backgroundColor: active ? paperclipSurface : "transparent",
-    color: paperclipText,
+    backgroundColor: active ? uiSurface : "transparent",
+    color: uiText,
     textAlign: "left",
     cursor: "pointer",
   };
@@ -1750,7 +1773,7 @@ const sidebarTitleStyle: CSSProperties = {
 };
 
 const sidebarDetailStyle: CSSProperties = {
-  color: paperclipMutedText,
+  color: uiMutedText,
   fontSize: "0.8125rem",
 };
 
@@ -1759,12 +1782,12 @@ const workspaceStyle: CSSProperties = {
 };
 
 const sectionStyle: CSSProperties = {
-  border: `1px solid ${paperclipBorder}`,
+  border: `1px solid ${uiBorder}`,
   borderRadius: 14,
   padding: "1rem",
   display: "grid",
   gap: "0.9rem",
-  backgroundColor: paperclipSurface,
+  backgroundColor: uiSurface,
 };
 
 const sectionHeaderStyle: CSSProperties = {
@@ -1782,7 +1805,7 @@ const sectionTitleStyle: CSSProperties = {
 
 const sectionDescriptionStyle: CSSProperties = {
   margin: "0.25rem 0 0",
-  color: paperclipMutedText,
+  color: uiMutedText,
   fontSize: "0.875rem",
 };
 
@@ -1796,7 +1819,7 @@ const listHeaderStyle: CSSProperties = {
   gridTemplateColumns: "minmax(180px, 1.4fr) minmax(160px, 1fr) 110px auto",
   gap: "0.75rem",
   padding: "0 0.75rem 0.25rem",
-  color: paperclipMutedText,
+  color: uiMutedText,
   fontSize: "0.8125rem",
   fontWeight: 650,
 };
@@ -1806,10 +1829,10 @@ const rowStyle: CSSProperties = {
   gridTemplateColumns: "minmax(180px, 1.4fr) minmax(160px, 1fr) 110px auto",
   gap: "0.75rem",
   alignItems: "center",
-  border: `1px solid ${paperclipBorder}`,
+  border: `1px solid ${uiBorder}`,
   borderRadius: 10,
   padding: "0.75rem",
-  backgroundColor: paperclipPanel,
+  backgroundColor: uiPanel,
 };
 
 const rowTitleStyle: CSSProperties = {
@@ -1818,7 +1841,7 @@ const rowTitleStyle: CSSProperties = {
 };
 
 const rowMetaStyle: CSSProperties = {
-  color: paperclipMutedText,
+  color: uiMutedText,
   fontSize: "0.875rem",
   overflowWrap: "anywhere",
 };
@@ -1834,10 +1857,10 @@ const emptyStateStyle: CSSProperties = {
   justifyItems: "start",
   gap: "0.5rem",
   padding: "1.25rem",
-  border: `1px dashed ${paperclipBorderStrong}`,
+  border: `1px dashed ${uiBorderStrong}`,
   borderRadius: 12,
-  color: paperclipMutedText,
-  backgroundColor: paperclipPanel,
+  color: uiMutedText,
+  backgroundColor: uiPanel,
 };
 
 const setupStepsStyle: CSSProperties = {
@@ -1851,9 +1874,9 @@ const setupStepStyle: CSSProperties = {
   gap: "0.75rem",
   alignItems: "start",
   padding: "0.75rem",
-  border: `1px solid ${paperclipBorder}`,
+  border: `1px solid ${uiBorder}`,
   borderRadius: 10,
-  backgroundColor: paperclipPanel,
+  backgroundColor: uiPanel,
 };
 
 const setupStepIndexStyle: CSSProperties = {
@@ -1862,15 +1885,15 @@ const setupStepIndexStyle: CSSProperties = {
   width: "2rem",
   height: "2rem",
   borderRadius: 999,
-  backgroundColor: paperclipMutedPanel,
-  color: paperclipMutedText,
+  backgroundColor: uiMutedPanel,
+  color: uiMutedText,
   fontWeight: 700,
   fontSize: "0.8125rem",
 };
 
 const setupStepTextStyle: CSSProperties = {
   margin: "0.2rem 0 0",
-  color: paperclipMutedText,
+  color: uiMutedText,
   fontSize: "0.875rem",
 };
 
@@ -1881,7 +1904,7 @@ const dialogBackdropStyle: CSSProperties = {
   display: "grid",
   placeItems: "start center",
   padding: "7vh 1rem 1rem",
-  backgroundColor: "rgba(0, 0, 0, 0.42)",
+  backgroundColor: uiOverlay,
   overflowY: "auto",
 };
 
@@ -1890,11 +1913,11 @@ const dialogStyle: CSSProperties = {
   maxHeight: "86vh",
   display: "grid",
   gridTemplateRows: "auto minmax(0, 1fr) auto",
-  border: `1px solid ${paperclipBorder}`,
+  border: `1px solid ${uiBorder}`,
   borderRadius: 16,
-  backgroundColor: paperclipCanvas,
-  color: paperclipText,
-  boxShadow: "0 24px 80px rgba(0, 0, 0, 0.28)",
+  backgroundColor: uiCanvas,
+  color: uiText,
+  boxShadow: `0 24px 80px ${uiShadow}`,
   overflow: "hidden",
 };
 
@@ -1904,7 +1927,7 @@ const dialogHeaderStyle: CSSProperties = {
   justifyContent: "space-between",
   gap: "1rem",
   padding: "1.1rem 1.25rem 0.9rem",
-  borderBottom: `1px solid ${paperclipBorder}`,
+  borderBottom: `1px solid ${uiBorder}`,
 };
 
 const dialogTitleStyle: CSSProperties = {
@@ -1917,10 +1940,10 @@ const dialogTitleStyle: CSSProperties = {
 const closeButtonStyle: CSSProperties = {
   width: 32,
   height: 32,
-  border: `1px solid ${paperclipBorder}`,
+  border: `1px solid ${uiBorder}`,
   borderRadius: 8,
   backgroundColor: "transparent",
-  color: paperclipMutedText,
+  color: uiMutedText,
   cursor: "pointer",
   fontSize: "0.875rem",
 };
@@ -1945,10 +1968,10 @@ function wizardStepStyle(active: boolean): CSSProperties {
     gap: "0.5rem",
     minHeight: 36,
     padding: "0.45rem 0.6rem",
-    border: `1px solid ${active ? paperclipBorderStrong : paperclipBorder}`,
+    border: `1px solid ${active ? uiBorderStrong : uiBorder}`,
     borderRadius: 8,
-    backgroundColor: active ? paperclipSurface : "transparent",
-    color: active ? paperclipText : paperclipMutedText,
+    backgroundColor: active ? uiSurface : "transparent",
+    color: active ? uiText : uiMutedText,
     fontSize: "0.875rem",
     fontWeight: active ? 600 : 500,
   };
@@ -1961,9 +1984,9 @@ function wizardStepNumberStyle(active: boolean, complete: boolean): CSSPropertie
     width: 22,
     height: 22,
     borderRadius: 999,
-    border: `1px solid ${complete ? paperclipGreen : active ? paperclipBorderStrong : paperclipBorder}`,
-    backgroundColor: complete ? "color-mix(in srgb, var(--grass-9, #46a758) 14%, transparent)" : paperclipPanel,
-    color: complete ? paperclipGreen : active ? paperclipText : paperclipMutedText,
+    border: `1px solid ${complete ? uiSuccess : active ? uiBorderStrong : uiBorder}`,
+    backgroundColor: complete ? "color-mix(in srgb, var(--agent-identities-success) 14%, transparent)" : uiPanel,
+    color: complete ? uiSuccess : active ? uiText : uiMutedText,
     fontSize: "0.8125rem",
     fontWeight: 600,
   };
@@ -1975,8 +1998,8 @@ const dialogFooterStyle: CSSProperties = {
   alignItems: "center",
   gap: "0.75rem",
   padding: "0.9rem 1.25rem",
-  borderTop: `1px solid ${paperclipBorder}`,
-  backgroundColor: paperclipPanel,
+  borderTop: `1px solid ${uiBorder}`,
+  backgroundColor: uiPanel,
 };
 
 const saveStatusStyle: CSSProperties = {
@@ -1986,15 +2009,15 @@ const saveStatusStyle: CSSProperties = {
 
 const validationNoticeStyle: CSSProperties = {
   padding: "0.65rem 0.75rem",
-  border: "1px solid color-mix(in srgb, var(--amber-9, #f59e0b) 36%, transparent)",
+  border: "1px solid color-mix(in srgb, var(--agent-identities-warning) 36%, transparent)",
   borderRadius: 8,
-  backgroundColor: "color-mix(in srgb, var(--amber-9, #f59e0b) 8%, transparent)",
-  color: paperclipText,
+  backgroundColor: "color-mix(in srgb, var(--agent-identities-warning) 8%, transparent)",
+  color: uiText,
   fontSize: "0.875rem",
 };
 
 const fieldsetStyle: CSSProperties = {
-  border: `1px solid ${paperclipBorder}`,
+  border: `1px solid ${uiBorder}`,
   borderRadius: 12,
   padding: "1rem",
   display: "grid",
@@ -2003,7 +2026,7 @@ const fieldsetStyle: CSSProperties = {
 
 const legendStyle: CSSProperties = {
   padding: "0 0.25rem",
-  color: paperclipText,
+  color: uiText,
   fontSize: "0.875rem",
   fontWeight: 600,
 };
@@ -2018,11 +2041,11 @@ const fieldStyle: CSSProperties = {
 const inputStyle: CSSProperties = {
   minHeight: 38,
   padding: "0.45rem 0.65rem",
-  border: `1px solid ${paperclipBorderStrong}`,
+  border: `1px solid ${uiBorderStrong}`,
   borderRadius: 8,
   fontSize: "0.875rem",
-  backgroundColor: "var(--slate-3, Field)",
-  color: paperclipText,
+  backgroundColor: uiInput,
+  color: uiText,
 };
 
 const textareaStyle: CSSProperties = {
@@ -2040,29 +2063,29 @@ const manifestPanelStyle: CSSProperties = {
   display: "grid",
   gap: "0.75rem",
   padding: "0.85rem",
-  border: `1px dashed ${paperclipBorderStrong}`,
+  border: `1px dashed ${uiBorderStrong}`,
   borderRadius: 10,
-  backgroundColor: paperclipPanel,
+  backgroundColor: uiPanel,
 };
 
 const linkStyle: CSSProperties = {
-  color: paperclipBlueText,
+  color: uiLink,
   fontWeight: 600,
 };
 
 const inlineNoticeStyle: CSSProperties = {
   padding: "0.75rem 0.9rem",
-  border: `1px solid ${paperclipBorder}`,
+  border: `1px solid ${uiBorder}`,
   borderRadius: 10,
-  backgroundColor: paperclipPanel,
-  color: paperclipMutedText,
+  backgroundColor: uiPanel,
+  color: uiMutedText,
   fontSize: "0.875rem",
 };
 
 const hintStyle: CSSProperties = {
   fontSize: "0.8125rem",
   fontWeight: 400,
-  color: paperclipMutedText,
+  color: uiMutedText,
 };
 
 const formActionsStyle: CSSProperties = {
@@ -2075,9 +2098,9 @@ const formActionsStyle: CSSProperties = {
 const primaryButtonStyle: CSSProperties = {
   minHeight: 38,
   padding: "0.48rem 0.9rem",
-  backgroundColor: paperclipBlue,
-  color: "white",
-  border: "1px solid color-mix(in srgb, var(--blue-10, #0588f0) 80%, black)",
+  backgroundColor: uiPrimary,
+  color: uiPrimaryText,
+  border: `1px solid ${uiBorderStrong}`,
   borderRadius: 8,
   cursor: "pointer",
   fontWeight: 650,
@@ -2086,9 +2109,9 @@ const primaryButtonStyle: CSSProperties = {
 const secondaryButtonStyle: CSSProperties = {
   minHeight: 34,
   padding: "0.4rem 0.75rem",
-  backgroundColor: paperclipSurface,
-  color: paperclipText,
-  border: `1px solid ${paperclipBorderStrong}`,
+  backgroundColor: uiSurface,
+  color: uiText,
+  border: `1px solid ${uiBorderStrong}`,
   borderRadius: 8,
   cursor: "pointer",
   fontWeight: 600,
@@ -2096,19 +2119,19 @@ const secondaryButtonStyle: CSSProperties = {
 
 const dangerButtonStyle: CSSProperties = {
   ...secondaryButtonStyle,
-  color: "var(--red-11, #e5484d)",
+  color: uiDanger,
 };
 
 const requiredStyle: CSSProperties = {
-  color: "var(--red-11, #e5484d)",
+  color: uiDanger,
 };
 
 const successStyle: CSSProperties = {
-  color: paperclipGreen,
+  color: uiSuccess,
 };
 
 const errorStyle: CSSProperties = {
-  color: "var(--red-11, #e5484d)",
+  color: uiDanger,
 };
 
 function statusBadgeStyle(tone: IdentityTone): CSSProperties {
@@ -2130,19 +2153,19 @@ function buttonStyle(base: CSSProperties, disabled: boolean): CSSProperties {
 }
 
 function toneText(tone: IdentityTone): string {
-  if (tone === "good") return paperclipGreen;
-  if (tone === "warn") return paperclipAmber;
-  return paperclipMutedText;
+  if (tone === "good") return uiSuccess;
+  if (tone === "warn") return uiWarning;
+  return uiMutedText;
 }
 
 function toneBorder(tone: IdentityTone): string {
-  if (tone === "good") return "color-mix(in srgb, var(--grass-9, #46a758) 42%, transparent)";
-  if (tone === "warn") return "color-mix(in srgb, var(--amber-9, #f59e0b) 48%, transparent)";
-  return paperclipBorder;
+  if (tone === "good") return "color-mix(in srgb, var(--agent-identities-success) 42%, transparent)";
+  if (tone === "warn") return "color-mix(in srgb, var(--agent-identities-warning) 48%, transparent)";
+  return uiBorder;
 }
 
 function toneBackground(tone: IdentityTone): string {
-  if (tone === "good") return "color-mix(in srgb, var(--grass-9, #46a758) 10%, transparent)";
-  if (tone === "warn") return "color-mix(in srgb, var(--amber-9, #f59e0b) 12%, transparent)";
-  return paperclipPanel;
+  if (tone === "good") return "color-mix(in srgb, var(--agent-identities-success) 10%, transparent)";
+  if (tone === "warn") return "color-mix(in srgb, var(--agent-identities-warning) 12%, transparent)";
+  return uiPanel;
 }

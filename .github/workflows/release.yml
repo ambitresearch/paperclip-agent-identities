@@ -18,7 +18,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: create-release-main
@@ -75,6 +74,13 @@ jobs:
           const version = `${major}.${minor}.${patch}`;
           packageJson.version = version;
           fs.writeFileSync('package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
+          const manifestPath = 'src/manifest.ts';
+          const manifest = fs.readFileSync(manifestPath, 'utf8');
+          const updatedManifest = manifest.replace(/version: "[^"]+"/, `version: "${version}"`);
+          if (updatedManifest === manifest) {
+            throw new Error(`Unable to update the plugin manifest version in ${manifestPath}`);
+          }
+          fs.writeFileSync(manifestPath, updatedManifest);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=v${version}\n`);
           NODE
 
@@ -113,10 +119,10 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json pnpm-lock.yaml
+          git add package.json pnpm-lock.yaml src/manifest.ts
           git commit -m "chore(release): v${VERSION}"
           git tag -a "$TAG" -m "Release v${VERSION}"
-          git push origin HEAD:main --follow-tags
+          git push --atomic origin HEAD:main "refs/tags/${TAG}"
 
       - name: Create GitHub Release
         env:
@@ -124,9 +130,3 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
         run: gh release create "$TAG" --title "$TAG" --generate-notes
-
-      - name: Dispatch npm publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: gh workflow run publish.yml --ref main -f dry_run=false -f ref="$TAG"

@@ -39,4 +39,13 @@ describe("provider composition root", () => {
     expect(manifestToolNames).not.toContain("example_whoami");
     expect(exampleProvider.manifestTools).toHaveLength(1);
   });
+
+  it("keeps all live tool definitions provider-owned", () => {
+    expect(githubProvider.tools.map((tool) => tool.name)).toEqual([
+      "github_bot_whoami", "github_bot_create_pull_request", "github_bot_push_branch",
+    ]);
+    expect(githubProvider.manifestTools.map((tool) => (tool as { name: string }).name)).toEqual([
+      "github_bot_whoami", "github_bot_create_pull_request", "github_bot_push_branch",
+    ]);
+  });
 });

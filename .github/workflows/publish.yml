@@ -20,15 +20,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: npm-publish-${{ github.event.release.tag_name || inputs.ref || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
-    if: ${{ false }} # Temporarily disabled while npm package publishing is paused.
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Check out release source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || github.ref }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref || github.ref }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -41,11 +44,9 @@ jobs:
           corepack enable
           corepack prepare pnpm@10.17.1 --activate
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Validate release build
+      - name: Install and validate package
         run: |
+          pnpm install --frozen-lockfile
           pnpm typecheck
           pnpm test
           pnpm build

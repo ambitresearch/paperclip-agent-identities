@@ -1,4 +1,4 @@
-import type { AgentIdentityConfig, AgentIdentitySettingsState } from "../core/identity-config.js";
+import type { AgentIdentityConfig, AgentIdentitySettingsState, GitHubAgentIdentityConfig } from "../core/identity-config.js";
 
 export type IdentityProviderId = "github" | "slack" | "mattermost" | "entra" | "gcp" | "aws";
 
@@ -99,7 +99,9 @@ export type BotIdentitySettingsData = {
   credentialSidecarError?: string;
 };
 
-export type SaveBotIdentityConfigInput = Omit<BotIdentityConfig, "id"> & {
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+export type SaveBotIdentityConfigInput = DistributiveOmit<BotIdentityConfig, "id"> & {
   id?: string;
   previousAgentId?: string;
   credential?: BotIdentityCredentialConfig;
@@ -169,7 +171,7 @@ export type ConvertGitHubAppManifestResult = {
   installUrl: string;
 };
 
-export const DEFAULT_BOT_IDENTITY_CONFIG: BotIdentityConfig = {
+export const DEFAULT_BOT_IDENTITY_CONFIG: GitHubAgentIdentityConfig = {
   provider: GITHUB_IDENTITY_PROVIDER_ID,
   id: "",
   agentId: "",

@@ -1,18 +1,22 @@
 import {
   definePlugin, runWorker, type PluginContext, type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
-import { CONFIG_SCOPE, normalizeBotIdentitySettingsState } from "./config-source.js";
+import { CONFIG_SCOPE } from "./config-source.js";
 import {
   getIdentityKey, getIdentityProviderDefinition, isIdentityProviderId,
-  SUPPORTED_IDENTITY_PROVIDERS, type BotIdentityConfig,
-  type BotIdentityCredentialConfig, type BotIdentitySettingsData,
-  type BotIdentitySettingsEntry, type BotIdentitySettingsState,
+  SUPPORTED_IDENTITY_PROVIDERS, type BotIdentityCredentialConfig,
+  type BotIdentitySettingsData, type BotIdentitySettingsEntry,
   type DeleteBotIdentityConfigInput, type IdentityProviderId,
   type PaperclipAgentOption, type PaperclipAgentsData,
   type SaveBotIdentityConfigInput,
 } from "./shared/types.js";
 import { resolveAgentIdentity, type ResolvedAgentIdentity } from "./core/agent-identity.js";
-import { normalizeSettingsState } from "./core/identity-config.js";
+import {
+  BOT_IDENTITY_SETTINGS_VERSION,
+  normalizeSettingsState,
+  type AgentIdentitySettingsState,
+  type GitHubAgentIdentityConfig,
+} from "./core/identity-config.js";
 import type { IdentityProvider } from "./core/provider-contract.js";
 import type { ResourceReference } from "./core/resource-reference.js";
 import { createProviderTool, type ProviderToolPipelineDeps } from "./core/tool-pipeline.js";
@@ -43,7 +47,7 @@ const plugin = definePlugin({
 
     ctx.data.register("bot-identity-config", async (params) => {
       const companyId = typeof params.companyId === "string" ? params.companyId.trim() : "";
-      const state = normalizeBotIdentitySettingsState(await ctx.state.get(CONFIG_SCOPE));
+      const state = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
       return await buildSettingsData(ctx, state, companyId);
     });
 
@@ -74,7 +78,7 @@ const plugin = definePlugin({
         ctx.tools.register(
           registered.name,
           registered.metadata as Parameters<typeof ctx.tools.register>[1],
-          registered.handler,
+          registered.handler as Parameters<typeof ctx.tools.register>[2],
         );
       }
       provider.contributeActions?.(ctx);
@@ -83,7 +87,7 @@ const plugin = definePlugin({
     ctx.actions.register("save-bot-identity-config", async (params) => {
       const input = params as SaveBotIdentityConfigInput;
       const identity = normalizeIdentityInput(input);
-      const previousState = normalizeBotIdentitySettingsState(await ctx.state.get(CONFIG_SCOPE));
+      const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
       const previousAgentId = typeof input.previousAgentId === "string" ? input.previousAgentId.trim() : "";
       const previousIdentityKey = previousAgentId && previousAgentId !== identity.agentId
         ? getIdentityKey(previousAgentId, identity.provider)
@@ -93,8 +97,8 @@ const plugin = definePlugin({
         delete nextIdentities[previousIdentityKey];
       }
       nextIdentities[identity.id] = identity;
-      const nextState: BotIdentitySettingsState = {
-        version: 3,
+      const nextState: AgentIdentitySettingsState = {
+        version: BOT_IDENTITY_SETTINGS_VERSION,
         identities: nextIdentities,
       };
 
@@ -111,7 +115,7 @@ const plugin = definePlugin({
         }
       }
 
-      ctx.logger.info("Agent identity config saved", { agentId: identity.agentId, provider: identity.provider, label: identity.label, githubUsername: identity.githubUsername });
+      ctx.logger.info("Agent identity config saved", { agentId: identity.agentId, provider: identity.provider, label: identity.label, githubUsername: identity.github.username });
       return (await buildSettingsData(ctx, nextState)).identities.find((entry) => entry.id === identity.id) ?? identity;
     });
 
@@ -124,9 +128,9 @@ const plugin = definePlugin({
       }
       const identityKey = getIdentityKey(agentId, provider);
 
-      const previousState = normalizeBotIdentitySettingsState(await ctx.state.get(CONFIG_SCOPE));
+      const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
       const { [identityKey]: _removed, ...identities } = previousState.identities;
-      const nextState: BotIdentitySettingsState = { version: 3, identities };
+      const nextState: AgentIdentitySettingsState = { version: BOT_IDENTITY_SETTINGS_VERSION, identities };
       await ctx.state.set(CONFIG_SCOPE, nextState);
       await deleteCredentialSidecarIdentity(agentId, provider);
       ctx.logger.info("Agent identity config deleted", { agentId, provider });
@@ -171,7 +175,7 @@ function readInstanceIdentity(config: unknown, agentId: string): unknown {
   return config.identities[agentId];
 }
 
-async function buildSettingsData(ctx: PluginContext, state: BotIdentitySettingsState, companyId = ""): Promise<BotIdentitySettingsData> {
+async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySettingsState, companyId = ""): Promise<BotIdentitySettingsData> {
   const companyName = companyId ? await resolveCompanyName(ctx, companyId) : "";
   const credentialSidecarPath = await resolveCredentialSidecarPath();
   let sidecar: GitHubBotIdentityCredentialSidecar | null = null;
@@ -204,7 +208,7 @@ async function buildSettingsData(ctx: PluginContext, state: BotIdentitySettingsS
     .sort((left, right) => left.label.localeCompare(right.label));
 
   return {
-    version: 3,
+    version: BOT_IDENTITY_SETTINGS_VERSION,
     identities,
     providers: SUPPORTED_IDENTITY_PROVIDERS,
     ...(companyName ? { companyName } : {}),
@@ -235,28 +239,48 @@ async function listCompanyAgentOptions(ctx: PluginContext, companyId: string): P
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-function normalizeIdentityInput(input: SaveBotIdentityConfigInput): BotIdentityConfig {
+function normalizeIdentityInput(input: SaveBotIdentityConfigInput): GitHubAgentIdentityConfig {
   const agentId = readRequiredString(input.agentId, "agentId");
   const provider = normalizeProviderInput(input.provider);
   const providerDefinition = getIdentityProviderDefinition(provider);
-  if (providerDefinition.status !== "enabled") {
+  if (providerDefinition.status !== "enabled" || provider !== "github" || input.provider !== "github") {
     throw new Error(`${providerDefinition.name} identities are not supported yet.`);
   }
   const label = readRequiredString(input.label, "label");
-  const githubUsername = readRequiredString(input.githubUsername, "githubUsername");
+  if (!input.github) {
+    throw new Error("Required fields: github");
+  }
+  const username = readRequiredString(input.github.username, "github.username");
   const id = getIdentityKey(agentId, provider);
+  const commitName = readOptionalString(input.github.commitName);
+  const commitEmail = readOptionalString(input.github.commitEmail);
+  const propagationAgentIds = normalizeAgentIds(input.github.app?.credentialPropagationAgentIds);
+
   return {
+    provider: "github",
     id,
     agentId,
-    provider,
     label,
-    githubUsername,
-    githubAppCredentialPropagationAgentIds: Array.isArray(input.githubAppCredentialPropagationAgentIds)
-      ? input.githubAppCredentialPropagationAgentIds.map((agentId) => agentId.trim()).filter(Boolean).filter((agentId, index, entries) => entries.indexOf(agentId) === index)
-      : [],
-    commitName: input.commitName?.trim() || undefined,
-    commitEmail: input.commitEmail?.trim() || undefined,
+    github: {
+      username,
+      ...(commitName ? { commitName } : {}),
+      ...(commitEmail ? { commitEmail } : {}),
+      ...(propagationAgentIds.length > 0 ? { app: { credentialPropagationAgentIds: propagationAgentIds } } : {}),
+    },
   };
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  const text = readString(value);
+  return text.length > 0 ? text : undefined;
+}
+
+function normalizeAgentIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((agentId) => (typeof agentId === "string" ? agentId.trim() : ""))
+    .filter(Boolean)
+    .filter((agentId, index, entries) => entries.indexOf(agentId) === index);
 }
 
 function normalizeProviderInput(value: unknown): IdentityProviderId {

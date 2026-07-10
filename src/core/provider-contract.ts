@@ -2,6 +2,8 @@ import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import type { ResolvedAgentIdentity } from "./agent-identity.js";
 import type { ResourceReference } from "./resource-reference.js";
 
+export type { ResourceReference };
+
 export type IdentityProviderStatus = "enabled" | "coming-soon";
 
 export interface IdentityProviderDefinition {

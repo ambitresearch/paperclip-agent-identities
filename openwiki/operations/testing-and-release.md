@@ -119,6 +119,16 @@ pnpm docs:build
 
 The Pages artifact is `openwiki/.vitepress/dist`. OpenWiki itself still writes Markdown to `openwiki/`; do not add post-generation folder moves.
 
+## Release automation
+
+`.github/workflows/release.yml` creates public releases from `main`:
+
+- Every qualifying push to `main` automatically increments the package patch version by one, commits `package.json` and `pnpm-lock.yaml`, tags the commit, creates a GitHub Release, and dispatches npm publication.
+- The release-generated commit is excluded from the automatic trigger, preventing a release loop.
+- Minor and major releases are manual only. Run **Create Release** with `bump: minor` or `bump: major` from GitHub Actions.
+- `.github/workflows/publish.yml` publishes only a release tag. It can also be dispatched with `dry_run: true` to validate npm packaging without publication.
+- Both workflows re-run typecheck, tests, and the production build before publication. Publishing requires the repository `NPM_TOKEN` secret.
+
 If changing release automation, inspect `.github/workflows/` directly and update README/OpenWiki together.
 
 ## Packaging checks

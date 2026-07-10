@@ -4,197 +4,129 @@ on:
   push:
     branches:
       - main
-    paths:
-      - package.json
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version to release; must match package.json. Leave empty to use package.json."
-        required: false
-        default: ""
-        type: string
-      prerelease:
-        description: "Mark the GitHub Release as a prerelease"
+      bump:
+        description: "Release increment. Patch is automatic on main; minor and major are manual only."
         required: true
-        default: false
-        type: boolean
-      publish_to_npm:
-        description: "Dispatch the Publish workflow for the created release tag"
-        required: true
-        default: true
-        type: boolean
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
-  group: create-release-${{ github.ref }}
+  group: create-release-main
   cancel-in-progress: false
 
 jobs:
   create-release:
-    if: ${{ false }} # Temporarily disabled so package/CD release automation cannot run.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Check out main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
 
-      - name: Resolve release metadata
-        id: release
-        shell: bash
-        run: |
-          set -euo pipefail
-          PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          REQUESTED_VERSION="${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}"
-          EVENT_NAME="${{ github.event_name }}"
-
-          if [[ -n "$REQUESTED_VERSION" && "$REQUESTED_VERSION" != "$PACKAGE_VERSION" ]]; then
-            echo "Requested version '$REQUESTED_VERSION' does not match package.json version '$PACKAGE_VERSION'." >&2
-            exit 1
-          fi
-
-          if [[ ! "$PACKAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "package.json version '$PACKAGE_VERSION' is not a valid semver release version." >&2
-            exit 1
-          fi
-
-          BUMP_TYPE="manual"
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            BEFORE_SHA="${{ github.event.before }}"
-            if [[ "$BEFORE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE_SHA}:package.json" 2>/dev/null; then
-              echo "No previous package.json found for comparison; treating '${PACKAGE_VERSION}' as an initial release."
-              BUMP_TYPE="initial"
-            else
-              PREVIOUS_VERSION="$(git show "${BEFORE_SHA}:package.json" | node -e "const fs=require('fs'); process.stdout.write(JSON.parse(fs.readFileSync(0, 'utf8')).version || '')")"
-              export PACKAGE_VERSION PREVIOUS_VERSION
-              BUMP_TYPE="$(node <<'NODE'
-          const semver = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-          const current = process.env.PACKAGE_VERSION || '';
-          const previous = process.env.PREVIOUS_VERSION || '';
-          const currentMatch = current.match(semver);
-          const previousMatch = previous.match(semver);
-          if (!previousMatch) {
-            console.error(`Previous package.json version '${previous}' is not valid semver.`);
-            process.exit(1);
-          }
-          const [, currentMajor, currentMinor, currentPatch] = currentMatch.map(Number);
-          const [, previousMajor, previousMinor, previousPatch] = previousMatch.map(Number);
-          if (currentMajor > previousMajor) {
-            console.log('major');
-          } else if (currentMajor === previousMajor && currentMinor > previousMinor) {
-            console.log('minor');
-          } else if (currentMajor === previousMajor && currentMinor === previousMinor && currentPatch > previousPatch) {
-            console.log('patch');
-          } else if (current === previous) {
-            console.log('none');
-          } else {
-            console.error(`package.json version changed from '${previous}' to '${current}', but it is not a major, minor, or patch increase.`);
-            process.exit(1);
-          }
-          NODE
-              )"
-              if [[ "$BUMP_TYPE" == "none" ]]; then
-                echo "package.json version did not change; skipping release."
-                echo "should_release=false" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-            fi
-          fi
-
-          TAG_NAME="v${PACKAGE_VERSION}"
-
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG_NAME}" >/dev/null 2>&1; then
-            echo "Tag '${TAG_NAME}' already exists." >&2
-            exit 1
-          fi
-
-          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published to npm. Bump package.json before releasing." >&2
-            exit 1
-          fi
-
-          echo "Resolved ${PACKAGE_NAME}@${PACKAGE_VERSION} (${BUMP_TYPE}) for release."
-          echo "should_release=true" >> "$GITHUB_OUTPUT"
-          echo "package_name=${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
-          echo "package_version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
-
       - name: Set up Node.js
-        if: ${{ steps.release.outputs.should_release == 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
       - name: Enable pnpm
-        if: ${{ steps.release.outputs.should_release == 'true' }}
         run: |
           corepack enable
           corepack prepare pnpm@10.17.1 --activate
 
-      - name: Install dependencies
-        if: ${{ steps.release.outputs.should_release == 'true' }}
-        run: pnpm install --frozen-lockfile
+      - name: Determine the next release version
+        id: version
+        env:
+          BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('node:fs');
+          const bump = process.env.BUMP;
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const match = packageJson.version.match(/^(\d+)\.(\d+)\.(\d+)$/);
+          if (!match) {
+            throw new Error(`package.json version '${packageJson.version}' must be a stable major.minor.patch version`);
+          }
+          let [major, minor, patch] = match.slice(1).map(Number);
+          if (bump === 'major') {
+            major += 1; minor = 0; patch = 0;
+          } else if (bump === 'minor') {
+            minor += 1; patch = 0;
+          } else if (bump === 'patch') {
+            patch += 1;
+          } else {
+            throw new Error(`Unsupported release bump '${bump}'`);
+          }
+          const version = `${major}.${minor}.${patch}`;
+          packageJson.version = version;
+          fs.writeFileSync('package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
+          const manifestPath = 'src/manifest.ts';
+          const manifest = fs.readFileSync(manifestPath, 'utf8');
+          const updatedManifest = manifest.replace(/version: "[^"]+"/, `version: "${version}"`);
+          if (updatedManifest === manifest) {
+            throw new Error(`Unable to update the plugin manifest version in ${manifestPath}`);
+          }
+          fs.writeFileSync(manifestPath, updatedManifest);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=v${version}\n`);
+          NODE
+
+      - name: Update the lockfile for the release version
+        run: pnpm install --lockfile-only --ignore-scripts
+
+      - name: Verify the release is new
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag '${TAG}' already exists." >&2
+            exit 1
+          fi
+          if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${VERSION} is already published to npm." >&2
+            exit 1
+          fi
 
       - name: Validate release build
-        if: ${{ steps.release.outputs.should_release == 'true' }}
         run: |
+          pnpm install --frozen-lockfile
           pnpm typecheck
           pnpm test
           pnpm build
+          pnpm pack --pack-destination .
 
-      - name: Pack and verify package
-        if: ${{ steps.release.outputs.should_release == 'true' }}
-        shell: bash
+      - name: Commit and tag the release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
-          pnpm pack --pack-destination .
-          TARBALL="$(ls -t ./*.tgz | head -n1)"
-          CONTENTS_FILE="$(mktemp)"
-          tar -tzf "$TARBALL" > "$CONTENTS_FILE"
-          grep -q '^package/dist/worker.js$' "$CONTENTS_FILE"
-          grep -q '^package/dist/manifest.js$' "$CONTENTS_FILE"
-          grep -q '^package/dist/ui/index.js$' "$CONTENTS_FILE"
-          grep -q '^package/package.json$' "$CONTENTS_FILE"
-          grep -q '^package/pnpm-lock.yaml$' "$CONTENTS_FILE"
-          rm -f "$CONTENTS_FILE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json pnpm-lock.yaml src/manifest.ts
+          git commit -m "chore(release): v${VERSION}"
+          git tag -a "$TAG" -m "Release v${VERSION}"
+          git push --atomic origin HEAD:main "refs/tags/${TAG}"
 
       - name: Create GitHub Release
-        if: ${{ steps.release.outputs.should_release == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ steps.release.outputs.tag_name }}
-          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
-          PACKAGE_VERSION: ${{ steps.release.outputs.package_version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          args=(
-            release create "$TAG_NAME"
-            --target "$GITHUB_SHA"
-            --title "$TAG_NAME"
-            --notes "Release ${PACKAGE_NAME}@${PACKAGE_VERSION}"
-            --generate-notes
-          )
-          if [[ "${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}" == "true" ]]; then
-            args+=(--prerelease)
-          fi
-          gh "${args[@]}"
-
-      - name: Dispatch Publish workflow
-        if: ${{ steps.release.outputs.should_release == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish_to_npm)) }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ steps.release.outputs.tag_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh workflow run publish.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref main \
-            -f dry_run=false \
-            -f ref="$TAG_NAME"
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh release create "$TAG" --title "$TAG" --generate-notes

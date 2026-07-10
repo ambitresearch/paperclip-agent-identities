@@ -131,7 +131,7 @@ pnpm docs:preview   # preview the built static site
 
 ## CI
 
-GitHub Actions workflows: [CI](.github/workflows/ci.yml) and [Publish Docs](.github/workflows/pages.yml)
+GitHub Actions workflows: [CI](.github/workflows/ci.yml), [Release](.github/workflows/release.yml), [Publish](.github/workflows/publish.yml), and [Publish Docs](.github/workflows/pages.yml)
 
 Runs on pull requests and pushes to `main`:
 
@@ -140,6 +140,12 @@ Runs on pull requests and pushes to `main`:
 - `pnpm build`
 - `pnpm pack --pack-destination .`
 - Uploads `*.tgz` as workflow artifact `npm-package-tarball`
+
+### Releases
+
+Every qualifying push to `main` creates the next stable patch release: it updates `package.json`, `pnpm-lock.yaml`, and `src/manifest.ts` together, validates the package, atomically pushes the release commit and tag, creates a GitHub Release, then publishes that immutable tag to npm. The release commit does not trigger another release.
+
+Minor and major releases are manual only. Run **Create Release** from GitHub Actions and choose `minor` or `major`. Real npm publication accepts only a stable `v<major>.<minor>.<patch>` tag whose version exactly matches `package.json`; dispatch **Publish** with `dry_run: true` to validate a tag without publishing. `NPM_TOKEN` must be configured as a repository secret.
 
 Run the same validation locally:
 

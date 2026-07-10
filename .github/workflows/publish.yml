@@ -12,7 +12,7 @@ on:
         default: true
         type: boolean
       ref:
-        description: "Git ref to publish (branch, tag, or SHA)"
+        description: "Immutable stable release tag to validate or publish, for example v0.1.4"
         required: false
         default: ""
         type: string
@@ -20,15 +20,46 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: npm-publish-${{ github.event.release.tag_name || inputs.ref || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
-    if: ${{ false }} # Temporarily disabled while npm package publishing is paused.
+    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Resolve immutable release tag
+        id: release
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name || '' }}
+          INPUT_TAG: ${{ inputs.ref || '' }}
+        run: |
+          set -euo pipefail
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "A stable release tag such as v0.1.4 is required." >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || github.ref }}
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify tag and package version
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git rev-parse "refs/tags/${TAG}^{commit}" >/dev/null
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ "v${VERSION}" != "$TAG" ]]; then
+            echo "Tag '$TAG' does not match package.json version '$VERSION'." >&2
+            exit 1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -41,11 +72,9 @@ jobs:
           corepack enable
           corepack prepare pnpm@10.17.1 --activate
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Validate release build
+      - name: Install and validate package
         run: |
+          pnpm install --frozen-lockfile
           pnpm typecheck
           pnpm test
           pnpm build

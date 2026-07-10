@@ -12,7 +12,7 @@ export interface GitHubIdentityFields {
 }
 
 export interface ExampleIdentityFields {
-  readonly handle?: string;
+  readonly demoTokenSecretId: string;
 }
 
 export interface GitHubAgentIdentityConfig {
@@ -60,6 +60,10 @@ function readStringArray(value: unknown): string[] {
   return value.map((item) => readString(item)).filter((item) => item.length > 0);
 }
 
+function isValidGitHubIdentityConfig(identity: GitHubAgentIdentityConfig): boolean {
+  return identity.agentId.length > 0 && identity.label.length > 0 && identity.github.username.length > 0;
+}
+
 function migrateGitHubIdentityV3ToV4(raw: Record<string, unknown>): GitHubAgentIdentityConfig {
   const agentId = readString(raw.agentId);
   const github: {
@@ -84,7 +88,7 @@ function migrateGitHubIdentityV3ToV4(raw: Record<string, unknown>): GitHubAgentI
 
   return {
     provider: "github",
-    id: readString(raw.id) || getIdentityKey(agentId, "github"),
+    id: getIdentityKey(agentId, "github"),
     agentId,
     label: readString(raw.label),
     github,
@@ -106,7 +110,7 @@ export function migrateSettingsStateToV4(raw: unknown): AgentIdentitySettingsSta
       continue;
     }
     const migrated = migrateGitHubIdentityV3ToV4(entry);
-    if (migrated.agentId.length === 0) {
+    if (!isValidGitHubIdentityConfig(migrated)) {
       continue;
     }
     identities[migrated.id] = migrated;
@@ -119,11 +123,55 @@ function isV4State(raw: unknown): raw is AgentIdentitySettingsState {
   return isRecord(raw) && raw.version === BOT_IDENTITY_SETTINGS_VERSION && isRecord(raw.identities);
 }
 
+function normalizeV4Identity(raw: unknown): AgentIdentityConfig | null {
+  if (!isRecord(raw)) return null;
+  const id = readString(raw.id);
+  const agentId = readString(raw.agentId);
+  const label = readString(raw.label);
+  if (!id || !agentId || !label) return null;
+
+  if (raw.provider === "github" && isRecord(raw.github)) {
+    const github: {
+      username: string;
+      commitName?: string;
+      commitEmail?: string;
+      app?: { credentialPropagationAgentIds?: readonly string[] };
+    } = { username: readString(raw.github.username) };
+    if (!github.username) return null;
+    const commitName = readOptionalString(raw.github.commitName);
+    if (commitName) github.commitName = commitName;
+    const commitEmail = readOptionalString(raw.github.commitEmail);
+    if (commitEmail) github.commitEmail = commitEmail;
+    if (isRecord(raw.github.app)) {
+      const propagation = readStringArray(raw.github.app.credentialPropagationAgentIds);
+      if (propagation.length > 0) github.app = { credentialPropagationAgentIds: propagation };
+    }
+    return { provider: "github", id: getIdentityKey(agentId, "github"), agentId, label, github };
+  }
+
+  if (raw.provider === "example" && isRecord(raw.example)) {
+    const demoTokenSecretId = readString(raw.example.demoTokenSecretId);
+    if (!demoTokenSecretId) return null;
+    return { provider: "example", id: getIdentityKey(agentId, "example"), agentId, label, example: { demoTokenSecretId } };
+  }
+
+  return null;
+}
+
+function normalizeV4State(raw: unknown): AgentIdentitySettingsState | null {
+  if (!isV4State(raw)) return null;
+  const identities: Record<string, AgentIdentityConfig> = {};
+  for (const entry of Object.values(raw.identities)) {
+    const identity = normalizeV4Identity(entry);
+    if (identity) identities[identity.id] = identity;
+  }
+  return { version: BOT_IDENTITY_SETTINGS_VERSION, identities };
+}
+
 // Migration ladder. A future v4 -> v5 step slots in as another `if` branch above the reset.
 export function normalizeSettingsState(raw: unknown): AgentIdentitySettingsState {
-  if (isV4State(raw)) {
-    return raw;
-  }
+  const v4 = normalizeV4State(raw);
+  if (v4) return v4;
   if (isRecord(raw) && raw.version === 3) {
     return migrateSettingsStateToV4(raw);
   }

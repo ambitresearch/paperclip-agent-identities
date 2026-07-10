@@ -15,14 +15,19 @@ import type { ResourceReference } from "../../core/resource-reference.js";
 // contribution — not secretly shaped around GitHub/git. See spec §11 and §13.
 export const EXAMPLE_PROVIDER_ID = "example";
 
-// Config sub-object shape: `example: { label, demoToken }`. There is NO
-// repo/owner/ref field — the provider has no addressable resources. `demoToken`
-// stands in for "a static token sourced from a secret" without dragging in file
-// IO; a real provider would resolve this from a tokenFile or the plugin secret
-// store inside `resolveCredential`.
+// The v4 envelope stores public provider metadata plus a secret reference, never
+// the token itself. There is no repo/owner/ref field because this provider has no
+// addressable resources.
 const exampleIdentitySchema = z.object({
   label: z.string().trim().min(1, "label is required"),
-  demoToken: z.string().trim().min(1, "demoToken is required")
+  demoTokenSecretId: z.string().trim().min(1, "demoTokenSecretId is required")
+});
+
+const exampleConfigEnvelopeSchema = z.object({
+  provider: z.literal(EXAMPLE_PROVIDER_ID),
+  agentId: z.string().trim().min(1),
+  label: z.string().trim().min(1),
+  example: z.object({ demoTokenSecretId: z.string().trim().min(1) })
 });
 
 export type ExampleAgentIdentity = z.infer<typeof exampleIdentitySchema>;
@@ -44,10 +49,15 @@ export function projectExamplePluginConfig(
   identities: Record<string, unknown>
 ): Record<string, ExampleAgentIdentity> {
   const projected: Record<string, ExampleAgentIdentity> = {};
-  for (const [agentId, raw] of Object.entries(identities)) {
-    const validated = validateExampleConfig(raw);
+  for (const raw of Object.values(identities)) {
+    const envelope = exampleConfigEnvelopeSchema.safeParse(raw);
+    if (!envelope.success) continue;
+    const validated = validateExampleConfig({
+      label: envelope.data.label,
+      demoTokenSecretId: envelope.data.example.demoTokenSecretId
+    });
     if (typeof validated !== "string") {
-      projected[agentId] = validated;
+      projected[envelope.data.agentId] = validated;
     }
   }
   return projected;
@@ -56,10 +66,7 @@ export function projectExamplePluginConfig(
 async function resolveExampleCredential(
   input: CredentialResolverInput<ExampleAgentIdentity>
 ): Promise<ResolvedCredential> {
-  // A real provider would read a tokenFile or call the plugin secret store.
-  // `input.identity` is the RESOLVED wrapper, so the config fields live one
-  // level deeper at `input.identity.identity.<field>`.
-  const token = input.identity.identity.demoToken;
+  const token = await input.ctx.secrets.resolve(input.identity.identity.demoTokenSecretId);
   return { token, secrets: [token] };
 }
 

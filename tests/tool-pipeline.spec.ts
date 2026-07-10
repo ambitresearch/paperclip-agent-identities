@@ -69,7 +69,7 @@ function buildFixture(
   };
 
   const activityLog = vi.fn().mockResolvedValue(undefined);
-  const tool = createProviderTool(provider, toolSpec, { activity: { log: activityLog } } as never, deps);
+  const tool = createProviderTool(provider, toolSpec, { activity: { log: activityLog }, logger: { error: vi.fn() } } as never, deps);
   return { calls, tool, activityLog };
 }
 
@@ -128,6 +128,25 @@ describe("tool pipeline security ordering", () => {
       metadata: expect.not.objectContaining({ reason: expect.anything() }),
     }));
     expect(JSON.stringify(activityLog.mock.calls)).not.toContain("SECRET-TOKEN");
+  });
+
+  it("keeps a stable credential error when activity logging fails", async () => {
+    const { activityLog, tool } = buildFixture({
+      resolveCredential: async () => { throw new Error("credential failure"); },
+    });
+    activityLog.mockRejectedValueOnce(new Error("activity unavailable"));
+    await expect(tool.handler({ repo: "ok/repo" }, { agentId: "agent-1", runId: "run-1", companyId: "company-1" } as never))
+      .resolves.toEqual({ error: "Failed to resolve agent identity authentication credentials." });
+  });
+
+  it("redacts resolved secrets when provider execution throws", async () => {
+    const { tool } = buildFixture({
+      spec: {
+        perform: async () => { throw new Error("upstream leaked SECRET-TOKEN"); },
+      },
+    });
+    await expect(tool.handler({ repo: "ok/repo" }, { agentId: "agent-1" } as never))
+      .resolves.toEqual({ error: "test_tool failed: upstream leaked [REDACTED]" });
   });
 
   it("skips credential resolution when the tool sets requiresCredential: false", async () => {

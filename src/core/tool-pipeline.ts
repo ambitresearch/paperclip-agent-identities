@@ -60,34 +60,50 @@ export function createProviderTool<TIdentity, TRef extends ResourceReference>(
       if (toolSpec.requiresCredential !== false) {
         try {
           credential = await provider.resolveCredential({ identity, ctx });
-        } catch (error) {
-          await ctx.activity.log({
-            companyId: runCtx.companyId,
-            entityType: "run",
-            entityId: runCtx.runId,
-            message: `${toolSpec.name} failed: credential resolution`,
-            metadata: {
-              agentId: runCtx.agentId,
-              runId: runCtx.runId,
-              outcome: "credential_resolution_failed",
-            },
-          });
+        } catch {
+          try {
+            await ctx.activity.log({
+              companyId: runCtx.companyId,
+              entityType: "run",
+              entityId: runCtx.runId,
+              message: `${toolSpec.name} failed: credential resolution`,
+              metadata: {
+                agentId: runCtx.agentId,
+                runId: runCtx.runId,
+                outcome: "credential_resolution_failed",
+              },
+            });
+          } catch (activityError) {
+            ctx.logger.error(
+              `${toolSpec.name} failed to record credential-resolution activity: ${
+                activityError instanceof Error ? activityError.message : "unknown error"
+              }`
+            );
+          }
           return { error: "Failed to resolve agent identity authentication credentials." };
         }
       }
 
       // Step 5: perform — the only provider-specific API/git step (activity log lives here).
-      const result = await toolSpec.perform({
-        token: credential?.token ?? null,
-        identity,
-        resourceRef,
-        params,
-        ctx,
-        runCtx,
-      });
+      try {
+        const result = await toolSpec.perform({
+          token: credential?.token ?? null,
+          identity,
+          resourceRef,
+          params,
+          ctx,
+          runCtx,
+        });
 
-      // Step 6: redact — never leak the token or any resolved secret.
-      return deps.redactSecrets(result, credential?.secrets ?? []);
+        // Step 6: redact — never leak the token or any resolved secret.
+        return deps.redactSecrets(result, credential?.secrets ?? []);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "provider execution failed";
+        return deps.redactSecrets(
+          { error: `${toolSpec.name} failed: ${message}` },
+          credential?.secrets ?? []
+        );
+      }
     },
   };
 }

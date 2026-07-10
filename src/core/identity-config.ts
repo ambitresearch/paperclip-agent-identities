@@ -84,7 +84,7 @@ function migrateGitHubIdentityV3ToV4(raw: Record<string, unknown>): GitHubAgentI
 
   return {
     provider: "github",
-    id: readString(raw.id) || getIdentityKey(agentId, "github"),
+    id: getIdentityKey(agentId, "github"),
     agentId,
     label: readString(raw.label),
     github,
@@ -106,7 +106,11 @@ export function migrateSettingsStateToV4(raw: unknown): AgentIdentitySettingsSta
       continue;
     }
     const migrated = migrateGitHubIdentityV3ToV4(entry);
-    if (migrated.agentId.length === 0) {
+    if (
+      migrated.agentId.length === 0 ||
+      migrated.label.length === 0 ||
+      migrated.github.username.length === 0
+    ) {
       continue;
     }
     identities[migrated.id] = migrated;
@@ -142,13 +146,13 @@ function normalizeV4Identity(raw: unknown): AgentIdentityConfig | null {
       const propagation = readStringArray(raw.github.app.credentialPropagationAgentIds);
       if (propagation.length > 0) github.app = { credentialPropagationAgentIds: propagation };
     }
-    return { provider: "github", id, agentId, label, github };
+    return { provider: "github", id: getIdentityKey(agentId, "github"), agentId, label, github };
   }
 
   if (raw.provider === "example" && isRecord(raw.example)) {
     const demoTokenSecretId = readString(raw.example.demoTokenSecretId);
     if (!demoTokenSecretId) return null;
-    return { provider: "example", id, agentId, label, example: { demoTokenSecretId } };
+    return { provider: "example", id: getIdentityKey(agentId, "example"), agentId, label, example: { demoTokenSecretId } };
   }
 
   return null;

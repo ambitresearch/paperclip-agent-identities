@@ -92,6 +92,18 @@ describe("identity-config v4 migration", () => {
     expect(normalizeSettingsState({ nope: true })).toEqual({ version: 4, identities: {} });
   });
 
+  it("drops malformed v4 entries rather than returning unvalidated persisted data", () => {
+    expect(normalizeSettingsState({
+      version: 4,
+      identities: {
+        broken: null,
+        missingGithubUsername: {
+          provider: "github", id: "agent-1:github", agentId: "agent-1", label: "Bot", github: {}
+        }
+      }
+    })).toEqual({ version: 4, identities: {} });
+  });
+
   it("routes a v3 payload through the ladder into v4", () => {
     const normalized = normalizeSettingsState({
       version: 3,

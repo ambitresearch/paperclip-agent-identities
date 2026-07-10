@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   EXAMPLE_PROVIDER_ID,
   exampleProvider,
@@ -31,38 +31,42 @@ describe("example provider definition", () => {
 
 describe("validateExampleConfig", () => {
   it("accepts a well-formed identity", () => {
-    const result = validateExampleConfig({ label: "Demo Bot", demoToken: "demo-secret" });
-    expect(result).toEqual({ label: "Demo Bot", demoToken: "demo-secret" });
+    const result = validateExampleConfig({ label: "Demo Bot", demoTokenSecretId: "example-token-secret" });
+    expect(result).toEqual({ label: "Demo Bot", demoTokenSecretId: "example-token-secret" });
   });
 
   it("rejects a missing label with a message", () => {
-    const result = validateExampleConfig({ demoToken: "demo-secret" });
+    const result = validateExampleConfig({ demoTokenSecretId: "example-token-secret" });
     expect(typeof result).toBe("string");
     expect(result).toContain("label");
   });
 
-  it("rejects a missing demoToken with a message", () => {
+  it("rejects a missing secret reference with a message", () => {
     const result = validateExampleConfig({ label: "Demo Bot" });
     expect(typeof result).toBe("string");
-    expect(result).toContain("demoToken");
+    expect(result).toContain("demoTokenSecretId");
   });
 });
 
 describe("projectExamplePluginConfig", () => {
   it("keeps valid identities and drops invalid ones", () => {
     const projected = projectExamplePluginConfig({
-      "agent-good": { label: "Good", demoToken: "t" },
-      "agent-bad": { label: "" }
+      "incorrect-key": {
+        provider: "example", agentId: "agent-good", label: "Good",
+        example: { demoTokenSecretId: "example-token-secret" }
+      },
+      "agent-bad": { provider: "example", agentId: "agent-bad", label: "", example: {} }
     });
     expect(Object.keys(projected)).toEqual(["agent-good"]);
-    expect(projected["agent-good"]).toEqual({ label: "Good", demoToken: "t" });
+    expect(projected["agent-good"]).toEqual({ label: "Good", demoTokenSecretId: "example-token-secret" });
   });
 });
 
 // Spec §12 suite: "Example-provider contract" — the stub runs through the SAME
 // core pipeline as GitHub, WITHOUT git, and its token is redacted from output.
 describe("example provider contract through the core pipeline", () => {
-  const identity = { agentId: "agent-1", identity: { label: "Demo Bot", demoToken: "SECRET-DEMO" } };
+  const resolveSecret = vi.fn(async () => "SECRET-DEMO");
+  const identity = { agentId: "agent-1", identity: { label: "Demo Bot", demoTokenSecretId: "example-token-secret" } };
   const deps: ProviderToolPipelineDeps<ExampleAgentIdentity> = {
     resolveIdentity: async () => identity,
     redactSecrets: <T,>(value: T, secrets: readonly string[]): T => {
@@ -73,13 +77,19 @@ describe("example provider contract through the core pipeline", () => {
   };
 
   it("resolves identity + credential and returns the label without leaking the token", async () => {
-    const tool = createProviderTool(exampleProvider, exampleWhoamiToolSpec, {} as never, deps);
+    const tool = createProviderTool(
+      exampleProvider,
+      exampleWhoamiToolSpec,
+      { secrets: { resolve: resolveSecret } } as never,
+      deps
+    );
     const result = (await tool.handler({}, { agentId: "agent-1" } as never)) as {
       content: string;
       data: { label: string; tokenResolved: boolean };
     };
     expect(result.data.label).toBe("Demo Bot");
     expect(result.data.tokenResolved).toBe(true);
+    expect(resolveSecret).toHaveBeenCalledWith("example-token-secret");
     // The token string must appear NOWHERE in the tool output.
     expect(JSON.stringify(result)).not.toContain("SECRET-DEMO");
   });

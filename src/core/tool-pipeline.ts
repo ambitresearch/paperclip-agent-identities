@@ -61,7 +61,6 @@ export function createProviderTool<TIdentity, TRef extends ResourceReference>(
         try {
           credential = await provider.resolveCredential({ identity, ctx });
         } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
           await ctx.activity.log({
             companyId: runCtx.companyId,
             entityType: "run",
@@ -71,7 +70,6 @@ export function createProviderTool<TIdentity, TRef extends ResourceReference>(
               agentId: runCtx.agentId,
               runId: runCtx.runId,
               outcome: "credential_resolution_failed",
-              reason,
             },
           });
           return { error: "Failed to resolve agent identity authentication credentials." };

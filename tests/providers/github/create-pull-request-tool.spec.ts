@@ -12,11 +12,11 @@ function repoRef(): GitHubRepoRef {
   return { kind: "github-repo", owner: "acme", repo: "widgets", fullName: "acme/widgets" };
 }
 
-function buildCtx(fetchImpl: typeof fetch) {
+function buildCtx(fetchImpl: typeof fetch, activityLog = vi.fn()) {
   return {
     http: { fetch: fetchImpl },
     logger: { info: vi.fn(), error: vi.fn() },
-    activity: { log: vi.fn() }
+    activity: { log: activityLog }
   } as never;
 }
 
@@ -71,6 +71,23 @@ describe("githubCreatePullRequestToolSpec.perform", () => {
   it("fails closed when the resolved token is null", async () => {
     const result = (await githubCreatePullRequestToolSpec.perform(execution(null))) as { error: string };
     expect(result.error).toBe("Internal error: missing resolved credential.");
+  });
+
+  it("awaits the activity audit write before returning success", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ number: 42, html_url: "https://github.com/acme/widgets/pull/42", state: "open", draft: false, head: { ref: "feature" }, base: { ref: "main" } }),
+      { status: 201 }
+    ));
+    let finishLog: (() => void) | undefined;
+    const activityLog = vi.fn(() => new Promise<void>((resolve) => { finishLog = resolve; }));
+    const exec = execution("tok");
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never, activityLog);
+    let settled = false;
+    const result = githubCreatePullRequestToolSpec.perform(exec).then(() => { settled = true; });
+    await vi.waitFor(() => expect(activityLog).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    finishLog?.();
+    await result;
   });
 
   it("posts to the GitHub PR API and returns the created PR", async () => {

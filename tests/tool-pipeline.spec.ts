@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { createProviderTool } from "../src/core/tool-pipeline.js";
 import type { IdentityProvider, ProviderToolSpec } from "../src/core/provider-contract.js";
 import type { ResourceReference } from "../src/core/resource-reference.js";
@@ -12,6 +12,7 @@ function buildFixture(
   overrides: {
     resolveIdentity?: () => Promise<{ agentId: string; identity: { label: string } }>;
     spec?: Partial<ProviderToolSpec<{ label: string }, Ref>>;
+    resolveCredential?: () => Promise<{ token: string; secrets: readonly string[] }>;
   } = {},
 ) {
   const calls: string[] = [];
@@ -20,10 +21,10 @@ function buildFixture(
     definition: { id: "test", name: "Test", status: "enabled", description: "" },
     validateConfig: () => ({}),
     projectPluginConfig: () => ({}),
-    resolveCredential: async () => {
+    resolveCredential: overrides.resolveCredential ?? (async () => {
       calls.push("resolveCredential");
       return { token: "SECRET-TOKEN", secrets: ["SECRET-TOKEN"] };
-    },
+    }),
     tools: [],
     manifestTools: [],
   } as unknown as IdentityProvider<{ label: string }, Ref>;
@@ -67,8 +68,9 @@ function buildFixture(
     },
   };
 
-  const tool = createProviderTool(provider, toolSpec, {} as never, deps);
-  return { calls, tool };
+  const activityLog = vi.fn().mockResolvedValue(undefined);
+  const tool = createProviderTool(provider, toolSpec, { activity: { log: activityLog } } as never, deps);
+  return { calls, tool, activityLog };
 }
 
 describe("tool pipeline security ordering", () => {
@@ -114,6 +116,18 @@ describe("tool pipeline security ordering", () => {
     });
     expect(calls).not.toContain("resolveCredential");
     expect(calls).not.toContain("perform");
+  });
+
+  it("does not copy credential-resolution errors into activity metadata", async () => {
+    const { activityLog, tool } = buildFixture({
+      resolveCredential: async () => { throw new Error("SECRET-TOKEN"); },
+    });
+    await expect(tool.handler({ repo: "ok/repo" }, { agentId: "agent-1", runId: "run-1", companyId: "company-1" } as never))
+      .resolves.toEqual({ error: "Failed to resolve agent identity authentication credentials." });
+    expect(activityLog).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.not.objectContaining({ reason: expect.anything() }),
+    }));
+    expect(JSON.stringify(activityLog.mock.calls)).not.toContain("SECRET-TOKEN");
   });
 
   it("skips credential resolution when the tool sets requiresCredential: false", async () => {

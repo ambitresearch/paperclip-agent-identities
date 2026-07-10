@@ -2,10 +2,34 @@ import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PluginContext, ToolResult, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { normalizeGitHubRepoRef } from "./identity-policy.js";
-import { resolveAgentIdentityFromPluginSettings } from "./config-source.js";
-import { resolveIdentityToken } from "./credential-sidecar.js";
+import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { ResourceReference } from "../../../core/resource-reference.js";
+import type {
+  ParamsValidation,
+  ProviderToolExecution,
+  ProviderToolSpec,
+  ResourceRefResolution,
+  ResourceRefResolverInput
+} from "../../../core/provider-contract.js";
+import type { GitHubAgentIdentity } from "../config.js";
+import { normalizeGitHubRepoRef } from "../repo-ref.js";
+import {
+  GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+  githubBotPushBranchToolDefinition
+} from "../../../shared/github-bot-push-branch-tool-definition.js";
+
+export interface GitHubPushTarget extends ResourceReference {
+  readonly kind: "github-push-target";
+  readonly owner: string;
+  readonly repo: string;
+  readonly fullName: string;
+  readonly workspacePath: string;
+  readonly remoteName: string;
+  readonly branch: string;
+  readonly dryRun: boolean;
+}
+
+// ---- helpers moved verbatim from src/github-bot-push-branch.ts:10-221 ----
 
 type GitCommandResult = {
   exitCode: number;
@@ -20,7 +44,6 @@ type GitCommandRunnerInput = {
 };
 
 type GitCommandRunner = (input: GitCommandRunnerInput) => Promise<GitCommandResult>;
-
 
 type GithubBotPushBranchParams = {
   branch: string;
@@ -220,12 +243,25 @@ async function logPushBranchOutcome(
   });
 }
 
-export function createGithubBotPushBranchTool(ctx: PluginContext) {
-  return async (paramsInput: unknown, runCtx: ToolRunContext): Promise<ToolResult> => {
-    const params = parseToolParams(paramsInput);
-    if (!params) {
-      return { error: "Invalid parameters. Expected { branch, remote?, expectedRepository?, dryRun? }." };
-    }
+// ---- tool spec ----
+
+function validateParams(raw: unknown): ParamsValidation {
+  const parsed = parseToolParams(raw);
+  if (!parsed) {
+    return { ok: false, error: "Invalid parameters. Expected { branch, remote?, expectedRepository?, dryRun? }." };
+  }
+  return { ok: true, params: parsed };
+}
+
+export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, GitHubPushTarget> = {
+  name: GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+  metadata: githubBotPushBranchToolDefinition,
+  validateParams,
+  async resolveResourceRef(
+    input: ResourceRefResolverInput<GitHubAgentIdentity>
+  ): Promise<ResourceRefResolution<GitHubPushTarget>> {
+    const { ctx, runCtx } = input;
+    const params = input.params as GithubBotPushBranchParams;
 
     const branch = validateBranchName(params.branch);
     if (!branch) {
@@ -235,7 +271,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         branch: params.branch,
         remote: params.remote ?? "origin"
       });
-      return { error: "Invalid branch. Use a non-empty branch name without whitespace." };
+      return { ok: false, error: "Invalid branch. Use a non-empty branch name without whitespace." };
     }
 
     const remote = validateRemoteName(params.remote ?? "origin");
@@ -246,8 +282,9 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         branch,
         remote: params.remote ?? ""
       });
-      return { error: "Invalid remote. Use a non-empty remote name without whitespace." };
+      return { ok: false, error: "Invalid remote. Use a non-empty remote name without whitespace." };
     }
+
     const expectedRepository = params.expectedRepository?.trim();
     const dryRun = params.dryRun === true;
 
@@ -259,7 +296,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         branch,
         remote
       });
-      return { error: "No primary workspace is configured for this project." };
+      return { ok: false, error: "No primary workspace is configured for this project." };
     }
 
     const remoteResolution = await runGitCommand({
@@ -274,7 +311,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         branch,
         remote
       });
-      return { error: `Unable to resolve git remote '${remote}'.` };
+      return { ok: false, error: `Unable to resolve git remote '${remote}'.` };
     }
 
     const repository = normalizeGitHubRepoRef(remoteResolution.stdout);
@@ -285,22 +322,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         branch,
         remote
       });
-      return { error: "Push denied: remote must be a GitHub repository URL." };
-    }
-
-    let resolvedIdentity: Awaited<ReturnType<typeof resolveAgentIdentityFromPluginSettings>>;
-    try {
-      resolvedIdentity = await resolveAgentIdentityFromPluginSettings(ctx, runCtx);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      await logPushBranchOutcome(ctx, runCtx, {
-        message: "github_bot_push_branch failed: missing config",
-        outcome: "missing_config",
-        repository: repository.fullName,
-        branch,
-        remote
-      });
-      return { error: reason };
+      return { ok: false, error: "Push denied: remote must be a GitHub repository URL." };
     }
 
     if (expectedRepository) {
@@ -313,7 +335,7 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
           branch,
           remote
         });
-        return { error: "Invalid expectedRepository format. Use 'owner/repo' or a GitHub URL." };
+        return { ok: false, error: "Invalid expectedRepository format. Use 'owner/repo' or a GitHub URL." };
       }
       if (normalizedExpected !== repository.fullName) {
         await logPushBranchOutcome(ctx, runCtx, {
@@ -324,29 +346,42 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
           branch,
           remote
         });
-        return { error: `Push denied: repository mismatch. Expected '${normalizedExpected}', found '${repository.fullName}'.` };
+        return {
+          ok: false,
+          error: `Push denied: repository mismatch. Expected '${normalizedExpected}', found '${repository.fullName}'.`
+        };
       }
     }
 
-    let token: string;
-    try {
-      ({ token } = await resolveIdentityToken(resolvedIdentity, ctx.secrets.resolve.bind(ctx.secrets), ctx.http.fetch.bind(ctx.http)));
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      ctx.logger.error("Failed to resolve agent identity token", {
-        agentId: runCtx.agentId,
-        repository: repository.fullName,
-        reason
-      });
-      await logPushBranchOutcome(ctx, runCtx, {
-        message: "github_bot_push_branch failed: credential resolution",
-        outcome: "credential_resolution_failed",
-        repository: repository.fullName,
+    return {
+      ok: true,
+      ref: {
+        kind: "github-push-target",
+        owner: repository.owner,
+        repo: repository.repo,
+        fullName: repository.fullName,
+        workspacePath: workspace.path,
+        remoteName: remote,
         branch,
-        remote
-      });
-      return { error: "Failed to resolve agent identity authentication credentials." };
+        dryRun
+      }
+    };
+  },
+  async perform(
+    execution: ProviderToolExecution<GitHubAgentIdentity, GitHubPushTarget>
+  ): Promise<unknown> {
+    const ctx = execution.ctx;
+    const runCtx = execution.runCtx;
+    const target = execution.resourceRef;
+    if (target === null) {
+      return { error: "Internal error: missing resolved push target." };
     }
+    if (execution.token === null) {
+      return { error: "Internal error: missing resolved credential." };
+    }
+    const token = execution.token;
+    const { fullName, workspacePath, remoteName, branch, dryRun } = target;
+
     let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>>;
 
     try {
@@ -356,9 +391,9 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: execution exception",
         outcome: "auth_setup_exception",
-        repository: repository.fullName,
+        repository: fullName,
         branch,
-        remote
+        remote: remoteName
       });
       return { error: `git auth setup failed: ${message}` };
     }
@@ -368,12 +403,12 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       if (dryRun) {
         pushArgs.push("--dry-run");
       }
-      pushArgs.push(`https://github.com/${repository.fullName}.git`);
+      pushArgs.push(`https://github.com/${fullName}.git`);
       pushArgs.push(`HEAD:${toBranchRef(branch)}`);
 
       const pushResult = await runGitCommand({
         args: pushArgs,
-        cwd: workspace.path,
+        cwd: workspacePath,
         env: authEnv.env
       });
 
@@ -384,12 +419,12 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
         await logPushBranchOutcome(ctx, runCtx, {
           message: "github_bot_push_branch failed: git push",
           outcome: "push_failed",
-          repository: repository.fullName,
+          repository: fullName,
           branch,
-          remote
+          remote: remoteName
         });
         return {
-          error: `git push failed for '${repository.fullName}' branch '${branch}'.`,
+          error: `git push failed for '${fullName}' branch '${branch}'.`,
           data: {
             stdout: redactedStdout,
             stderr: redactedStderr
@@ -400,18 +435,18 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch succeeded",
         outcome: "success",
-        repository: repository.fullName,
+        repository: fullName,
         branch,
-        remote,
+        remote: remoteName,
         dryRun
       });
 
       return {
         content: dryRun
-          ? `Dry-run push succeeded for ${repository.fullName}:${branch}.`
-          : `Push succeeded for ${repository.fullName}:${branch}.`,
+          ? `Dry-run push succeeded for ${fullName}:${branch}.`
+          : `Push succeeded for ${fullName}:${branch}.`,
         data: {
-          repository: repository.fullName,
+          repository: fullName,
           branch,
           dryRun,
           stdout: redactedStdout,
@@ -423,13 +458,13 @@ export function createGithubBotPushBranchTool(ctx: PluginContext) {
       await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: execution exception",
         outcome: "push_exception",
-        repository: repository.fullName,
+        repository: fullName,
         branch,
-        remote
+        remote: remoteName
       });
       return { error: `git push failed: ${message}` };
     } finally {
       await authEnv.cleanup();
     }
-  };
-}
+  }
+};

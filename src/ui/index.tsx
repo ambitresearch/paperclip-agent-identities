@@ -79,7 +79,8 @@ function hasFallbackCredential(identity: BotIdentitySettingsEntry): boolean {
 
 function formatProviderIdentity(identity: BotIdentitySettingsEntry): string {
   const provider = identity.provider === "github" ? "GitHub" : identity.provider;
-  return `${provider}: ${identity.githubUsername}`;
+  const username = identity.provider === "github" ? identity.github.username : "";
+  return `${provider}: ${username}`;
 }
 
 function formatIdentityCredential(identity: BotIdentitySettingsEntry): string {

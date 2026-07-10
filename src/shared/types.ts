@@ -1,3 +1,5 @@
+import type { AgentIdentityConfig, AgentIdentitySettingsState, GitHubAgentIdentityConfig } from "../core/identity-config.js";
+
 export type IdentityProviderId = "github" | "slack" | "mattermost" | "entra" | "gcp" | "aws";
 
 export type IdentityProviderStatus = "enabled" | "coming-soon";
@@ -58,20 +60,11 @@ export function getIdentityProviderDefinition(providerId: IdentityProviderId): I
   return SUPPORTED_IDENTITY_PROVIDERS.find((provider) => provider.id === providerId)!;
 }
 
-export function getIdentityKey(agentId: string, provider: IdentityProviderId): string {
+export function getIdentityKey(agentId: string, provider: string): string {
   return `${agentId.trim()}:${provider}`;
 }
 
-export type AgentIdentityConfig = {
-  id: string;
-  agentId: string;
-  provider: IdentityProviderId;
-  label: string;
-  githubUsername: string;
-  githubAppCredentialPropagationAgentIds?: string[];
-  commitName?: string;
-  commitEmail?: string;
-};
+export type { AgentIdentityConfig, AgentIdentitySettingsState };
 
 export type BotIdentityConfig = AgentIdentityConfig;
 
@@ -90,11 +83,6 @@ export type BotIdentityCredentialConfig = {
   githubApp?: BotIdentityGitHubAppCredentialConfig;
 };
 
-export type AgentIdentitySettingsState = {
-  version: 3;
-  identities: Record<string, AgentIdentityConfig>;
-};
-
 export type BotIdentitySettingsState = AgentIdentitySettingsState;
 
 export type BotIdentitySettingsEntry = BotIdentityConfig & {
@@ -103,7 +91,7 @@ export type BotIdentitySettingsEntry = BotIdentityConfig & {
 };
 
 export type BotIdentitySettingsData = {
-  version: 3;
+  version: 4;
   identities: BotIdentitySettingsEntry[];
   providers: readonly IdentityProviderDefinition[];
   companyName?: string;
@@ -111,7 +99,9 @@ export type BotIdentitySettingsData = {
   credentialSidecarError?: string;
 };
 
-export type SaveBotIdentityConfigInput = Omit<BotIdentityConfig, "id"> & {
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+export type SaveBotIdentityConfigInput = DistributiveOmit<BotIdentityConfig, "id"> & {
   id?: string;
   previousAgentId?: string;
   credential?: BotIdentityCredentialConfig;
@@ -181,13 +171,10 @@ export type ConvertGitHubAppManifestResult = {
   installUrl: string;
 };
 
-export const DEFAULT_BOT_IDENTITY_CONFIG: BotIdentityConfig = {
+export const DEFAULT_BOT_IDENTITY_CONFIG: GitHubAgentIdentityConfig = {
+  provider: GITHUB_IDENTITY_PROVIDER_ID,
   id: "",
   agentId: "",
-  provider: GITHUB_IDENTITY_PROVIDER_ID,
   label: "",
-  githubUsername: "",
-  githubAppCredentialPropagationAgentIds: [],
-  commitName: "",
-  commitEmail: "",
+  github: { username: "" },
 };

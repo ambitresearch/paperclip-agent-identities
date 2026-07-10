@@ -22,7 +22,7 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
 | Understand plugin registration and runtime shape | [Plugin runtime architecture](architecture/plugin-runtime.md) | `/src/manifest.ts`, `/src/worker.ts` |
 | Change identity config, provider projection, or credential resolution | [Agent identity domain](domain/agent-identities.md) | `/src/shared/types.ts`, `/src/identity-policy.ts`, `/src/config-source.ts`, `/src/credential-sidecar.ts` |
 | Change GitHub App setup or settings UI behavior | [Agent identity domain](domain/agent-identities.md) | `/src/ui/SettingsPage.tsx`, `/src/worker.ts` manifest-flow actions |
-| Change PR or push tools | [GitHub contribution tools](tools/github-contribution-tools.md) | `/src/tools/create-pull-request.ts`, `/src/github-bot-push-branch.ts` |
+| Change PR or push tools | [GitHub contribution tools](tools/github-contribution-tools.md) | `/src/providers/github/tools/create-pull-request.ts`, `/src/providers/github/tools/push-branch.ts` |
 | Run validation or understand test coverage | [Testing and operations](operations/testing-and-release.md) | `/tests/*.spec.ts`, `/package.json` |
 
 ## Repository layout
@@ -100,7 +100,8 @@ See [Agent identity domain](domain/agent-identities.md) for the canonical model.
 
 - Read `/README.md` and this quickstart first; then follow the section links above.
 - Before changing behavior, inspect tests for the relevant domain. The suite encodes important fail-closed and no-secret-leak expectations.
-- Preserve the security order in GitHub tools: validate/normalize inputs before resolving secrets or tokens.
+- Preserve the pipeline security order for every provider tool: validate params -> resolve identity -> resolve resource ref -> resolve credentials -> perform -> redact. See `/README.md#security-order-all-provider-tools`.
 - Do not document or inspect live secret material. Avoid `.env` files and private key/token files.
 - If adding settings fields, update shared types, worker normalization, UI form behavior, and tests together.
 - If changing tool schemas, update both manifest metadata and worker registration behavior, then run `pnpm typecheck` and `pnpm test`.
+- When adding a new identity provider, follow `/README.md#adding-a-provider`: implement the `IdentityProvider` contract under `/src/providers/<id>/`, and append it once to `/src/providers/index.ts`. Do not edit `/src/worker.ts` or `/src/manifest.ts` for a provider addition.

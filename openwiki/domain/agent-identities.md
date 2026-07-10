@@ -2,36 +2,52 @@
 
 ## Core model
 
-The canonical identity and provider types live in `/src/shared/types.ts`.
+The canonical v4 identity and settings-state types live in `/src/core/identity-config.ts`; `/src/shared/types.ts` re-exports them as `BotIdentityConfig` / `BotIdentitySettingsState` for the UI and worker action payloads.
 
-An `AgentIdentityConfig` represents one Paperclip agent's identity for one provider. The durable identity key is `${agentId}:${provider}`.
+`AgentIdentityConfig` is a discriminated union keyed on `provider`. Each variant nests its provider-specific fields under a field named after the provider, so `GitHubAgentIdentityConfig` carries a `github` object rather than flat `github*` properties:
+
+```ts
+type GitHubAgentIdentityConfig = {
+  provider: "github";
+  id: string;       // `${agentId}:${provider}`
+  agentId: string;
+  label: string;
+  github: {
+    username: string;                 // GitHub App login, commonly `<app-slug>[bot]`
+    commitName?: string;
+    commitEmail?: string;
+    app?: { credentialPropagationAgentIds?: readonly string[] };
+  };
+};
+```
 
 - `id`: stable identity key, for example `agent-123:github`.
 - `agentId`: Paperclip agent ID.
 - `provider`: identity provider ID. GitHub is enabled today; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are listed as coming soon.
 - `label`: human-readable name shown in settings and tool output. The UI convention is `Agent Name [Company Name]`.
-- `githubUsername`: GitHub App login for GitHub identities, commonly `<app-slug>[bot]`.
-- `commitName` / `commitEmail`: optional commit author metadata.
+- `github.username` / `github.commitName` / `github.commitEmail` / `github.app.credentialPropagationAgentIds`: nested GitHub-specific fields — never accessed as top-level `githubUsername`/`commitName`/etc. anywhere past the persistence boundary.
 
-Settings state is versioned:
+Settings state is versioned (`BOT_IDENTITY_SETTINGS_VERSION`, currently `4`):
 
 ```ts
 {
-  version: 3,
+  version: 4,
   identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>
 }
 ```
 
-The worker stores this under `CONFIG_SCOPE` from `/src/config-source.ts`: `{ scopeKind: "instance", stateKey: "bot-identity-config" }`. Runtime GitHub tools filter this provider-aware state to `provider: "github"` and project it into their GitHub-specific config shape by `agentId`.
+`normalizeSettingsState()` in `/src/core/identity-config.ts` is the only place that reads persisted state: v4 payloads pass through, v3 payloads (flat `githubUsername`/`commitName`/etc.) are migrated forward into nested `github.*` shape via `migrateSettingsStateToV4()`, and anything else resets to an empty v4 state. There is no v3 runtime read/write path anymore — `/src/worker.ts` and `/src/config-source.ts` only ever produce and consume v4.
+
+The worker stores this under `CONFIG_SCOPE` from `/src/config-source.ts`: `{ scopeKind: "instance", stateKey: "bot-identity-config" }`. `config-source.ts` is now just that constant — the old flat-shape resolver (`resolveAgentIdentityFromPluginSettings` / `normalizeBotIdentitySettingsState`) was superseded by the generic per-provider resolver in `/src/worker.ts` (`resolveIdentityForProvider`), which asks each registered `IdentityProvider` to project this same v4 `identities` map into its own config shape (see `plugin-runtime.md`).
 
 ## Provider authorization
 
 Agent Identities does not implement repository/resource authorization. It maps agents to provider identities and credentials, then lets the provider enforce access through installation permissions, scopes, provider APIs, and tool-specific responses.
 
-`/src/identity-policy.ts` is used by runtime tools. It:
+`/src/providers/github/config.ts` and `/src/providers/github/repo-ref.ts` are used by the GitHub provider's runtime tools. They:
 
-- parses plugin config with a zod schema;
-- resolves the calling `runContext.agentId` to the GitHub provider identity projected as `identities[agentId]`;
+- parse plugin config with a zod schema (`githubIdentitySchema`);
+- resolve the calling `runContext.agentId` to the GitHub provider identity projected as `identities[agentId]`;
 - normalizes GitHub repository references from inputs such as:
   - `owner/repo`
   - `https://github.com/owner/repo(.git)`
@@ -45,15 +61,13 @@ For GitHub, repository access is controlled by the GitHub App installation and G
 
 ## Config source behavior
 
-`/src/config-source.ts` bridges static plugin config and settings UI state.
+`/src/config-source.ts` now only exports `CONFIG_STATE_KEY` / `CONFIG_SCOPE`. Bridging static (instance) config and settings-page state is a worker-level, provider-agnostic concern implemented by `resolveIdentityForProvider()` in `/src/worker.ts`:
 
-`resolveAgentIdentityFromPluginSettings(ctx, runCtx)`:
-
-1. calls `ctx.config.get()` and tries `/src/identity-policy.ts` resolution;
-2. if that fails and settings state exists, normalizes settings state and retries;
+1. calls `ctx.config.get()` and asks the provider (`provider.validateConfig`) to validate the per-agent instance config;
+2. if that fails and settings-page state (`CONFIG_SCOPE`) exists, normalizes it with `normalizeSettingsState()` (v4, migrating v3 automatically) and asks the provider to project its `identities` map (`provider.projectPluginConfig`) before resolving through `resolveAgentIdentity()`;
 3. if both fail, throws an error containing the primary and fallback reasons.
 
-Current behavior accepts version 3 provider-aware settings state only. GitHub tool config is derived by filtering identities to `provider: "github"`; disabled or unknown provider records are ignored during normalization. The current settings UI cascades GitHub App credentials to the selected agent identity.
+Because settings-page state is always v4, every provider's `projectPluginConfig` receives the nested `AgentIdentityConfig` union and is responsible for narrowing to its own provider and reading its own nested fields (e.g. `identity.github.username` for GitHub). Disabled or unknown provider records are ignored during projection. The current settings UI cascades GitHub App credentials to the selected agent identity.
 
 ## Credential sidecar
 
@@ -162,15 +176,17 @@ Flow state is restored by `get-github-app-manifest-flow` while the operator is r
 
 ## Tests to inspect before changing this domain
 
-- `/tests/identity-policy.spec.ts`: config parsing, missing agent fail-closed behavior, repo normalization, sidecar parsing, token-source precedence, GitHub App token minting.
-- `/tests/repo-normalization.spec.ts`: repository reference normalization.
-- `/tests/plugin.spec.ts`: settings save/load/delete, sidecar writes/deletes, agent dropdown data, provider-aware settings fallback, GitHub App manifest creation/conversion, and propagation ID dedupe.
+- `/tests/identity-config-migration.spec.ts`: v3 -> v4 settings-state migration ladder.
+- `/tests/github-config.spec.ts` / `/tests/github-project-config.spec.ts`: GitHub plugin config parsing, missing-agent fail-closed behavior, and v4 identity projection.
+- `/tests/github-repo-ref.spec.ts`: repository reference normalization.
+- `/tests/plugin.spec.ts`: settings save/load/delete against v4 nested state, sidecar writes/deletes, agent dropdown data, provider-aware settings fallback, GitHub App manifest creation/conversion, and propagation ID dedupe.
 
 ## Change guidance
 
 When changing this domain:
 
-- Keep `/src/shared/types.ts`, `/src/config-source.ts`, `/src/worker.ts`, and `/src/ui/SettingsPage.tsx` in sync.
+- Keep `/src/core/identity-config.ts`, `/src/shared/types.ts`, `/src/config-source.ts`, `/src/worker.ts`, and `/src/ui/SettingsPage.tsx` in sync.
+- Persisted state is v4 nested `github.*`/`example.*` fields only — never reintroduce a flat top-level `githubUsername`/`commitName`/`commitEmail` read/write path. New providers append a variant to `AgentIdentityConfig`, not new top-level fields.
 - Preserve fail-closed behavior for missing agent identity and malformed repository inputs.
 - Validate and normalize repository inputs before credential resolution.
 - Never add generated installation tokens to plugin state or tool outputs.

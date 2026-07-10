@@ -44,7 +44,7 @@ Behavior:
 Source:
 
 - metadata: `/src/shared/github-bot-create-pull-request-tool.ts`
-- implementation: `/src/tools/create-pull-request.ts`
+- implementation: `/src/providers/github/tools/create-pull-request.ts`
 
 Purpose: create a GitHub pull request using the calling agent's configured identity.
 
@@ -85,8 +85,8 @@ Notable limitation from current source: `head` and `base` are only validated as 
 
 Source:
 
-- metadata: `/src/github-bot-push-branch-tool-definition.ts`
-- implementation: `/src/github-bot-push-branch.ts`
+- metadata: `/src/shared/github-bot-push-branch-tool-definition.ts`
+- implementation: `/src/providers/github/tools/push-branch.ts`
 
 Purpose: mediate pushing current workspace `HEAD` to a branch on a GitHub remote using the agent identity token.
 
@@ -121,7 +121,7 @@ Notable limitation from current source: branch validation is conservative but do
 
 `/src/lib/redaction.ts` provides recursive redaction for strings, arrays, and objects, plus safe error conversion.
 
-`/src/lib/push.ts` contains a lower-level push helper with similar askpass/redaction cleanup behavior. It removes inherited `GITHUB_TOKEN` and `PAPERCLIP_GIT_PUSH_TOKEN` from the child environment. This helper is tested by `/tests/security.spec.ts`; the currently registered mediated push tool has its own implementation in `/src/github-bot-push-branch.ts`.
+`/src/lib/push.ts` contains a lower-level push helper with similar askpass/redaction cleanup behavior. It removes inherited `GITHUB_TOKEN` and `PAPERCLIP_GIT_PUSH_TOKEN` from the child environment. This helper is tested by `/tests/security.spec.ts`; the currently registered mediated push tool has its own implementation in `/src/providers/github/tools/push-branch.ts`.
 
 `/src/lib/pr.ts` wraps PR client errors with redaction. It is covered by security tests even though the registered PR tool currently calls `ctx.http.fetch` directly.
 

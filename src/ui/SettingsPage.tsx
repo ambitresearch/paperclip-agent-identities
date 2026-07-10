@@ -130,7 +130,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
           agentId: flow.agentId,
           provider: flow.provider,
           label: draftForm?.label || restoredForm.label || flow.label,
-          githubUsername: conversion?.githubUsername || draftForm?.githubUsername || restoredForm.githubUsername || defaults?.githubUsername || DEFAULT_BOT_IDENTITY_CONFIG.githubUsername,
+          githubUsername: conversion?.githubUsername || draftForm?.githubUsername || restoredForm.githubUsername || defaults?.githubUsername || DEFAULT_BOT_IDENTITY_CONFIG.github.username,
           commitName: draftForm?.commitName || restoredForm.commitName || defaults?.commitName || "",
           commitEmail: draftForm?.commitEmail || restoredForm.commitEmail || defaults?.commitEmail || "",
           githubAppId: conversion?.appId || draftForm?.githubAppId || restoredForm.githubAppId,
@@ -269,7 +269,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         ...base,
         agentId,
         label: shouldPrefillIdentityField(base.label, DEFAULT_BOT_IDENTITY_CONFIG.label) ? defaults.label : base.label,
-        githubUsername: shouldPrefillIdentityField(base.githubUsername, DEFAULT_BOT_IDENTITY_CONFIG.githubUsername) ? defaults.githubUsername : base.githubUsername,
+        githubUsername: shouldPrefillIdentityField(base.githubUsername, DEFAULT_BOT_IDENTITY_CONFIG.github.username) ? defaults.githubUsername : base.githubUsername,
         commitName: shouldPrefillIdentityField(base.commitName, "") ? defaults.commitName : base.commitName,
         commitEmail: shouldPrefillIdentityField(base.commitEmail, "") ? defaults.commitEmail : base.commitEmail,
         privateKeyFile: shouldPrefillIdentityField(base.privateKeyFile, "") ? defaults.privateKeyFile : base.privateKeyFile,
@@ -360,11 +360,13 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       const payload: SaveBotIdentityConfigInput = {
         agentId: config.agentId.trim(),
         previousAgentId: config.previousAgentId.trim() || undefined,
-        provider: config.provider,
+        provider: "github",
         label: config.label.trim(),
-        githubUsername: config.githubUsername.trim(),
-        commitName: config.commitName.trim() || undefined,
-        commitEmail: config.commitEmail.trim() || undefined,
+        github: {
+          username: config.githubUsername.trim(),
+          ...(config.commitName.trim() ? { commitName: config.commitName.trim() } : {}),
+          ...(config.commitEmail.trim() ? { commitEmail: config.commitEmail.trim() } : {}),
+        },
         credential: {
           secretId: config.fallbackTokenSecretId.trim() || undefined,
           tokenFile: config.tokenFile.trim() || undefined,
@@ -519,7 +521,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                         <div style={rowTitleStyle}>{entry.label}</div>
                         <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
                       </div>
-                      <div style={rowMetaStyle}>{entry.githubUsername}</div>
+                      <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : ""}</div>
                       <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
                       <div style={rowActionsStyle}>
                         <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
@@ -1127,9 +1129,9 @@ function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState {
     agentId: entry?.agentId ?? DEFAULT_BOT_IDENTITY_CONFIG.agentId,
     provider: entry?.provider ?? DEFAULT_BOT_IDENTITY_CONFIG.provider,
     label: entry?.label ?? DEFAULT_BOT_IDENTITY_CONFIG.label,
-    githubUsername: entry?.githubUsername ?? DEFAULT_BOT_IDENTITY_CONFIG.githubUsername,
-    commitName: entry?.commitName ?? "",
-    commitEmail: entry?.commitEmail ?? "",
+    githubUsername: entry?.provider === "github" ? entry.github.username : DEFAULT_BOT_IDENTITY_CONFIG.github.username,
+    commitName: entry?.provider === "github" ? entry.github.commitName ?? "" : "",
+    commitEmail: entry?.provider === "github" ? entry.github.commitEmail ?? "" : "",
     githubAppId: entry?.credential?.githubApp?.appId ?? "",
     githubInstallationId: entry?.credential?.githubApp?.installationId ?? "",
     privateKeySecretId: entry?.credential?.githubApp?.privateKeySecretId ?? "",

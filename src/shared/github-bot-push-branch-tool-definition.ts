@@ -15,3 +15,8 @@ export const githubBotPushBranchToolDefinition = {
     }
   }
 } as const;
+
+export const githubBotPushBranchManifestTool = {
+  name: GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+  ...githubBotPushBranchToolDefinition
+} as const;

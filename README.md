@@ -165,3 +165,34 @@ Download CI artifact from GitHub:
 1. Open the workflow run in the Actions tab.
 2. In the `Artifacts` section, download `npm-package-tarball`.
 3. Extract the `.tgz` and verify `dist/manifest.js`, `dist/worker.js`, and `dist/ui/index.js` are present.
+
+## Adding a provider
+
+The plugin composes identity providers behind a single `IdentityProvider` contract (`src/core/provider-contract.ts`). Neither `src/worker.ts` nor `src/manifest.ts` reference any specific provider — both consume whatever the registry in `src/providers/index.ts` exposes. Adding a new provider does not require editing `worker.ts` or `manifest.ts`.
+
+To add a provider:
+
+1. Create a new module under `src/providers/<id>/` that implements `IdentityProvider<TIdentity, TRef>`.
+2. Write `validateConfig` to parse a single projected identity and return either the typed identity or a joined error string (see `validateGitHubConfig` in `src/providers/github/index.ts` for the pattern).
+3. Project raw settings-state identities for your provider's key (`${agentId}:<id>`) into that typed identity shape.
+4. Implement credential resolution (`resolveCredential`) — resolve secrets/tokens just in time, never eagerly, and never before params/identity/resource-ref have been validated.
+5. Provide `tools`: an array of `ProviderToolSpec` entries, each declaring its metadata, whether it requires a credential, and its `perform` implementation.
+6. Optionally contribute `actions` (e.g. an App-manifest-style setup flow) if the provider needs additional worker actions beyond tool calls.
+7. Include `manifestTools`: the manifest-facing fragments the composed manifest consumes (see `src/providers/github/manifest-tools.ts`).
+8. Append the new provider exactly once, in `src/providers/index.ts`'s `ALL_PROVIDERS` array. This is the single composition root; nothing else needs to change to register it.
+9. Add contract tests (validate/project/resolveCredential) and pipeline tests (tool execution through `createProviderTool`) alongside the existing provider test suites, and extend `tests/provider-composition.spec.ts` if the new provider changes composed output.
+
+`worker.ts` and `manifest.ts` are not edited when adding a provider — they only depend on the provider contract and the registry, not on any concrete provider module.
+
+### Security order (all provider tools)
+
+Every credentialed tool call runs through the shared pipeline in `src/core/tool-pipeline.ts` in this fixed order:
+
+1. **Validate params** — deny malformed input before any secret work.
+2. **Resolve identity** — fail closed on any error.
+3. **Resolve resource ref** — derive/validate the target and deny disallowed targets before a credential exists.
+4. **Resolve credentials** — the first point secret material is touched, only after all prior denials.
+5. **Perform** — the only provider-specific API/git step.
+6. **Redact** — strip the resolved token and any other secrets from the tool result before it is returned.
+
+Provider authors implement steps 1, 3 (optional), 4, and 5; the pipeline enforces the ordering and step 6.

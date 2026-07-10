@@ -1,60 +1,10 @@
-import { z, type ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { ResourceReference } from "../../core/resource-reference.js";
 
-const githubIdentitySchema = z.object({
-  label: z.string().trim().min(1),
-  githubUsername: z.string().trim().min(1),
-  commitName: z.string().trim().min(1).optional(),
-  commitEmail: z.string().trim().min(1).optional()
-});
-
-const pluginConfigSchema = z.object({
-  identities: z.record(z.string().trim().min(1), githubIdentitySchema)
-});
-
-type ParsedGitHubAgentIdentity = z.infer<typeof githubIdentitySchema>;
-type ParsedGitHubBotIdentityPluginConfig = z.infer<typeof pluginConfigSchema>;
-
-export type GitHubAgentIdentity = ParsedGitHubAgentIdentity;
-
-export type GitHubBotIdentityPluginConfig = {
-  identities: Record<string, GitHubAgentIdentity>;
-};
-
-export interface ResolvedAgentIdentity {
-  agentId: string;
-  identity: GitHubAgentIdentity;
-}
-
-export interface GitHubRepoRef {
-  owner: string;
-  repo: string;
-  fullName: string;
-}
-
-export function parseGitHubBotIdentityPluginConfig(rawConfig: unknown): GitHubBotIdentityPluginConfig {
-  return normalizePluginConfig(pluginConfigSchema.parse(rawConfig));
-}
-
-export function resolveAgentIdentityFromToolRunContext(
-  rawConfig: unknown,
-  runContext: ToolRunContext
-): ResolvedAgentIdentity {
-  const parsed = pluginConfigSchema.safeParse(rawConfig);
-  if (!parsed.success) {
-    throw new Error(
-      `Invalid agent identity config: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`
-    );
-  }
-
-  const config = normalizePluginConfig(parsed.data);
-  const identity = config.identities[runContext.agentId];
-  if (!identity) {
-    throw new Error(
-      `Missing agent identity config for agent '${runContext.agentId}'. Expected identities.${runContext.agentId}.`
-    );
-  }
-
-  return { agentId: runContext.agentId, identity };
+export interface GitHubRepoRef extends ResourceReference {
+  readonly kind: "github-repo";
+  readonly owner: string;
+  readonly repo: string;
+  readonly fullName: string;
 }
 
 export function normalizeGitHubRepoRef(input: string): GitHubRepoRef | null {
@@ -88,14 +38,6 @@ export function normalizeGitHubRepoRef(input: string): GitHubRepoRef | null {
   }
 
   return parseOwnerRepoPair(trimmed);
-}
-
-function normalizePluginConfig(config: ParsedGitHubBotIdentityPluginConfig): GitHubBotIdentityPluginConfig {
-  const identities: Record<string, GitHubAgentIdentity> = {};
-  for (const [agentId, identity] of Object.entries(config.identities)) {
-    identities[agentId] = identity;
-  }
-  return { identities };
 }
 
 function isUrlLikeRepoRef(value: string): boolean {
@@ -155,8 +97,9 @@ function buildRepoRef(ownerRaw: string, repoRaw: string): GitHubRepoRef | null {
   }
 
   return {
+    kind: "github-repo",
     owner,
     repo,
-    fullName: `${owner}/${repo}`
+    fullName: `${owner}/${repo}`,
   };
 }

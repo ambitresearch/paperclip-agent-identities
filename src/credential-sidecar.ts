@@ -2,7 +2,7 @@ import { createSign } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { z } from "@paperclipai/plugin-sdk";
-import type { ResolvedAgentIdentity } from "./identity-policy.js";
+import type { ResolvedAgentIdentity } from "./providers/github/config.js";
 import { GITHUB_IDENTITY_PROVIDER_ID, getIdentityKey, type IdentityProviderId } from "./shared/types.js";
 
 export const CREDENTIAL_SIDECAR_PATH_ENV = "PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS";

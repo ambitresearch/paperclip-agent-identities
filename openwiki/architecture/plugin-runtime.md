@@ -34,11 +34,13 @@ Important capabilities include:
 - `activity.log.write` for PR/push audit events
 - `project.workspaces.read` for mediated git push workspace resolution
 
-The manifest declares three tools using metadata from shared tool-definition files:
+`/src/manifest.ts` sources its tool list from the provider registry rather than importing provider-specific tool definitions directly: `registry.enabled().flatMap((provider) => provider.manifestTools)`. Today the only enabled provider is GitHub, contributing:
 
 - `github_bot_whoami`
 - `github_bot_create_pull_request`
 - `github_bot_push_branch`
+
+Adding a new enabled provider (or new tools on an existing provider) changes what the registry returns and does not require touching `/src/manifest.ts`.
 
 It also declares two UI slots:
 
@@ -68,37 +70,38 @@ This is scaffold-like behavior but is covered by `/tests/plugin.spec.ts`.
 ### Actions
 
 - `ping`: simple health/debug action.
-- `save-bot-identity-config`: validates and normalizes provider-aware identity input, stores version-3 settings state under `CONFIG_SCOPE`, and upserts/deletes sidecar credential references when a `credential` field is supplied.
+- `save-bot-identity-config`: validates and normalizes GitHub identity input into a nested v4 `GitHubAgentIdentityConfig` (`github: { username, commitName?, commitEmail?, app? }`), stores v4 settings state (`BOT_IDENTITY_SETTINGS_VERSION`) under `CONFIG_SCOPE`, and upserts/deletes sidecar credential references when a `credential` field is supplied.
 - `delete-bot-identity-config`: removes one identity from settings state and deletes its sidecar entry.
-- `create-github-app-manifest`: creates and stores a GitHub App manifest-flow state object.
-- `get-github-app-manifest-flow`: restores a stored manifest flow by state token.
-- `convert-github-app-manifest`: exchanges a GitHub manifest one-time code for app metadata and PEM, persists the private key file, and stores the conversion result in flow state.
+- Manifest-flow actions (`create-github-app-manifest`, `get-github-app-manifest-flow`, `convert-github-app-manifest`) are contributed by the GitHub provider's `contributeActions` hook (see below), not registered inline in `/src/worker.ts`.
 
-### Tools
+### Tools and provider registry iteration
 
-- `github_bot_push_branch` is registered from `/src/github-bot-push-branch.ts`.
-- `github_bot_whoami` is registered inline in `/src/worker.ts`.
-- `github_bot_create_pull_request` is registered by `/src/tools/create-pull-request.ts`.
+`/src/worker.ts` does not register provider tools one-by-one. It builds a provider registry (`createProviderRegistry()` from `/src/providers/index.ts`) and, for every enabled `IdentityProvider`:
+
+- wraps each of the provider's `tools` (its `ProviderToolSpec[]`) through `createProviderTool()` in `/src/core/tool-pipeline.ts`, which enforces the common deny-before-secret pipeline (validate params -> resolve identity -> resolve/deny resource ref -> resolve credential -> perform -> redact secrets), and registers the resulting handler with `ctx.tools.register`;
+- calls the provider's optional `contributeActions(ctx)` hook, which is how the GitHub provider registers its GitHub App manifest actions (`create-github-app-manifest`, `get-github-app-manifest-flow`, `convert-github-app-manifest`) without `/src/worker.ts` importing GitHub-specific action code directly.
+
+Concretely, GitHub's tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`) live in `/src/providers/github/tools/*.ts` and are exposed through `githubProvider.tools` in `/src/providers/github/index.ts` — the worker loop is provider-agnostic and would pick up a new provider's tools/actions the same way once it's added to the registry.
 
 ## Config and state sources
 
 There are two identity configuration paths:
 
 1. **Plugin instance config** via `ctx.config.get()`.
-2. **Settings-page state fallback** under `CONFIG_SCOPE`, defined in `/src/config-source.ts` as `{ scopeKind: "instance", stateKey: "bot-identity-config" }`.
+2. **Settings-page state fallback** under `CONFIG_SCOPE`, defined in `/src/config-source.ts` as `{ scopeKind: "instance", stateKey: "bot-identity-config" }`. `/src/config-source.ts` exports only this constant — it does not implement any resolution logic itself.
 
-`resolveAgentIdentityFromPluginSettings()` tries instance config first. If that fails and settings state exists, it normalizes settings state into the same config shape and tries again. This fallback was added so tools can use identities saved by the settings page rather than only static instance config.
+`resolveIdentityForProvider()` in `/src/worker.ts` is the provider-agnostic resolver every provider tool goes through. It tries instance config first (`provider.validateConfig`). If that fails and settings-page state exists, it normalizes the state with `normalizeSettingsState()` and asks the provider to project the v4 `identities` map into its own identity shape (`provider.projectPluginConfig`) before resolving via `resolveAgentIdentity()`. This fallback lets tools use identities saved by the settings page rather than only static instance config.
 
-Settings state is normalized to version 3 provider-aware records:
+Settings state is normalized to version 4 nested provider records (`BOT_IDENTITY_SETTINGS_VERSION` from `/src/core/identity-config.ts`):
 
 ```ts
 {
-  version: 3,
+  version: 4,
   identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>
 }
 ```
 
-GitHub tools filter settings state to `provider: "github"` and project it into their runtime config by `agentId`. Older settings-state shapes are not preserved in the current greenfield model.
+`normalizeSettingsState()` migrates any stored v3 (flat `githubUsername`/`commitName`/etc.) state forward automatically; there is no v3 runtime read/write path. Each provider's `projectPluginConfig` narrows this same v4 map to its own `provider` discriminant and reads its own nested fields (GitHub reads `identity.github.username`, etc.) — the worker loop itself stays provider-agnostic.
 
 ## UI architecture
 

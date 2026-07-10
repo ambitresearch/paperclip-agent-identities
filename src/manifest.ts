@@ -1,10 +1,7 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import {
-  GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
-  githubBotPushBranchToolDefinition
-} from "./github-bot-push-branch-tool-definition.js";
-import { githubBotWhoamiManifestTool } from "./shared/github-bot-whoami-tool.js";
-import { githubBotCreatePullRequestManifestTool } from "./shared/github-bot-create-pull-request-tool.js";
+import { createProviderRegistry } from "./providers/index.js";
+
+const registry = createProviderRegistry();
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-agent-identities",
@@ -50,14 +47,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.read-ref",
     "activity.log.write"
   ],
-  tools: [
-    githubBotWhoamiManifestTool,
-    githubBotCreatePullRequestManifestTool,
-    {
-      name: GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
-      ...githubBotPushBranchToolDefinition
-    }
-  ],
+  tools: registry.enabled().flatMap((provider) => provider.manifestTools) as PaperclipPluginManifestV1["tools"],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"

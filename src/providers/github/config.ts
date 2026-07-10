@@ -1,5 +1,6 @@
 import { z, type ToolRunContext } from "@paperclipai/plugin-sdk";
 import type { ResolvedAgentIdentity as CoreResolvedAgentIdentity } from "../../core/agent-identity.js";
+import type { GitHubAgentIdentityConfig } from "../../core/identity-config.js";
 
 export const githubIdentitySchema = z.object({
   label: z.string().trim().min(1),
@@ -55,4 +56,35 @@ function normalizePluginConfig(config: ParsedGitHubBotIdentityPluginConfig): Git
     identities[agentId] = identity;
   }
   return { identities };
+}
+
+export function projectGitHubPluginConfig(
+  identities: Record<string, unknown>,
+): Record<string, GitHubAgentIdentity> {
+  const projected: Record<string, GitHubAgentIdentity> = {};
+  for (const entry of Object.values(identities)) {
+    if (!isGitHubIdentityConfig(entry)) continue;
+    projected[entry.agentId] = toGitHubAgentIdentity(entry);
+  }
+  return projected;
+}
+
+function isGitHubIdentityConfig(value: unknown): value is GitHubAgentIdentityConfig {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { provider?: unknown; github?: unknown };
+  return (
+    candidate.provider === "github" &&
+    typeof candidate.github === "object" &&
+    candidate.github !== null
+  );
+}
+
+function toGitHubAgentIdentity(config: GitHubAgentIdentityConfig): GitHubAgentIdentity {
+  const identity: GitHubAgentIdentity = {
+    label: config.label,
+    githubUsername: config.github.username,
+  };
+  if (config.github.commitName) identity.commitName = config.github.commitName;
+  if (config.github.commitEmail) identity.commitEmail = config.github.commitEmail;
+  return identity;
 }

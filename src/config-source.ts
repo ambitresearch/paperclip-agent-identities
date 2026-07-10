@@ -1,6 +1,15 @@
 import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
-import { resolveAgentIdentityFromToolRunContext, type GitHubBotIdentityPluginConfig, type ResolvedAgentIdentity } from "./identity-policy.js";
-import { GITHUB_IDENTITY_PROVIDER_ID, getIdentityKey, isIdentityProviderId, type BotIdentityConfig, type BotIdentitySettingsState, type IdentityProviderId } from "./shared/types.js";
+import {
+  projectGitHubPluginConfig,
+  resolveAgentIdentityFromToolRunContext,
+  type GitHubBotIdentityPluginConfig,
+  type ResolvedAgentIdentity,
+} from "./providers/github/config.js";
+import {
+  normalizeSettingsState,
+  type AgentIdentitySettingsState,
+} from "./core/identity-config.js";
+import { getIdentityKey, isIdentityProviderId, type BotIdentityConfig, type BotIdentitySettingsState, type IdentityProviderId } from "./shared/types.js";
 
 export const CONFIG_STATE_KEY = "bot-identity-config";
 export const CONFIG_SCOPE = { scopeKind: "instance" as const, stateKey: CONFIG_STATE_KEY };
@@ -18,7 +27,7 @@ export async function resolveAgentIdentityFromPluginSettings(
       throw instanceConfigError;
     }
 
-    const fallbackConfig = botIdentityStateToPluginConfig(normalizeBotIdentitySettingsState(stateConfig));
+    const fallbackConfig = botIdentityStateToPluginConfig(normalizeSettingsState(stateConfig));
     try {
       return resolveAgentIdentityFromToolRunContext(fallbackConfig, runCtx);
     } catch (fallbackError) {
@@ -44,18 +53,10 @@ export function normalizeBotIdentitySettingsState(rawConfig: unknown): BotIdenti
   return { version: 3, identities: {} };
 }
 
-export function botIdentityStateToPluginConfig(state: BotIdentitySettingsState): GitHubBotIdentityPluginConfig {
-  const identities: GitHubBotIdentityPluginConfig["identities"] = {};
-  for (const identity of Object.values(state.identities)) {
-    if (identity.provider !== GITHUB_IDENTITY_PROVIDER_ID) continue;
-    identities[identity.agentId] = {
-      label: identity.label,
-      githubUsername: identity.githubUsername,
-      commitName: identity.commitName || undefined,
-      commitEmail: identity.commitEmail || undefined,
-    };
-  }
-  return { identities };
+function botIdentityStateToPluginConfig(
+  state: AgentIdentitySettingsState,
+): GitHubBotIdentityPluginConfig {
+  return { identities: projectGitHubPluginConfig(state.identities) };
 }
 
 function normalizeBotIdentityConfig(rawConfig: unknown, fallbackIdentityKey?: string): BotIdentityConfig | null {

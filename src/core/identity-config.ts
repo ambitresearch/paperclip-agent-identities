@@ -60,6 +60,10 @@ function readStringArray(value: unknown): string[] {
   return value.map((item) => readString(item)).filter((item) => item.length > 0);
 }
 
+function isValidGitHubIdentityConfig(identity: GitHubAgentIdentityConfig): boolean {
+  return identity.agentId.length > 0 && identity.label.length > 0 && identity.github.username.length > 0;
+}
+
 function migrateGitHubIdentityV3ToV4(raw: Record<string, unknown>): GitHubAgentIdentityConfig {
   const agentId = readString(raw.agentId);
   const github: {
@@ -106,11 +110,7 @@ export function migrateSettingsStateToV4(raw: unknown): AgentIdentitySettingsSta
       continue;
     }
     const migrated = migrateGitHubIdentityV3ToV4(entry);
-    if (
-      migrated.agentId.length === 0 ||
-      migrated.label.length === 0 ||
-      migrated.github.username.length === 0
-    ) {
+    if (!isValidGitHubIdentityConfig(migrated)) {
       continue;
     }
     identities[migrated.id] = migrated;

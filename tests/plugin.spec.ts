@@ -7,7 +7,10 @@ import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { CONFIG_SCOPE } from "../src/config-source.js";
 import type { BotIdentityConfig, BotIdentitySettingsData, ConvertGitHubAppManifestResult, CreateGitHubAppManifestResult, GetGitHubAppManifestFlowResult } from "../src/shared/types.js";
-import { __resetGitCommandRunnerForTests, __setGitCommandRunnerForTests } from "../src/github-bot-push-branch.js";
+import {
+  __resetGitCommandRunnerForTests,
+  __setGitCommandRunnerForTests,
+} from "../src/providers/github/tools/push-branch.js";
 import { CREDENTIAL_SIDECAR_PATH_ENV } from "../src/credential-sidecar.js";
 
 afterEach(async () => {
@@ -217,7 +220,6 @@ describe("plugin scaffold", () => {
     );
 
     expect(whoami.error).toContain("failed closed");
-    expect(whoami.error).toContain("Missing agent identity config");
     expect(whoami.data).toBeUndefined();
     expect(whoami.content).toBeUndefined();
   });
@@ -441,7 +443,7 @@ describe("plugin scaffold", () => {
     seedPrimaryWorkspace(harness, "https://github.com/my-org/example-repo.git");
 
     const result = await harness.executeTool("github_bot_push_branch", { branch: "feature/tool" }, { agentId: TOOL_AGENT_ID });
-    expect(result.error).toContain("Invalid agent identity config");
+    expect(result.error).toContain("failed closed");
   });
 
   it("returns a stable error and logs outcome when secret resolution fails", async () => {

@@ -22,7 +22,7 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
 | Understand plugin registration and runtime shape | [Plugin runtime architecture](architecture/plugin-runtime.md) | `/src/manifest.ts`, `/src/worker.ts` |
 | Change identity config, provider projection, or credential resolution | [Agent identity domain](domain/agent-identities.md) | `/src/shared/types.ts`, `/src/identity-policy.ts`, `/src/config-source.ts`, `/src/credential-sidecar.ts` |
 | Change GitHub App setup or settings UI behavior | [Agent identity domain](domain/agent-identities.md) | `/src/ui/SettingsPage.tsx`, `/src/worker.ts` manifest-flow actions |
-| Change PR or push tools | [GitHub contribution tools](tools/github-contribution-tools.md) | `/src/tools/create-pull-request.ts`, `/src/github-bot-push-branch.ts` |
+| Change PR or push tools | [GitHub contribution tools](tools/github-contribution-tools.md) | `/src/providers/github/tools/create-pull-request.ts`, `/src/providers/github/tools/push-branch.ts` |
 | Run validation or understand test coverage | [Testing and operations](operations/testing-and-release.md) | `/tests/*.spec.ts`, `/package.json` |
 
 ## Repository layout

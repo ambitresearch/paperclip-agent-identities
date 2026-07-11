@@ -11,10 +11,25 @@ already-built provider: the reference other agents implement against.
 
 ## 1. Product boundary
 
-Slack is a second `IdentityProvider` registered once in
-`src/providers/index.ts`'s `ALL_PROVIDERS` array, exactly like GitHub. Nothing
-in `src/worker.ts` or `src/manifest.ts` becomes Slack-aware; both already
-consume the registry generically.
+Slack is a second runtime `IdentityProvider` registered once in
+`src/providers/index.ts`'s `ALL_PROVIDERS` array, exactly like GitHub. Tool
+execution, action registration, and manifest composition already consume that
+registry generically, so `src/manifest.ts` needs no Slack-specific branch.
+
+Settings persistence is a separate boundary and is not generic today.
+`src/worker.ts`'s `normalizeIdentityInput` hard-rejects non-GitHub identities,
+its save log dereferences `identity.github`, the persistence union in
+`src/core/identity-config.ts` enumerates provider variants, and the settings UI
+owns GitHub-specific form and environment-projection behavior. Slack delivery
+therefore includes a settings-adapter dispatch table keyed by provider ID:
+GitHub's current normalization moves into `normalizeGitHubSettingsInput`, Slack
+implements `normalizeSlackSettingsInput`, and the worker calls the selected
+adapter to obtain the persisted identity plus normalized sidecar credential.
+The worker's save log becomes provider-neutral instead of dereferencing
+`identity.github`. The same change adds a Slack variant to the persisted
+identity union and sidecar union, while the UI adds the matching Slack
+form/projection. This is required implementation work, not a claim that the
+current save path can accept Slack unchanged.
 
 **In scope for MVP:**
 - One Slack app identity per Paperclip agent (`${agentId}:slack`), mirroring
@@ -27,8 +42,9 @@ consume the registry generically.
 - Settings-UI-driven app creation via Slack's [app manifest](https://api.slack.com/reference/manifests)
   deep link (`https://api.slack.com/apps?new_app=1&manifest_json=...`),
   mirroring the GitHub App Manifest bootstrap flow.
-- OAuth installation (`oauth.v2.access`) to obtain a bot token scoped to a
-  single workspace installation, analogous to GitHub App installation.
+- Operator-driven installation into one Slack workspace, followed by manual
+  creation of a Paperclip company secret containing the bot token and entry of
+  that secret's UUID in the settings form.
 
 **Explicitly out of scope for MVP** (tracked as later work, not silently
 dropped):
@@ -43,6 +59,14 @@ dropped):
   a user token.
 - Interactive components (buttons, modals, Block Kit forms) beyond posting
   Block-Kit-formatted messages as static content.
+- Automated OAuth code exchange. It requires public callback routing, Slack
+  client-ID/client-secret storage, single-use CSRF `state`, and a supported
+  host API for creating Paperclip secrets; none exists in the current plugin
+  contract. Section 7 defines the operator-driven MVP and the prerequisites
+  for a later automated flow.
+- Slack token rotation. MVP leaves token rotation disabled and stores a
+  long-lived bot token. Refresh-token storage and renewal are deferred with
+  automated OAuth.
 
 ## 2. Identity shape
 
@@ -76,16 +100,21 @@ Mirroring the GitHub App credential-sidecar pattern
 (`src/credential-sidecar.ts`, README "GitHub App credentials"), Slack
 credentials never live in Paperclip plugin state (which is not
 secret-isolated across agents reading the same state blob) and never live in
-the identity config itself. They live in exactly one of two places, same as
-GitHub App keys:
+the identity config itself. The token value lives in a Paperclip company
+secret; the operator-local sidecar stores only its UUID. Slack implementation
+must extend the existing sidecar identity discriminated union so the current
+parser accepts a `slack` member:
 
 ```json
 // operator-local sidecar, default /paperclip/.paperclip/agent-identities/credentials.json
 {
-  "<agent-id>:slack": {
-    "slack": {
-      "botTokenSecretId": "<paperclip-company-secret-uuid-containing-xoxb-token>",
-      "signingSecretId": "<paperclip-company-secret-uuid-containing-signing-secret>"
+  "version": 1,
+  "identities": {
+    "<agent-id>:slack": {
+      "slack": {
+        "botTokenSecretId": "<paperclip-company-secret-uuid-containing-xoxb-token>",
+        "signingSecretId": "<paperclip-company-secret-uuid-containing-signing-secret>"
+      }
     }
   }
 }
@@ -94,20 +123,22 @@ GitHub App keys:
 - `botTokenSecretId`: Paperclip secret reference resolved by `ctx.secrets.resolve`
   just-in-time in `resolveCredential`, exactly like `resolveGitHubCredential`
   resolves the GitHub App private key or fallback token. The bot token
-  (`xoxb-...`) from `oauth.v2.access` is the credential a tool call needs; it
-  is a long-lived bearer token (Slack bot tokens do not expire the way GitHub
-  App installation tokens do), which changes the threat model in §6.
+  (`xoxb-...`) copied after the operator installs the app is the credential a
+  tool call needs. Because MVP explicitly leaves Slack token rotation disabled,
+  it is a long-lived bearer token rather than a short-lived GitHub App-style
+  installation token; that changes the threat model in §9.
 - `signingSecretId`: only needed once ingress (DRO-1005, out of scope here)
   verifies inbound Slack request signatures. Recorded now so the sidecar shape
   does not need a breaking migration when ingress lands.
 
-No `privateKeyFile`-style on-disk fallback for Slack: unlike a GitHub App
-private key (which must be written to disk once, at manifest-conversion time,
-because GitHub returns raw PEM content), Slack's OAuth exchange returns a
-token directly to the settings-page worker action, which should write it
-straight into a Paperclip secret. If a file-based fallback is ever added for
-parity with GitHub, it must go through the same `0600`-owner-only file
-convention and be documented as a fallback, not the default.
+No `privateKeyFile`-style on-disk fallback for Slack. The operator copies the
+installed app's bot token directly into the host's company-secret UI, then
+pastes only the resulting UUID into this plugin's settings form. The plugin
+SDK currently exposes `ctx.secrets.resolve` and the `secrets.read-ref`
+capability, not secret creation, so neither the worker nor the UI claims to
+persist the raw token. If a file fallback is ever added, it must use the same
+`0600` owner-only convention and remain a documented recovery path rather
+than the default.
 
 ## 4. Resource references
 
@@ -125,7 +156,7 @@ export interface SlackChannelRef extends ResourceReference {
 export interface SlackMessageRef extends ResourceReference {
   readonly kind: "slack-message";
   readonly channelId: string;
-  readonly threadTs: string;    // parent message timestamp for a threaded reply
+  readonly messageTs: string;   // exact target message timestamp
 }
 ```
 
@@ -133,19 +164,18 @@ Per the mandatory pipeline order (validate params -> resolve identity ->
 resolve resource ref -> resolve credentials -> perform -> redact), the
 resource-ref resolver runs **before** credential resolution and must:
 
-1. Reject channel identifiers that are not resolvable to a real, distinct
-   Slack channel ID (no wildcard/`*`/empty-string channel targets).
-2. Refuse to resolve a channel the calling agent's identity has no
-   installation-scoped reason to post to. MVP's authorization boundary is
-   the Slack app's OAuth scopes and per-channel invite state (an app must be
-   invited to a private channel to post there) — same "provider permissions
-   decide access, not this plugin" posture the README states for GitHub
-   repos. The resolver's job is param hygiene and fail-closed denial on
-   malformed/missing refs, not re-implementing Slack's ACL.
-3. Never accept a bare, unvalidated string as the final `channelId`/`threadTs`
-   without going through this resolver — this is what makes step 3 sit before
-   step 4 in the pipeline: a bad target must be denied before a token is ever
-   touched.
+1. Reject malformed channel IDs, wildcard/`*`/empty targets, and malformed
+   Slack message timestamps. At this stage "resolution" is syntactic
+   normalization only; authenticated Slack channel lookup is impossible
+   because the token has deliberately not been resolved yet.
+2. Never claim that this pre-credential step proves channel existence,
+   membership, or authorization. The credentialed Slack API call in `perform`
+   enforces workspace scopes and channel membership and must fail closed on
+   `channel_not_found`, `not_in_channel`, or equivalent ACL errors.
+3. Use `messageTs` as the neutral exact-message timestamp. The reply tool maps
+   it to `thread_ts` as the parent to reply under; reaction tools pass it as
+   the exact `timestamp`, which permits reacting to either a root message or a
+   thread reply.
 
 ## 5. Credentials: what resolveCredential returns
 
@@ -154,89 +184,96 @@ export async function resolveSlackCredential(
   input: CredentialResolverInput<SlackAgentIdentity>
 ): Promise<ResolvedCredential> {
   const { identity, ctx } = input;
-  const token = await ctx.secrets.resolve(identity.botTokenSecretId);
+  const sidecarIdentity = await readSlackSidecarIdentity(identity.agentId);
+  const token = await ctx.secrets.resolve(sidecarIdentity.slack.botTokenSecretId);
   return { token, secrets: [token] };
 }
 ```
 
-This mirrors `resolveGitHubCredential` exactly: resolve just-in-time, return
+`readSlackSidecarIdentity` reads and parses the versioned sidecar, looks up
+`identities[getIdentityKey(identity.agentId, "slack")]`, and fails closed if
+the entry or its `slack` member is absent. `botTokenSecretId` is intentionally
+not a field on the public `SlackAgentIdentity` payload.
+
+This mirrors `resolveGitHubCredential` structurally: resolve just-in-time, return
 `{ token, secrets: [token] }` so the pipeline's redact step (step 6) can strip
 `token` from whatever `perform` returns. The one structural difference from
 GitHub: there is no minting step. GitHub mints a short-lived installation
-token per call from a durable private key; Slack's bot token from
-`oauth.v2.access` **is** the durable secret — there is no rotation-on-every-call
-primitive in Slack's bot-token model. That asymmetry is the primary input to
-the threat model in §6.
+token per call from a durable private key; MVP's Slack bot token is itself the
+durable secret. Slack offers optional token rotation, but supporting it would
+require refresh-token storage and renewal and is explicitly deferred. That
+asymmetry is the primary input to the threat model in §9.
 
 ## 6. Tools (MVP)
 
 | Tool | `requiresCredential` | Resource ref | Slack API |
 | --- | --- | --- | --- |
-| `slack_bot_whoami` | `false` | none | `auth.test` |
+| `slack_bot_whoami` | `true` | none | `auth.test` |
 | `slack_bot_post_message` | `true` | `SlackChannelRef` | `chat.postMessage` |
 | `slack_bot_post_reply` | `true` | `SlackMessageRef` | `chat.postMessage` (with `thread_ts`) |
 | `slack_bot_add_reaction` | `true` | `SlackMessageRef` | `reactions.add` |
+| `slack_bot_remove_reaction` | `true` | `SlackMessageRef` | `reactions.remove` |
 
-`slack_bot_whoami` follows the GitHub `githubWhoamiToolSpec` precedent
-exactly: `requiresCredential: false`, so the pipeline skips credential
-resolution and the tool provably never touches a secret — identity checks
-answer "who am I posting as" without minting anything. It should call
-`auth.test` with a token if one is configured for diagnostics, but the
-provider contract's `requiresCredential: false` path means it must work (or
-fail closed with a clear "no identity configured" message) even before any
-credential exists.
+`slack_bot_whoami` is intentionally credentialed even though GitHub's local
+whoami is not: Slack `auth.test` requires the bot token and verifies the live
+installation rather than merely echoing configured metadata. A missing or
+unresolvable secret therefore fails in the shared credential step before the
+API call.
 
 `manifestTools` (the manifest-facing fragments consumed by the composed
 manifest, see `src/providers/github/manifest-tools.ts` for the pattern)
-declares these four tools' Paperclip-facing metadata — names, descriptions,
+declares these five tools' Paperclip-facing metadata — names, descriptions,
 param schemas — with no Slack-specific code in `src/manifest.ts` itself.
 
-## 7. Actions: app manifest + OAuth install flow
+## 7. Actions: app manifest + operator-driven install flow
 
 Slack's app manifest deep link plays the same settings-page role as GitHub's
 App Manifest flow (`contributeGitHubAppManifestActions` /
 `src/providers/github/app-manifest.ts`):
 
-1. Settings page builds a Slack app manifest JSON (bot scopes:
-   `chat:write`, `reactions:write`, `channels:read` at minimum for MVP's
-   tool set; no `channels:history`/`groups:history`/message-content scopes
-   until ingress, DRO-1005, needs them) and opens
+1. Settings page builds a Slack app manifest JSON with the minimum bot scopes
+   `chat:write`, `reactions:write`, `channels:read`, and `groups:read`, then opens
    `https://api.slack.com/apps?new_app=1&manifest_json=<url-encoded-manifest>`.
+   `groups:read` permits private-channel metadata lookup for channels the app
+   has been invited to; the app still cannot post to a private channel without
+   membership. MVP does not request `chat:write.public`, so it cannot bypass
+   public-channel membership, and it does not request history or
+   message-content scopes.
 2. Operator reviews and confirms app creation in Slack's UI (Slack, unlike
    GitHub's manifest flow, does not silently auto-create — this is a required
    manual step, not an optional review; the settings UI copy must say so).
-3. Operator (or the app's own "Install to Workspace" button) drives OAuth
-   installation; Slack redirects back to a plugin `setup_url`-equivalent
-   worker action with a `code` param.
-4. Worker action exchanges `code` via `oauth.v2.access`, receives
-   `access_token` (bot token), `team.id`, `bot_user_id`, `app_id`. It writes
-   the bot token straight to a Paperclip secret (never to a file, see §3),
-   and returns the public fields (`teamId`, `botUserId`, `appId`) to prefill
-   the identity form — exactly the "prefill App ID / Installation ID" UX
-   GitHub's flow already has.
-5. Saving the identity patches the sidecar credential reference and (if
-   Slack tooling needs an env-var-visible ID for parity with
-   `GITHUB_APP_ID`/`GITHUB_INSTALLATION_ID`) writes non-secret `SLACK_TEAM_ID`/
-   `SLACK_APP_ID` into the selected agent's environment — never the bot token
-   itself as a raw env var; the token stays in the secret store and is
-   resolved just-in-time by `resolveSlackCredential`.
+3. Operator uses Slack's app-management UI to install the app to the intended
+   workspace, then copies the Bot User OAuth Token shown by Slack.
+4. Operator creates a Paperclip company secret through the host UI, stores the
+   bot token there, and copies the resulting secret UUID. The plugin never
+   receives the raw token through its settings action.
+5. Operator enters `teamId`, `botUserId`, `appId`, and `botTokenSecretId` in
+   the Slack identity form. Saving dispatches through the provider-owned
+   persistence normalizer described in §1, writes the public identity variant
+   to settings state, and writes the UUID under the Slack sidecar entry.
 
-Slack app manifests are also subject to a documented **12-hour configuration
-token expiry** on the App Manifest APIs (per DRO-995's research scope) — the
-settings-page flow must treat manifest-token expiry as an expected failure
-mode with a clear "restart app creation" recovery path, not an unhandled
-error.
+The `manifest_json` UI deep link uses no Slack configuration token, so the
+12-hour configuration-token expiry does not apply to this MVP flow. A future
+automation that calls `apps.manifest.create`/`apps.manifest.update` must handle
+that expiry explicitly.
+
+Automated OAuth is deferred. Before it can replace steps 3-5, the host and
+plugin must provide: a public callback URL, secure `client_id` and
+`client_secret` storage/retrieval for `oauth.v2.access`, redirect-URI matching,
+cryptographically random single-use `state`, and a host-supported secret-write
+API. The current SDK offers secret resolution only; documenting a code exchange
+without those prerequisites would describe an unimplementable flow.
 
 ## 8. UI contribution
 
-Settings page adds a Slack identity form beside the GitHub form (both driven
-by the same provider-registry-backed identity list — no `if (provider ===
-"slack")` branch in `SettingsPage.tsx` logic beyond what already
-differentiates per-provider field sets, matching how GitHub's fields are
-already isolated from a generic identity list). Minimum fields: team,
-app, and bot-user read-only display (post-install), a "Create Slack App"
-button (manifest deep link), an "Install to Workspace" button/link
-(post-manifest-creation), and a default-channel picker (optional, §2).
+Settings page adds a Slack identity form beside the GitHub form. This requires
+extending the UI's provider-discriminated form model; the runtime provider
+registry does not currently generate settings forms. Minimum fields are team
+ID, app ID, bot-user ID, bot-token secret UUID, and optional default channel,
+plus a "Create Slack App" manifest-deep-link button and operator instructions
+for installation and host secret creation. The form submits the Slack variant
+to the provider-owned persistence normalizer from §1. It must never accept or
+render the raw `xoxb-` token.
 
 ## 9. Threat model
 
@@ -245,10 +282,11 @@ must uphold: validate params -> resolve identity -> resolve resource ref ->
 resolve credentials -> perform -> redact. Each threat below names which step
 is the control point.
 
-### T1 — Long-lived bot token compromise (no just-in-time minting)
-**Risk:** unlike GitHub's short-lived installation tokens, a compromised
-Slack bot token is valid until manually rotated — there is no automatic
-expiry to bound blast radius.
+### T1 — Long-lived bot token compromise (MVP rotation decision)
+**Risk:** Slack supports optional token rotation, but MVP deliberately leaves
+it disabled because the current credential model has no refresh-token storage
+or renewal path. Unlike GitHub's short-lived installation tokens, an MVP bot
+token therefore remains valid until revoked or manually rotated.
 **Mitigation:** treat the bot token as the single most sensitive artifact in
 the Slack credential path. Store only as a Paperclip secret reference
 (`botTokenSecretId`), resolved just-in-time in step 4, never persisted to a
@@ -290,18 +328,14 @@ as GitHub reliance rests on App installation scope, and document this
 explicitly so a future operator does not assume the plugin enforces a
 channel allowlist it does not.
 
-### T4 — Manifest/OAuth callback hijack
-**Risk:** the settings-page OAuth callback (`code` exchange, §7 step 4) is a
-web-facing endpoint; a forged callback or replayed `code` could bind a
-different Slack app's token to an agent's identity.
-**Mitigation:** reuse Slack's `state` parameter in the OAuth authorize URL
-(cryptographically random, single-use, tied to the settings-page session)
-exactly as CSRF protection is expected in any OAuth 2 code-exchange flow;
-verify `state` before completing token exchange. This is new work relative
-to GitHub's App Manifest flow (which uses a one-time code without an
-explicit `state` requirement because it never traverses a public OAuth
-redirect) and should be a named acceptance criterion on the OAuth-install
-implementation issue, not assumed to fall out of "copy the GitHub flow."
+### T4 — Future OAuth callback hijack
+**Risk:** automated OAuth is out of MVP scope, but a later web-facing callback
+could bind a forged or replayed authorization code to the wrong agent.
+**Mitigation (future acceptance criterion):** generate a cryptographically
+random, single-use Slack OAuth `state` tied to the settings session and target
+agent; verify it before any code exchange. Store client credentials outside
+plugin state and require an exact registered redirect URI. The operator-driven
+MVP has no callback endpoint and therefore does not expose this attack surface.
 
 ### T5 — Signing-secret / ingress abuse (deferred but shape-relevant)
 **Risk:** out of MVP scope (§1), but the sidecar shape in §3 already reserves
@@ -319,9 +353,10 @@ flags the requirement so DRO-1005 does not have to re-derive it.
 ("never place Slack config tokens... in agent config, workspaces, tool
 output, issue comments, logs, or git").
 **Mitigation:** enforced structurally, not just by policy: `perform` returns
-only what `chat.postMessage`/`reactions.add`/`auth.test` need to report
+only what `chat.postMessage`/`reactions.add`/`reactions.remove`/`auth.test` need to report
 (message ts, channel id, ok/error) and the pipeline's redact step scrubs
-`token` from that return value regardless. Tests should assert no test
+`token` from that return value regardless. Reactions include both add and
+remove paths. Tests should assert no test
 fixture ever contains a real-shaped Slack token pattern (`xoxb-`, `xoxp-`)
 being written to a comment, log, or committed file — same discipline as
 existing credential tests for GitHub App keys.
@@ -332,9 +367,12 @@ existing credential tests for GitHub App keys.
   save time (extra Slack API call from the settings page) or left
   unvalidated until first tool use? Recommend the latter for MVP — avoids a
   settings-page dependency on a valid token merely to edit the field.
-- Rate limiting: Slack's tiered rate limits (`chat.postMessage` is Tier 3,
-  roughly 1/sec sustained per workspace) are not addressed in this record.
-  Recommend a follow-up issue if agents are expected to post at volume.
+- Rate limiting: `chat.postMessage` is a special-tier method allowing roughly
+  one message per second per channel, with additional workspace-wide limits.
+  Implement throttling per channel, honor `Retry-After`, and retain a
+  workspace-wide backstop rather than serializing all channels through one
+  one-request-per-second queue. Track the concrete scheduler as follow-up work
+  if agents are expected to post at volume.
 - Multi-workspace support (§1, explicitly deferred) will need a
   `teamId`-qualified identity key (`${agentId}:slack:${teamId}`) if it is
   ever added; flagging now so the identity-key format decision is made

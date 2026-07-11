@@ -16,8 +16,12 @@ itself add a provider.
   the operator opens `https://api.slack.com/apps?new_app=1&manifest_json=<url-encoded manifest>`,
   reviews the manifest Slack renders, picks the target workspace, and clicks
   **Create**. Slack then walks the operator through installing the app to the workspace, which
-  produces the bot token. This requires no Slack credential of any kind inside Paperclip's
-  config, workspace, or logs — only a URL our plugin generates.
+  produces the bot token (and, per the canonical manifest, a signing secret). This install
+  sequence itself requires no Slack credential of any kind inside Paperclip's config, workspace,
+  or logs — only a URL our plugin generates. The resulting bot token and signing secret are still
+  mandatory downstream artifacts: the operator must copy them into a Paperclip company secret and
+  record only that secret's UUID in the credential sidecar (see "Downstream assumptions" and the
+  shareable-vs-secret table below) before any Slack tool can resolve credentials.
   Source: [App manifests overview](https://api.slack.com/reference/manifests) (documents the
   `manifest_json` query-string param on `api.slack.com/apps?new_app=1`).
 - **Event transport: HTTP Events API (Request URL), not Socket Mode.** Rejected Socket Mode for
@@ -34,16 +38,25 @@ itself add a provider.
 | Concern | HTTP Events API | Socket Mode |
 | --- | --- | --- |
 | Transport | Slack POSTs events to a public HTTPS Request URL | App opens an outbound WebSocket via `apps.connections.open` |
-| Credential needed | Signing secret (verify `X-Slack-Signature` / `X-Slack-Request-Timestamp`) | Signing secret **plus** an app-level token (`xapp-...`, `connections:write` scope) |
+| Credential needed | Signing secret (verify `X-Slack-Signature` / `X-Slack-Request-Timestamp`) | App-level token (`xapp-...`, `connections:write` scope); events are authenticated via that token over the WebSocket, not HTTP request-signature verification, so the signing secret is not itself a Socket Mode transport credential |
 | Marketplace / distribution | Supported for public distribution | **Not supported for Slack Marketplace apps** |
 | Infra requirement | Needs a reachable HTTPS endpoint | No public endpoint needed; app dials out |
 | Reconnect/ack model | Standard HTTP 200 ack within 3s; retries on non-2xx/timeout | Must ack each message over the socket and handle `disconnect`/reconnect frames, hello, and periodic re-opens |
 
-Since agent identities already run behind a Paperclip-hosted worker capable of exposing HTTPS
-routes (mirroring how the GitHub provider already terminates its own webhook/OAuth redirect
-paths), the HTTP Events API avoids a second credential class (app-level token) and keeps the
-Marketplace/distribution door open. Socket Mode is documented as a fallback for operators in
-constrained network environments, gated as an explicit opt-in.
+Agent identities run behind a Paperclip-hosted worker, but that worker does not currently expose
+any public inbound HTTP route or webhook: today's manifest only declares `http.outbound`, the
+provider contract exposes tools/actions with no inbound-route hook, and the GitHub App flow
+returns through the settings UI without configuring a webhook
+(`openwiki/domain/agent-identities.md:151-175`). A public HTTPS Request URL for Slack Events API
+ingress is therefore an **unimplemented prerequisite**, not an existing capability Slack can
+mirror — it requires new inbound-routing infrastructure in the plugin/worker contract before any
+Events API subscription can be added. That infrastructure gap does not change the transport
+*decision* below (HTTP Events API over Socket Mode once ingress exists), but it means Events API
+subscriptions (including `app_mention`) are out of MVP scope until the prerequisite ships (see
+§10/"Inbound events" scoping in the follow-on design record). Socket Mode is documented here as a
+fallback for operators in constrained network environments, gated as an explicit opt-in, and does
+not depend on this missing inbound-routing prerequisite since it dials out rather than receiving
+inbound HTTP.
 
 Sources:
 [Using Socket Mode](https://api.slack.com/apis/socket-mode) (app-level token requirement,
@@ -84,7 +97,7 @@ Source: [App Manifest APIs / Configuration tokens](https://api.slack.com/referen
 | Posting messages | `chat:write` | Core scope; also required for threaded replies (same scope, pass `thread_ts`). |
 | Threaded replies | `chat:write` | No separate scope; thread targeting is a message parameter, not a scope. |
 | Reactions | `reactions:write` | Add/remove emoji reactions. |
-| Inbound mentions | `app_mentions:read` (Events API subscription `app_mention`) | Requires the bot to be a member of the channel to receive channel messages generally; mentions fire regardless once subscribed. |
+| Inbound mentions | `app_mentions:read` (Events API subscription `app_mention`) | Requires the bot to already be a member of the conversation to receive it, or — for the specific inciting mention only — the user's mention to trigger an invitation flow the bot must accept; an app that is not a member and does not accept the invite receives no event. This is not unconditional coverage. |
 | (Optional) join channels itself | `channels:join` | Only if the agent should self-invite rather than be invited by an operator/user. |
 
 This is the **minimum** set for identity check → find channel → post → thread-reply → react →
@@ -128,6 +141,7 @@ Sources: [Installing with OAuth](https://api.slack.com/authentication/oauth-v2);
 | Requested/granted scope names | Bot token (`xoxb-...`), user token (`xoxp-...`) |
 | Redirect URI values | App-level token (`xapp-...`) |
 | Install timestamp, app name/description/icon | App configuration token + configuration refresh token |
+| | OAuth bot/user **refresh tokens** — if `token_rotation_enabled: true` is used, these are bearer credentials that mint new access tokens and must be protected with the same rigor as the access token itself, not treated as install metadata |
 | | OAuth `state` value (short-lived secret, not long-term credential material but must not be logged) |
 
 ## Canonical manifest template (MVP: HTTP Events API, no Socket Mode)
@@ -159,14 +173,19 @@ settings:
     is_enabled: false
   org_deploy_enabled: false
   socket_mode_enabled: false
-  token_rotation_enabled: true
+  token_rotation_enabled: false
 ```
 
 Notes:
 
-- `token_rotation_enabled: true` opts the resulting bot token into Slack's OAuth token rotation
-  (short-lived access token + refresh token), matching the "no long-lived Slack credential at
-  rest" preference already used for the GitHub App installation-token model in this repo.
+- `token_rotation_enabled: false`. Setting this to `true` is an irreversible, one-way app setting
+  that makes newly issued bot access tokens expire after 12 hours and requires the app to
+  implement refresh-token persistence and renewal via `oauth.v2.access`. The MVP explicitly has
+  no refresh-token implementation (no storage, no renewal scheduler, no client-credential
+  handling); enabling rotation against this template would produce an app whose bot token stops
+  working after 12 hours with no code path to renew it. Keep rotation off until the refresh
+  lifecycle (client credentials, expiry tracking, atomic dual-token renewal) is designed and
+  tested, then flip this flag as part of that follow-up work — not before.
 - `socket_mode_enabled: false` and no `app_level_token` scopes keeps the app Marketplace-eligible
   and avoids a second credential class.
 - `{{agentLabel}}`, `{{workerHost}}` are template placeholders filled by our composition layer at
@@ -200,8 +219,10 @@ above, including `socket_mode_enabled` and `token_rotation_enabled`).
 
 - A Slack provider module under `src/providers/slack/` (manifest builder, OAuth callback handler,
   event Request URL handler, credential sidecar entry) composed through
-  `src/providers/index.ts`, mirroring the existing GitHub provider extraction described in
-  `openwiki/domain/agent-identities.md` and the provider-adapter workflow doc.
+  `src/providers/index.ts`, mirroring the existing GitHub provider composition-root pattern
+  described in `openwiki/domain/agent-identities.md` (there is no separate provider-adapter
+  workflow document; this is the authoritative reference for the provider contract and
+  composition pattern).
 - A settings-UI step to generate the per-agent manifest deep link (reusing the existing GitHub
   App-manifest-flow UI pattern in `src/ui/SettingsPage.tsx`).
 - Storage of Slack install metadata (team ID, app ID, bot user ID) in the public identity config

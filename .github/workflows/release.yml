@@ -149,7 +149,7 @@ jobs:
           fi
 
       - name: Dispatch npm publication
-        if: ${{ steps.version.outputs.should_release == 'true' && steps.identity.outputs.already_published != 'true' }}
+        if: ${{ steps.version.outputs.should_release == 'true' }}
         env:
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}

@@ -4,36 +4,20 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: "Release increment. Patch is automatic on main; minor and major are manual only."
-        required: true
-        default: patch
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
 
 permissions:
   contents: write
-
-concurrency:
-  group: create-release-main
-  cancel-in-progress: false
+  actions: write
 
 jobs:
-  create-release:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      !startsWith(github.event.head_commit.message, 'chore(release):')
+  release:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out main
+      - name: Check out merged commit
         uses: actions/checkout@v4
         with:
-          ref: main
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -47,63 +31,59 @@ jobs:
           corepack enable
           corepack prepare pnpm@10.17.1 --activate
 
-      - name: Determine the next release version
+      - name: Detect a version change
         id: version
         env:
-          BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.bump || 'patch' }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          node <<'NODE'
-          const fs = require('node:fs');
-          const bump = process.env.BUMP;
-          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const match = packageJson.version.match(/^(\d+)\.(\d+)\.(\d+)$/);
-          if (!match) {
-            throw new Error(`package.json version '${packageJson.version}' must be a stable major.minor.patch version`);
+          VERSION="$(node -p "require('./package.json').version")"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "package.json version '$VERSION' must be a stable major.minor.patch version." >&2
+            exit 1
+          fi
+          PREVIOUS_VERSION=""
+          if [[ ! "$BEFORE_SHA" =~ ^0+$ ]] && git cat-file -e "${BEFORE_SHA}:package.json" 2>/dev/null; then
+            PREVIOUS_VERSION="$(git show "${BEFORE_SHA}:package.json" | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version || "")')"
+          fi
+          if [[ -n "$PREVIOUS_VERSION" && "$PREVIOUS_VERSION" == "$VERSION" ]]; then
+            echo "Version unchanged at $VERSION; skipping release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          MANIFEST_VERSION="$(node -e 'const fs=require("fs"); const match=fs.readFileSync("src/manifest.ts", "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
+          if [[ "$MANIFEST_VERSION" != "$VERSION" ]]; then
+            echo "src/manifest.ts version '$MANIFEST_VERSION' must match package.json version '$VERSION'." >&2
+            exit 1
+          fi
+          if [[ -n "$PREVIOUS_VERSION" ]]; then
+            if node - "$PREVIOUS_VERSION" "$VERSION" <<'NODE'
+          const parse = (value) => {
+            const match = value.match(/^(\d+)\.(\d+)\.(\d+)$/);
+            if (!match) throw new Error(`Invalid stable version: ${value}`);
+            return match.slice(1).map(Number);
+          };
+          const previous = parse(process.argv[2]);
+          const current = parse(process.argv[3]);
+          for (let index = 0; index < previous.length; index += 1) {
+            if (current[index] > previous[index]) process.exit(0);
+            if (current[index] < previous[index]) process.exit(1);
           }
-          let [major, minor, patch] = match.slice(1).map(Number);
-          if (bump === 'major') {
-            major += 1; minor = 0; patch = 0;
-          } else if (bump === 'minor') {
-            minor += 1; patch = 0;
-          } else if (bump === 'patch') {
-            patch += 1;
-          } else {
-            throw new Error(`Unsupported release bump '${bump}'`);
-          }
-          const version = `${major}.${minor}.${patch}`;
-          packageJson.version = version;
-          fs.writeFileSync('package.json', `${JSON.stringify(packageJson, null, 2)}\n`);
-          const manifestPath = 'src/manifest.ts';
-          const manifest = fs.readFileSync(manifestPath, 'utf8');
-          const updatedManifest = manifest.replace(/version: "[^"]+"/, `version: "${version}"`);
-          if (updatedManifest === manifest) {
-            throw new Error(`Unable to update the plugin manifest version in ${manifestPath}`);
-          }
-          fs.writeFileSync(manifestPath, updatedManifest);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=v${version}\n`);
+          process.exit(1);
           NODE
-
-      - name: Update the lockfile for the release version
-        run: pnpm install --lockfile-only --ignore-scripts
-
-      - name: Verify the release is new
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "Tag '${TAG}' already exists." >&2
-            exit 1
+            then
+              :
+            else
+              echo "Version '$VERSION' must be greater than previous version '$PREVIOUS_VERSION'." >&2
+              exit 1
+            fi
           fi
-          if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-            echo "${PACKAGE_NAME}@${VERSION} is already published to npm." >&2
-            exit 1
-          fi
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Validate release build
+      - name: Validate release package
+        if: ${{ steps.version.outputs.should_release == 'true' }}
         run: |
           pnpm install --frozen-lockfile
           pnpm typecheck
@@ -111,22 +91,67 @@ jobs:
           pnpm build
           pnpm pack --pack-destination .
 
-      - name: Commit and tag the release
+      - name: Verify release identity
+        id: identity
+        if: ${{ steps.version.outputs.should_release == 'true' }}
         env:
+          TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          EXISTING_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk 'NR == 1 { print $1 }')"
+          if [[ -z "$EXISTING_TAG_SHA" ]]; then
+            EXISTING_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk 'NR == 1 { print $1 }')"
+          fi
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          LOOKUP_ERROR="$(mktemp)"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>"$LOOKUP_ERROR"; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            rm -f "$LOOKUP_ERROR"
+            if [[ -z "$EXISTING_TAG_SHA" ]]; then
+              echo "${PACKAGE_NAME}@${VERSION} is already published but '${TAG}' does not exist." >&2
+              exit 1
+            fi
+          else
+            LOOKUP_STATUS=$?
+            if ! grep -q 'E404' "$LOOKUP_ERROR"; then
+              cat "$LOOKUP_ERROR" >&2
+              rm -f "$LOOKUP_ERROR"
+              exit "$LOOKUP_STATUS"
+            fi
+            rm -f "$LOOKUP_ERROR"
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ -n "$EXISTING_TAG_SHA" && "$EXISTING_TAG_SHA" != "$GITHUB_SHA" ]]; then
+            echo "Existing tag '${TAG}' points to '${EXISTING_TAG_SHA}', not '${GITHUB_SHA}'." >&2
+            exit 1
+          fi
+          echo "tag_exists=$([[ -n "$EXISTING_TAG_SHA" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the merged commit
+        if: ${{ steps.version.outputs.should_release == 'true' && steps.identity.outputs.tag_exists != 'true' }}
+        env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json pnpm-lock.yaml src/manifest.ts
-          git commit -m "chore(release): v${VERSION}"
-          git tag -a "$TAG" -m "Release v${VERSION}"
-          git push --atomic origin HEAD:main "refs/tags/${TAG}"
+          git tag -a "$TAG" "$GITHUB_SHA" -m "Release $TAG"
+          git push origin "refs/tags/${TAG}"
 
       - name: Create GitHub Release
+        if: ${{ steps.version.outputs.should_release == 'true' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+          fi
+
+      - name: Dispatch npm publication
+        if: ${{ steps.version.outputs.should_release == 'true' }}
+        env:
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
-        run: gh release create "$TAG" --title "$TAG" --generate-notes
+        run: |
+          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref main -f dry_run=false -f ref="$TAG"

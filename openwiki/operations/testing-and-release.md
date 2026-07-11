@@ -121,13 +121,13 @@ The Pages artifact is `openwiki/.vitepress/dist`. OpenWiki itself still writes M
 
 ## Release automation
 
-`.github/workflows/release.yml` creates public releases from `main`:
+`.github/workflows/release.yml` releases version changes merged to `main`:
 
-- Every qualifying push to `main` automatically increments the package patch version by one, commits `package.json` and `pnpm-lock.yaml`, tags the commit, creates a GitHub Release, and dispatches npm publication.
-- The release-generated commit is excluded from the automatic trigger, preventing a release loop.
-- Minor and major releases are manual only. Run **Create Release** with `bump: minor` or `bump: major` from GitHub Actions.
-- `.github/workflows/publish.yml` publishes only a release tag. It can also be dispatched with `dry_run: true` to validate npm packaging without publication.
-- Both workflows re-run typecheck, tests, and the production build before publication. Publishing requires the repository `NPM_TOKEN` secret.
+- Every push to `main` compares the current `package.json` version with the previous commit. If unchanged, the workflow exits successfully without tagging or publishing.
+- Version bumps are explicit normal pull-request changes. CI requires a canonical SemVer version greater than the base revision whenever `package.json` changes. Update the intended patch, minor, or major version in both `package.json` and `src/manifest.ts` before merging.
+- When the version changed, the workflow verifies package/manifest parity, runs typecheck, tests, build, and pack, requires a greater stable version, then tags the exact merged SHA and creates a GitHub Release. Regular CI enforces package/manifest parity even when a release is skipped.
+- `.github/workflows/publish.yml` receives that immutable stable tag and validates matching package/manifest versions before publishing. Each version publishes under `previous` first; after every publish run, the current `main` version is promoted to npm `latest` only once that exact version exists in the registry. It can be dispatched with `dry_run: true` to validate a tag without publication.
+- The release workflow never increments versions and never writes to `main`. Publishing requires the repository `NPM_TOKEN` secret.
 
 If changing release automation, inspect `.github/workflows/` directly and update README/OpenWiki together.
 

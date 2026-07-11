@@ -232,9 +232,10 @@ jobs:
           jq -n \
             --arg branch "$BRANCH" \
             --arg mergeCommit "$RELEASE_SHA" \
+            --arg prNumber "$PR_NUMBER" \
             --arg version "$VERSION" \
             --arg tag "$TAG" \
-            '{event_type:"finalize-release",client_payload:{branch:$branch,merge_commit:$mergeCommit,version:$version,tag:$tag}}' \
+            '{event_type:"finalize-release",client_payload:{branch:$branch,merge_commit:$mergeCommit,pr_number:$prNumber,version:$version,tag:$tag}}' \
             | gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input -
 
   finalize-release:
@@ -246,6 +247,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.pr_number || github.event.pull_request.number }}
       RELEASE_BRANCH: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.branch || github.event.pull_request.head.ref }}
       RELEASE_SHA: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.merge_commit || github.event.pull_request.merge_commit_sha }}
       EXPECTED_VERSION: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.version || '' }}
@@ -274,13 +276,26 @@ jobs:
             echo "Release dispatch tag '${EXPECTED_TAG}' does not match '${TAG}'." >&2
             exit 1
           fi
+          PR_DATA="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,headRefName,baseRefName,mergeCommit)"
+          PR_STATE="$(jq -r '.state' <<<"$PR_DATA")"
+          PR_HEAD="$(jq -r '.headRefName' <<<"$PR_DATA")"
+          PR_BASE="$(jq -r '.baseRefName' <<<"$PR_DATA")"
+          PR_MERGE_SHA="$(jq -r '.mergeCommit.oid // empty' <<<"$PR_DATA")"
+          if [[ "$PR_STATE" != "MERGED" || "$PR_HEAD" != "$RELEASE_BRANCH" || "$PR_BASE" != "main" || "$PR_MERGE_SHA" != "$RELEASE_SHA" ]]; then
+            echo "Finalizer payload does not match the merged release PR #${PR_NUMBER}." >&2
+            exit 1
+          fi
           gh auth setup-git
           git init --quiet release
           cd release
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch origin "$RELEASE_SHA" --tags
+          git fetch --no-tags origin main "$RELEASE_SHA"
+          if ! git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
+            echo "Release commit '${RELEASE_SHA}' is not contained in main." >&2
+            exit 1
+          fi
           ACTUAL_VERSION="$(git show "${RELEASE_SHA}:package.json" | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
           if [[ "$ACTUAL_VERSION" != "$VERSION" ]]; then
             echo "Release commit has version '${ACTUAL_VERSION}', expected '${VERSION}'." >&2

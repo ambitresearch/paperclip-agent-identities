@@ -312,7 +312,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.finalize_pr != '')
     runs-on: ubuntu-latest
     concurrency:
-      group: finalize-release-${{ github.event_name == 'workflow_dispatch' && inputs.finalize_pr || github.event_name == 'repository_dispatch' && github.event.client_payload.branch || github.event.pull_request.head.ref }}
+      group: finalize-release-${{ github.event_name == 'workflow_dispatch' && inputs.finalize_pr || github.event_name == 'repository_dispatch' && github.event.client_payload.pr_number || github.event.pull_request.number }}
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
@@ -335,14 +335,15 @@ jobs:
             echo "A merged release PR number is required for finalization." >&2
             exit 1
           fi
-          PR_DATA="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,headRefName,baseRefName,mergeCommit)"
+          PR_DATA="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,headRefName,baseRefName,mergeCommit,isCrossRepository)"
           PR_STATE="$(jq -r '.state' <<<"$PR_DATA")"
           RELEASE_BRANCH="$(jq -r '.headRefName' <<<"$PR_DATA")"
           PR_BASE="$(jq -r '.baseRefName' <<<"$PR_DATA")"
+          PR_MERGE_FROM_FORK="$(jq -r '.isCrossRepository' <<<"$PR_DATA")"
           RELEASE_SHA="$(jq -r '.mergeCommit.oid // empty' <<<"$PR_DATA")"
           VERSION="${RELEASE_BRANCH#release/v}"
           TAG="v${VERSION}"
-          if [[ "$PR_STATE" != "MERGED" || "$PR_BASE" != "main" || ! "$RELEASE_BRANCH" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ || -z "$RELEASE_SHA" ]]; then
+          if [[ "$PR_STATE" != "MERGED" || "$PR_MERGE_FROM_FORK" != "false" || "$PR_BASE" != "main" || ! "$RELEASE_BRANCH" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ || -z "$RELEASE_SHA" ]]; then
             echo "PR #${PR_NUMBER} is not a merged release PR for main." >&2
             exit 1
           fi

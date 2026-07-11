@@ -42,11 +42,6 @@ jobs:
             echo "package.json version '$VERSION' must be a stable major.minor.patch version." >&2
             exit 1
           fi
-          MANIFEST_VERSION="$(node -e 'const fs=require("fs"); const match=fs.readFileSync("src/manifest.ts", "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
-          if [[ "$MANIFEST_VERSION" != "$VERSION" ]]; then
-            echo "src/manifest.ts version '$MANIFEST_VERSION' must match package.json version '$VERSION'." >&2
-            exit 1
-          fi
           PREVIOUS_VERSION=""
           if [[ ! "$BEFORE_SHA" =~ ^0+$ ]] && git cat-file -e "${BEFORE_SHA}:package.json" 2>/dev/null; then
             PREVIOUS_VERSION="$(git show "${BEFORE_SHA}:package.json" | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version || "")')"
@@ -55,6 +50,33 @@ jobs:
             echo "Version unchanged at $VERSION; skipping release."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          MANIFEST_VERSION="$(node -e 'const fs=require("fs"); const match=fs.readFileSync("src/manifest.ts", "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
+          if [[ "$MANIFEST_VERSION" != "$VERSION" ]]; then
+            echo "src/manifest.ts version '$MANIFEST_VERSION' must match package.json version '$VERSION'." >&2
+            exit 1
+          fi
+          if [[ -n "$PREVIOUS_VERSION" ]]; then
+            if node - "$PREVIOUS_VERSION" "$VERSION" <<'NODE'
+          const parse = (value) => {
+            const match = value.match(/^(\d+)\.(\d+)\.(\d+)$/);
+            if (!match) throw new Error(`Invalid stable version: ${value}`);
+            return match.slice(1).map(Number);
+          };
+          const previous = parse(process.argv[2]);
+          const current = parse(process.argv[3]);
+          for (let index = 0; index < previous.length; index += 1) {
+            if (current[index] > previous[index]) process.exit(0);
+            if (current[index] < previous[index]) process.exit(1);
+          }
+          process.exit(1);
+          NODE
+            then
+              :
+            else
+              echo "Version '$VERSION' must be greater than previous version '$PREVIOUS_VERSION'." >&2
+              exit 1
+            fi
           fi
           echo "should_release=true" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"

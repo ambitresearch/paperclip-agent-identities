@@ -125,8 +125,8 @@ The Pages artifact is `openwiki/.vitepress/dist`. OpenWiki itself still writes M
 
 - Every push to `main` compares the current `package.json` version with the previous commit. If unchanged, the workflow exits successfully without tagging or publishing.
 - Version bumps are explicit normal pull-request changes. Update the intended patch, minor, or major version in both `package.json` and `src/manifest.ts` before merging.
-- When the version changed, the workflow verifies package/manifest parity, runs typecheck, tests, build, and pack, then tags the exact merged SHA and creates a GitHub Release.
-- `.github/workflows/publish.yml` receives that immutable stable tag and validates matching package/manifest versions before publishing. It can be dispatched with `dry_run: true` to validate a tag without publication.
+- When the version changed, the workflow verifies package/manifest parity, runs typecheck, tests, build, and pack, requires a greater stable version, then tags the exact merged SHA and creates a GitHub Release.
+- `.github/workflows/publish.yml` receives that immutable stable tag and validates matching package/manifest versions before publishing. If out-of-order release runs overlap, older versions are published under `previous` rather than moving npm `latest` backward. It can be dispatched with `dry_run: true` to validate a tag without publication.
 - The release workflow never increments versions and never writes to `main`. Publishing requires the repository `NPM_TOKEN` secret.
 
 If changing release automation, inspect `.github/workflows/` directly and update README/OpenWiki together.

@@ -23,6 +23,11 @@ on:
           - patch
           - minor
           - major
+      finalize_pr:
+        description: "Merged release PR number to finalize after a recoverable dispatch failure"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -34,6 +39,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' &&
       github.event_name != 'repository_dispatch' &&
+      (github.event_name != 'workflow_dispatch' || inputs.finalize_pr == '') &&
       (github.event_name == 'workflow_dispatch' ||
       !startsWith(github.event.head_commit.message, 'chore(release):'))
     runs-on: ubuntu-latest
@@ -218,6 +224,12 @@ jobs:
               echo "Release PR #${PR_NUMBER} has ${OPEN_THREADS} unresolved review thread(s)." >&2
               exit 1
             fi
+            HEAD_PACKAGE_VERSION="$(gh api "repos/${GITHUB_REPOSITORY}/contents/package.json?ref=${HEAD_OID}" --jq .content | base64 --decode | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
+            HEAD_MANIFEST_VERSION="$(gh api "repos/${GITHUB_REPOSITORY}/contents/src/manifest.ts?ref=${HEAD_OID}" --jq .content | base64 --decode | node -e 'const fs=require("fs"); const match=fs.readFileSync(0, "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
+            if [[ "$HEAD_PACKAGE_VERSION" != "$VERSION" || "$HEAD_MANIFEST_VERSION" != "$VERSION" ]]; then
+              echo "Release PR #${PR_NUMBER} head metadata does not match version '${VERSION}'." >&2
+              exit 1
+            fi
             if [[ "$COPILOT_REVIEWS" -gt 0 && "$OPEN_THREADS" -eq 0 && "$CHECK_COUNT" -gt 0 && "$SUCCESSFUL_CHECKS" -gt 0 && "$PENDING_CHECKS" -eq 0 ]]; then
               echo "head_oid=${HEAD_OID}" >> "$GITHUB_OUTPUT"
               exit 0
@@ -257,23 +269,25 @@ jobs:
             --arg version "$VERSION" \
             --arg tag "$TAG" \
             '{event_type:"finalize-release",client_payload:{branch:$branch,merge_commit:$mergeCommit,pr_number:$prNumber,version:$version,tag:$tag}}' \
-            | gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input -
+            | gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input - || \
+            gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref main -f bump=patch -f finalize_pr="$PR_NUMBER"
 
   finalize-release:
     if: >-
       (github.event_name == 'pull_request' &&
       github.event.pull_request.merged == true &&
       startsWith(github.event.pull_request.head.ref, 'release/v')) ||
-      (github.event_name == 'repository_dispatch' && github.event.action == 'finalize-release')
+      (github.event_name == 'repository_dispatch' && github.event.action == 'finalize-release') ||
+      (github.event_name == 'workflow_dispatch' && inputs.finalize_pr != '')
     runs-on: ubuntu-latest
     concurrency:
-      group: finalize-release-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.branch || github.event.pull_request.head.ref }}
+      group: finalize-release-${{ github.event_name == 'workflow_dispatch' && inputs.finalize_pr || github.event_name == 'repository_dispatch' && github.event.client_payload.branch || github.event.pull_request.head.ref }}
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
-      PR_NUMBER: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.pr_number || github.event.pull_request.number }}
-      RELEASE_BRANCH: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.branch || github.event.pull_request.head.ref }}
-      RELEASE_SHA: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.merge_commit || github.event.pull_request.merge_commit_sha }}
+      PR_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.finalize_pr || github.event_name == 'repository_dispatch' && github.event.client_payload.pr_number || github.event.pull_request.number }}
+      PAYLOAD_BRANCH: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.branch || '' }}
+      PAYLOAD_SHA: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.merge_commit || '' }}
       EXPECTED_VERSION: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.version || '' }}
       EXPECTED_TAG: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.tag || '' }}
     steps:
@@ -286,10 +300,27 @@ jobs:
       - name: Tag and publish the exact merged release commit
         run: |
           set -euo pipefail
+          if [[ -z "$PR_NUMBER" ]]; then
+            echo "A merged release PR number is required for finalization." >&2
+            exit 1
+          fi
+          PR_DATA="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,headRefName,baseRefName,mergeCommit)"
+          PR_STATE="$(jq -r '.state' <<<"$PR_DATA")"
+          RELEASE_BRANCH="$(jq -r '.headRefName' <<<"$PR_DATA")"
+          PR_BASE="$(jq -r '.baseRefName' <<<"$PR_DATA")"
+          RELEASE_SHA="$(jq -r '.mergeCommit.oid // empty' <<<"$PR_DATA")"
           VERSION="${RELEASE_BRANCH#release/v}"
           TAG="v${VERSION}"
-          if [[ ! "$RELEASE_BRANCH" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Unexpected release branch '${RELEASE_BRANCH}'." >&2
+          if [[ "$PR_STATE" != "MERGED" || "$PR_BASE" != "main" || ! "$RELEASE_BRANCH" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ || -z "$RELEASE_SHA" ]]; then
+            echo "PR #${PR_NUMBER} is not a merged release PR for main." >&2
+            exit 1
+          fi
+          if [[ -n "$PAYLOAD_BRANCH" && "$PAYLOAD_BRANCH" != "$RELEASE_BRANCH" ]]; then
+            echo "Release dispatch branch '${PAYLOAD_BRANCH}' does not match '${RELEASE_BRANCH}'." >&2
+            exit 1
+          fi
+          if [[ -n "$PAYLOAD_SHA" && "$PAYLOAD_SHA" != "$RELEASE_SHA" ]]; then
+            echo "Release dispatch commit '${PAYLOAD_SHA}' does not match '${RELEASE_SHA}'." >&2
             exit 1
           fi
           if [[ -n "$EXPECTED_VERSION" && "$EXPECTED_VERSION" != "$VERSION" ]]; then
@@ -298,15 +329,6 @@ jobs:
           fi
           if [[ -n "$EXPECTED_TAG" && "$EXPECTED_TAG" != "$TAG" ]]; then
             echo "Release dispatch tag '${EXPECTED_TAG}' does not match '${TAG}'." >&2
-            exit 1
-          fi
-          PR_DATA="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,headRefName,baseRefName,mergeCommit)"
-          PR_STATE="$(jq -r '.state' <<<"$PR_DATA")"
-          PR_HEAD="$(jq -r '.headRefName' <<<"$PR_DATA")"
-          PR_BASE="$(jq -r '.baseRefName' <<<"$PR_DATA")"
-          PR_MERGE_SHA="$(jq -r '.mergeCommit.oid // empty' <<<"$PR_DATA")"
-          if [[ "$PR_STATE" != "MERGED" || "$PR_HEAD" != "$RELEASE_BRANCH" || "$PR_BASE" != "main" || "$PR_MERGE_SHA" != "$RELEASE_SHA" ]]; then
-            echo "Finalizer payload does not match the merged release PR #${PR_NUMBER}." >&2
             exit 1
           fi
           OWNER="${GITHUB_REPOSITORY%/*}"
@@ -353,8 +375,9 @@ jobs:
             exit 1
           fi
           ACTUAL_VERSION="$(git show "${RELEASE_SHA}:package.json" | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
-          if [[ "$ACTUAL_VERSION" != "$VERSION" ]]; then
-            echo "Release commit has version '${ACTUAL_VERSION}', expected '${VERSION}'." >&2
+          ACTUAL_MANIFEST_VERSION="$(git show "${RELEASE_SHA}:src/manifest.ts" | node -e 'const fs=require("fs"); const match=fs.readFileSync(0, "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
+          if [[ "$ACTUAL_VERSION" != "$VERSION" || "$ACTUAL_MANIFEST_VERSION" != "$VERSION" ]]; then
+            echo "Release commit metadata does not match expected version '${VERSION}'." >&2
             exit 1
           fi
           EXISTING_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk 'NR == 1 { print $1 }')"

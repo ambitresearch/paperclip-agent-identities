@@ -24,7 +24,9 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
 | Change GitHub App setup or settings UI behavior | [Agent identity domain](domain/agent-identities.md) | `/src/ui/SettingsPage.tsx`, `/src/worker.ts` manifest-flow actions |
 | Change PR or push tools | [GitHub contribution tools](tools/github-contribution-tools.md) | `/src/providers/github/tools/create-pull-request.ts`, `/src/providers/github/tools/push-branch.ts` |
 | Run validation or understand test coverage | [Testing and operations](operations/testing-and-release.md) | `/tests/*.spec.ts`, `/package.json` |
-| Implement the Slack provider | [Slack provider MVP and threat model](domain/slack-provider-design.md) | `/src/providers/slack/` (not yet created) |
+| Register a provider's runtime tools/actions | [Plugin runtime architecture](architecture/plugin-runtime.md) | `/src/providers/<id>/`, `/src/providers/index.ts` |
+| Add provider settings persistence/UI | [Agent identity domain](domain/agent-identities.md) | `/src/core/identity-config.ts`, `/src/credential-sidecar.ts`, `/src/worker.ts`, `/src/ui/SettingsPage.tsx` |
+| Implement the Slack provider | [Slack provider MVP and threat model](domain/slack-provider-design.md) | `/src/providers/slack/` plus the settings-persistence files above |
 
 ## Repository layout
 
@@ -105,4 +107,9 @@ See [Agent identity domain](domain/agent-identities.md) for the canonical model.
 - Do not document or inspect live secret material. Avoid `.env` files and private key/token files.
 - If adding settings fields, update shared types, worker normalization, UI form behavior, and tests together.
 - If changing tool schemas, update both manifest metadata and worker registration behavior, then run `pnpm typecheck` and `pnpm test`.
-- When adding a new identity provider, follow `/README.md#adding-a-provider`: implement the `IdentityProvider` contract under `/src/providers/<id>/`, and append it once to `/src/providers/index.ts`. Do not edit `/src/worker.ts` or `/src/manifest.ts` for a provider addition.
+- When adding a new identity provider, follow `/README.md#adding-a-provider`:
+  implement the runtime `IdentityProvider` under `/src/providers/<id>/` and
+  append it once to `/src/providers/index.ts`; do not add provider-specific
+  runtime registration branches to `/src/worker.ts` or `/src/manifest.ts`. A
+  provider exposed in settings must still extend the persistence normalization
+  in `/src/worker.ts`, the shared schemas, and the UI as described there.

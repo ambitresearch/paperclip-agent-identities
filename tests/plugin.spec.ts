@@ -895,6 +895,12 @@ describe("agent identity settings", () => {
       state: flow.state,
     })).resolves.toEqual({ ...flow, conversion: result });
 
+    await expect(harness.performAction<ConvertGitHubAppManifestResult>("convert-github-app-manifest", {
+      state: flow.state,
+      code: "one-time-code",
+    })).resolves.toEqual(result);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+
     await expect(harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
       state: flow.state,
       consume: true,

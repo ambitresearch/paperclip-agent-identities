@@ -284,6 +284,7 @@ export function contributeGitHubAppManifestActions(ctx: PluginContext): void {
     if (!flow || flow.state !== state) {
       throw new Error("Unknown or expired GitHub App manifest flow state.");
     }
+    if (flow.conversion) return flow.conversion;
 
     // GitHub manifest codes are single-use. Prepare the local destination first
     // so a path/configuration failure cannot consume a code before persistence.

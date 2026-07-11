@@ -24,6 +24,7 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
 | Change GitHub App setup or settings UI behavior | [Agent identity domain](domain/agent-identities.md) | `/src/ui/SettingsPage.tsx`, `/src/worker.ts` manifest-flow actions |
 | Change PR or push tools | [GitHub contribution tools](tools/github-contribution-tools.md) | `/src/providers/github/tools/create-pull-request.ts`, `/src/providers/github/tools/push-branch.ts` |
 | Run validation or understand test coverage | [Testing and operations](operations/testing-and-release.md) | `/tests/*.spec.ts`, `/package.json` |
+| Implement the Slack provider | [Slack provider MVP and threat model](domain/slack-provider-design.md) | `/src/providers/slack/` (not yet created) |
 
 ## Repository layout
 

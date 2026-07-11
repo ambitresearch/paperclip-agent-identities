@@ -34,7 +34,10 @@ jobs:
           set -euo pipefail
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           MANIFEST_VERSION="$(node -e 'const fs=require("fs"); const match=fs.readFileSync("src/manifest.ts", "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
-          test "$PACKAGE_VERSION" = "$MANIFEST_VERSION"
+          if [[ "$PACKAGE_VERSION" != "$MANIFEST_VERSION" ]]; then
+            echo "package.json version '$PACKAGE_VERSION' does not match src/manifest.ts version '$MANIFEST_VERSION'." >&2
+            exit 1
+          fi
 
       - name: Typecheck
         run: pnpm typecheck

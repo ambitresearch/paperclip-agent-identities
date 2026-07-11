@@ -121,12 +121,13 @@ The Pages artifact is `openwiki/.vitepress/dist`. OpenWiki itself still writes M
 
 ## Release automation
 
-`.github/workflows/release.yml` creates public releases from `main`:
+`.github/workflows/release.yml` creates public releases from `main` while honoring the repository's pull-request rule:
 
-- Every qualifying push to `main` automatically increments the package patch version by one, commits `package.json` and `pnpm-lock.yaml`, tags the commit, creates a GitHub Release, and dispatches npm publication.
-- The release-generated commit is excluded from the automatic trigger, preventing a release loop.
-- Minor and major releases are manual only. Run **Create Release** with `bump: minor` or `bump: major` from GitHub Actions.
-- `.github/workflows/publish.yml` publishes only a release tag. It can also be dispatched with `dry_run: true` to validate npm packaging without publication.
+- Every qualifying push to `main` creates a release pull request for the next patch version. It updates `package.json`, `pnpm-lock.yaml`, and `src/manifest.ts` together, then validates the package.
+- The workflow waits for the automatic Copilot review to finish with zero open review threads and for all pull-request checks to pass before squash-merging the release PR.
+- Only after the clean release PR merges does the workflow tag the merged commit, create a GitHub Release, and dispatch npm publication of that immutable tag. Comments or failed checks leave the release PR open and prevent tagging or publication.
+- The release-generated commit is excluded from the automatic trigger, preventing a release loop. Minor and major releases are manual only. Run **Create Release** with `bump: minor` or `bump: major` from GitHub Actions.
+- `.github/workflows/publish.yml` publishes only a stable release tag whose tag and `package.json` version match. It can also be dispatched with `dry_run: true` to validate npm packaging without publication.
 - Both workflows re-run typecheck, tests, and the production build before publication. Publishing requires the repository `NPM_TOKEN` secret.
 
 If changing release automation, inspect `.github/workflows/` directly and update README/OpenWiki together.

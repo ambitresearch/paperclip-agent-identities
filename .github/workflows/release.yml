@@ -18,6 +18,8 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+  actions: write
 
 concurrency:
   group: create-release-main
@@ -29,6 +31,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out main
         uses: actions/checkout@v4
@@ -81,7 +85,7 @@ jobs:
             throw new Error(`Unable to update the plugin manifest version in ${manifestPath}`);
           }
           fs.writeFileSync(manifestPath, updatedManifest);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=v${version}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=v${version}\nbranch=release/v${version}\n`);
           NODE
 
       - name: Update the lockfile for the release version
@@ -91,11 +95,16 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
+          BRANCH: ${{ steps.version.outputs.branch }}
         run: |
           set -euo pipefail
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "Tag '${TAG}' already exists." >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null 2>&1; then
+            echo "Release branch '${BRANCH}' already exists." >&2
             exit 1
           fi
           if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
@@ -111,22 +120,85 @@ jobs:
           pnpm build
           pnpm pack --pack-destination .
 
-      - name: Commit and tag the release
+      - name: Create release pull request
+        id: release-pr
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add package.json pnpm-lock.yaml src/manifest.ts
+          git commit -m "chore(release): v${VERSION}"
+          git push origin "HEAD:refs/heads/${BRANCH}"
+          PR_URL="$(gh pr create             --repo "$GITHUB_REPOSITORY"             --base main             --head "$BRANCH"             --title "chore(release): v${VERSION}"             --body "Automated ${VERSION} release version bump. Copilot review and all PR checks must be clean before this PR merges.")"
+          PR_NUMBER="$(gh pr view "$PR_URL" --repo "$GITHUB_REPOSITORY" --json number --jq .number)"
+          echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for automatic Copilot review and passing checks
+        env:
+          PR_NUMBER: ${{ steps.release-pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPOSITORY="${GITHUB_REPOSITORY#*/}"
+          QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { state reviews(last:100) { nodes { author { login } submittedAt } } reviewThreads(first:100) { nodes { isResolved } } } } }'
+          for _ in $(seq 1 30); do
+            REVIEW="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$QUERY")"
+            STATE="$(jq -r '.data.repository.pullRequest.state' <<<"$REVIEW")"
+            COPILOT_REVIEWS="$(jq '[.data.repository.pullRequest.reviews.nodes[] | select(.author.login == "copilot-pull-request-reviewer" and .submittedAt != null)] | length' <<<"$REVIEW")"
+            OPEN_THREADS="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length' <<<"$REVIEW")"
+            CHECKS="$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json name,state,link 2>/dev/null || printf '[]')"
+            CHECK_COUNT="$(jq 'length' <<<"$CHECKS")"
+            FAILED_CHECKS="$(jq '[.[] | select(.state == "FAILURE" or .state == "ERROR" or .state == "CANCELLED" or .state == "TIMED_OUT" or .state == "ACTION_REQUIRED")] | length' <<<"$CHECKS")"
+            PENDING_CHECKS="$(jq '[.[] | select(.state != "SUCCESS" and .state != "SKIPPING" and .state != "NEUTRAL" and .state != "FAILURE" and .state != "ERROR" and .state != "CANCELLED" and .state != "TIMED_OUT" and .state != "ACTION_REQUIRED")] | length' <<<"$CHECKS")"
+            if [[ "$STATE" != "OPEN" ]]; then
+              echo "Release PR #${PR_NUMBER} is no longer open (state: ${STATE})." >&2
+              exit 1
+            fi
+            if [[ "$FAILED_CHECKS" -gt 0 ]]; then
+              echo "Release PR #${PR_NUMBER} has failing checks." >&2
+              gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" || true
+              exit 1
+            fi
+            if [[ "$COPILOT_REVIEWS" -gt 0 && "$OPEN_THREADS" -gt 0 ]]; then
+              echo "Release PR #${PR_NUMBER} has ${OPEN_THREADS} unresolved review thread(s)." >&2
+              exit 1
+            fi
+            if [[ "$COPILOT_REVIEWS" -gt 0 && "$OPEN_THREADS" -eq 0 && "$CHECK_COUNT" -gt 0 && "$PENDING_CHECKS" -eq 0 ]]; then
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "Timed out waiting for automatic Copilot review and passing checks on release PR #${PR_NUMBER}." >&2
+          exit 1
+
+      - name: Merge the clean release pull request
+        env:
+          PR_NUMBER: ${{ steps.release-pr.outputs.number }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh pr merge "$PR_NUMBER"             --repo "$GITHUB_REPOSITORY"             --squash             --delete-branch             --subject "chore(release): v${VERSION}"             --body "Automated release PR after a clean Copilot review and passing checks."
+
+      - name: Tag and publish the merged release
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json pnpm-lock.yaml src/manifest.ts
-          git commit -m "chore(release): v${VERSION}"
-          git tag -a "$TAG" -m "Release v${VERSION}"
-          git push --atomic origin HEAD:main "refs/tags/${TAG}"
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: gh release create "$TAG" --title "$TAG" --generate-notes
+          git fetch origin main --tags
+          git checkout --detach origin/main
+          ACTUAL_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$ACTUAL_VERSION" != "$VERSION" ]]; then
+            echo "main has version '${ACTUAL_VERSION}', expected '${VERSION}'." >&2
+            exit 1
+          fi
+          RELEASE_SHA="$(git rev-parse origin/main)"
+          git tag -a "$TAG" "$RELEASE_SHA" -m "Release v${VERSION}"
+          git push origin "refs/tags/${TAG}"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --title "$TAG" --generate-notes
+          gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref main -f dry_run=false -f ref="$TAG"

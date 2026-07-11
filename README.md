@@ -143,7 +143,7 @@ Runs on pull requests and pushes to `main`:
 
 ### Releases
 
-Every qualifying push to `main` creates the next stable patch release: it updates `package.json`, `pnpm-lock.yaml`, and `src/manifest.ts` together, validates the package, atomically pushes the release commit and tag, creates a GitHub Release, then publishes that immutable tag to npm. The release commit does not trigger another release.
+Every qualifying push to `main` creates a release pull request for the next stable patch version. It updates `package.json`, `pnpm-lock.yaml`, and `src/manifest.ts` together, validates the package, waits for the automatic Copilot review to finish with zero open threads and for all checks to pass, then squash-merges the release PR through the repository ruleset. Only then does it tag the merged commit, create a GitHub Release, and dispatch npm publication of that immutable tag. If Copilot leaves feedback or a check fails, the release PR remains open for remediation and no tag or publication occurs.
 
 Minor and major releases are manual only. Run **Create Release** from GitHub Actions and choose `minor` or `major`. Real npm publication accepts only a stable `v<major>.<minor>.<patch>` tag whose version exactly matches `package.json`; dispatch **Publish** with `dry_run: true` to validate a tag without publishing. `NPM_TOKEN` must be configured as a repository secret.
 

@@ -216,7 +216,8 @@ export async function resolveSlackCredential(
   if (
     !auth.ok ||
     auth.team_id !== identity.identity.teamId ||
-    auth.user_id !== identity.identity.botUserId
+    auth.user_id !== identity.identity.botUserId ||
+    !auth.bot_id
   ) {
     throw new Error("Slack credential does not match the configured workspace bot identity.");
   }
@@ -230,9 +231,16 @@ export async function resolveSlackCredential(
 the entry or its `slack` member is absent. `botTokenSecretId` is intentionally
 not a field on the public `SlackAgentIdentity` payload. `callSlackAuthTest`
 POSTs to `auth.test` with the resolved bearer token, parses only the documented
-`ok`, `team_id`, and `user_id` fields, and never includes the token or raw
-response in an error. A stale, mistyped, or swapped secret UUID therefore fails
-credential resolution before any requested Slack mutation can run.
+`ok`, `team_id`, `user_id`, and `bot_id` fields, and never includes the token or
+raw response in an error. The `bot_id` check is mandatory and not redundant
+with `team_id`/`user_id`: Slack's `auth.test` returns `bot_id` only for bot
+tokens, and a user OAuth token can be configured with `teamId`/`botUserId`
+values that coincidentally match a real user in the target workspace. Requiring
+`bot_id` to be present rejects any credential that authenticates as a human
+user, closing that path even when the other two fields line up. A stale,
+mistyped, or swapped secret UUID, or a user token substituted for the bot
+token, therefore fails credential resolution before any requested Slack
+mutation can run.
 
 This follows `resolveGitHubCredential`'s sidecar -> just-in-time secret ->
 `{ token, secrets: [token] }` structure so the pipeline's redact step (step 6)
@@ -253,6 +261,16 @@ in §9.
 | `slack_bot_post_reply` | `true` | `SlackMessageRef` | resolver: `auth.test`; perform: `chat.postMessage` with `thread_ts` |
 | `slack_bot_add_reaction` | `true` | `SlackMessageRef` | resolver: `auth.test`; perform: `reactions.add` |
 | `slack_bot_remove_reaction` | `true` | `SlackMessageRef` | resolver: `auth.test`; perform: `reactions.remove` |
+
+`slack_bot_remove_reaction` is bounded by a real Slack API limitation, not just
+a Paperclip policy choice: `reactions.remove` only removes a reaction
+previously added by the calling bot's own identity. It cannot remove a
+reaction that a different user or bot added to the same message. The tool
+contract and its user-facing description must state this ownership limit
+explicitly so implementers and tool consumers do not treat it as unrestricted
+reaction removal; a request to remove another identity's reaction fails
+closed with Slack's `no_reaction`/permission error rather than silently
+succeeding or removing the wrong reaction.
 
 `slack_bot_whoami` is intentionally credentialed even though GitHub's local
 whoami is not: Slack `auth.test` requires the bot token and verifies the live
@@ -488,10 +506,13 @@ lookup keyed strictly by the calling `runCtx.agentId`. Slack's provider
 module must not accept an `agentId` param from tool input to select an
 identity — the identity is always the caller's own, never a caller-supplied
 target. Credential resolution then calls `auth.test` and requires its `team_id`
-and `user_id` to match the resolved identity's `teamId` and `botUserId`; a
-sidecar entry pointing at another agent's token fails before `perform`.
-Contract tests must cover both "agent A cannot resolve agent B's identity" and
-"agent A's sidecar cannot substitute agent B's valid token" cases.
+and `user_id` to match the resolved identity's `teamId` and `botUserId`, and
+requires `bot_id` to be present so a user-token credential can never satisfy
+the check; a sidecar entry pointing at another agent's token, or at a user
+token, fails before `perform`.
+Contract tests must cover "agent A cannot resolve agent B's identity", "agent
+A's sidecar cannot substitute agent B's valid token", and "a user OAuth token
+whose team_id/user_id happen to match is rejected for missing bot_id" cases.
 
 ### T3 — Channel/target injection past the resource-ref boundary
 **Risk:** an agent (or a prompt-injected instruction reaching the agent)

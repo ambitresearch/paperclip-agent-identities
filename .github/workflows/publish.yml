@@ -10,8 +10,7 @@ on:
         type: boolean
       ref:
         description: "Immutable stable release tag to validate or publish, for example v0.1.4"
-        required: false
-        default: ""
+        required: true
         type: string
 
 permissions:

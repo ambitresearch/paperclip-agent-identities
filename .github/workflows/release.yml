@@ -141,6 +141,7 @@ jobs:
             gh workflow run plugin-ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
           else
             if git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null 2>&1; then
+              git restore --source=HEAD --staged --worktree package.json pnpm-lock.yaml src/manifest.ts
               git fetch origin "$BRANCH"
               git switch -C "$BRANCH" "origin/$BRANCH"
               BRANCH_VERSION="$(node -p "require('./package.json').version")"
@@ -285,6 +286,23 @@ jobs:
           PR_MERGE_SHA="$(jq -r '.mergeCommit.oid // empty' <<<"$PR_DATA")"
           if [[ "$PR_STATE" != "MERGED" || "$PR_HEAD" != "$RELEASE_BRANCH" || "$PR_BASE" != "main" || "$PR_MERGE_SHA" != "$RELEASE_SHA" ]]; then
             echo "Finalizer payload does not match the merged release PR #${PR_NUMBER}." >&2
+            exit 1
+          fi
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPOSITORY="${GITHUB_REPOSITORY#*/}"
+          QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { headRefOid reviews(last:100) { nodes { author { login } submittedAt commit { oid } } } reviewThreads(first:100) { nodes { isResolved } } } } }'
+          REVIEW="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$QUERY")"
+          HEAD_OID="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$REVIEW")"
+          COPILOT_REVIEWS="$(jq --arg head "$HEAD_OID" '[.data.repository.pullRequest.reviews.nodes[] | select(((.author.login // "") == "copilot-pull-request-reviewer" or (.author.login // "") == "copilot-pull-request-reviewer[bot]") and .submittedAt != null and (.commit.oid // "") == $head)] | length' <<<"$REVIEW")"
+          OPEN_THREADS="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length' <<<"$REVIEW")"
+          CHECKS="$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json name,state,link 2>/dev/null)" || true
+          CHECKS="${CHECKS:-[]}"
+          CHECK_COUNT="$(jq 'length' <<<"$CHECKS")"
+          SUCCESSFUL_CHECKS="$(jq '[.[] | select(.state == "SUCCESS")] | length' <<<"$CHECKS")"
+          FAILED_CHECKS="$(jq '[.[] | select(.state == "FAILURE" or .state == "ERROR" or .state == "CANCELLED" or .state == "TIMED_OUT" or .state == "ACTION_REQUIRED")] | length' <<<"$CHECKS")"
+          PENDING_CHECKS="$(jq '[.[] | select(.state != "SUCCESS" and .state != "SKIPPED" and .state != "NEUTRAL" and .state != "FAILURE" and .state != "ERROR" and .state != "CANCELLED" and .state != "TIMED_OUT" and .state != "ACTION_REQUIRED")] | length' <<<"$CHECKS")"
+          if [[ "$COPILOT_REVIEWS" -eq 0 || "$OPEN_THREADS" -ne 0 || "$CHECK_COUNT" -eq 0 || "$SUCCESSFUL_CHECKS" -eq 0 || "$FAILED_CHECKS" -ne 0 || "$PENDING_CHECKS" -ne 0 ]]; then
+            echo "Merged release PR #${PR_NUMBER} did not satisfy the Copilot and check gate." >&2
             exit 1
           fi
           gh auth setup-git

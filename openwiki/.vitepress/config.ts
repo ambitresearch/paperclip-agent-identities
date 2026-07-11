@@ -38,6 +38,7 @@ export default defineConfig({
         text: "Domain",
         items: [
           { text: "Agent Identities", link: "/domain/agent-identities" },
+          { text: "Slack Provisioning Decision Record", link: "/domain/slack-provisioning-decision" },
         ],
       },
       {

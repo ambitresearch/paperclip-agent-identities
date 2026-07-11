@@ -48,7 +48,11 @@ jobs:
           fi
           if [[ -n "$BASE_SHA" ]] && git cat-file -e "${BASE_SHA}:package.json" 2>/dev/null; then
             BASE_VERSION="$(git show "${BASE_SHA}:package.json" | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version || "")')"
-            if [[ "$BASE_VERSION" != "$PACKAGE_VERSION" ]]; then
+            if ! git diff --quiet "$BASE_SHA" HEAD -- package.json; then
+              if [[ "$BASE_VERSION" == "$PACKAGE_VERSION" ]]; then
+                echo "package.json changed without a version bump from '$BASE_VERSION'." >&2
+                exit 1
+              fi
               if node - "$BASE_VERSION" "$PACKAGE_VERSION" <<'NODE'
           const parse = (value) => {
             const match = value.match(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/);

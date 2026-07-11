@@ -133,7 +133,7 @@ pnpm docs:preview   # preview the built static site
 
 GitHub Actions workflows: [CI](.github/workflows/ci.yml), [Release](.github/workflows/release.yml), [Publish](.github/workflows/publish.yml), and [Publish Docs](.github/workflows/pages.yml)
 
-Runs on pull requests and pushes to `main`:
+Runs on pull requests, pushes to `main`, and manual dispatches used to validate generated release branches:
 
 - `pnpm typecheck`
 - `pnpm test`
@@ -143,7 +143,7 @@ Runs on pull requests and pushes to `main`:
 
 ### Releases
 
-Every qualifying push to `main` creates a release pull request for the next stable patch version. It updates `package.json`, `pnpm-lock.yaml`, and `src/manifest.ts` together, validates the package, dispatches CI explicitly for its release branch, waits for the automatic Copilot review on that branch to finish at the current head with zero open threads and for successful checks to pass, then squash-merges the release PR through the repository ruleset. An idempotent finalizer tags that exact immutable merge commit, creates a GitHub Release, and dispatches npm publication of the matching tag. If Copilot leaves feedback or a check fails, the release PR remains open for remediation and no tag or publication occurs; a rerun resumes the same release PR. If a merged release PR needs finalization retried after a dispatch failure, run **Create Release** manually with `finalize_pr` set to that PR number; this finalizes the same immutable release rather than calculating a new version.
+Every qualifying push to `main` creates a release pull request for the next stable patch version. It updates only the synchronized version fields in `package.json` and `src/manifest.ts`, validates the package, dispatches CI explicitly for its release branch, waits for the automatic Copilot review on that branch to finish at the current head with zero open threads and for successful checks to pass, then squash-merges the release PR through the repository ruleset. An idempotent finalizer tags that exact immutable merge commit, creates a GitHub Release, and dispatches npm publication of the matching tag. If Copilot leaves feedback or a check fails, the release PR remains open for remediation and no tag or publication occurs; a rerun resumes the same release PR. If a merged release PR needs finalization retried after a dispatch failure, run **Create Release** manually with `finalize_pr` set to that PR number; this finalizes the same immutable release rather than calculating a new version.
 
 Minor and major releases are manual only. Run **Create Release** from GitHub Actions and choose `minor` or `major`. Real npm publication accepts only a stable `v<major>.<minor>.<patch>` tag whose version exactly matches `package.json`; dispatch **Publish** with `dry_run: true` to validate a tag without publishing. `NPM_TOKEN` must be configured as a repository secret.
 

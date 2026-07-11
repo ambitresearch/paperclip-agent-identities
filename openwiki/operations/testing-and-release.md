@@ -99,7 +99,7 @@ pnpm pack --pack-destination .
 
 ## CI and documentation automation
 
-The active CI workflow source is `/.github/workflows/ci.yml`. It runs on pull requests and pushes to `main`, uses Node.js 24, enables `pnpm@10.17.1`, installs with `--frozen-lockfile`, then runs typecheck, tests, build, pack, packaged-output verification, and artifact upload.
+The active CI workflow source is `/.github/workflows/ci.yml`. It runs on pull requests, pushes to `main`, and manual dispatches for generated release branches; it uses Node.js 24, enables `pnpm@10.17.1`, installs with `--frozen-lockfile`, then runs typecheck, tests, build, pack, packaged-output verification, and artifact upload.
 
 OpenWiki documentation automation lives in `/.github/workflows/openwiki-update.yml`. It runs on pushes to `main` using a self-hosted runner and opens a pull request containing regenerated `openwiki/` and `AGENTS.md` changes. The searchable static documentation site is built from the same `openwiki/` Markdown by VitePress and published through `/.github/workflows/pages.yml`.
 
@@ -123,7 +123,7 @@ The Pages artifact is `openwiki/.vitepress/dist`. OpenWiki itself still writes M
 
 `.github/workflows/release.yml` creates public releases from `main` while honoring the repository's pull-request rule:
 
-- Every qualifying push to `main` creates a release pull request for the next patch version. It updates `package.json`, `pnpm-lock.yaml`, and `src/manifest.ts` together, then validates the package.
+- Every qualifying push to `main` creates a release pull request for the next patch version. It updates only the synchronized version fields in `package.json` and `src/manifest.ts`, then validates the package.
 - The workflow dispatches CI explicitly for its release branch, then waits for the automatic Copilot review at that branch head to finish with zero open review threads and for successful pull-request checks before squash-merging the release PR.
 - Only after the clean release PR merges does an idempotent finalizer tag that exact merge commit, create a GitHub Release, and dispatch npm publication of the matching immutable tag. Comments or failed checks leave the release PR open and prevent tagging or publication; a rerun resumes the same release PR. If a merged release PR needs finalization retried after a dispatch failure, run **Create Release** with `finalize_pr` set to that PR number so it finalizes the same immutable release rather than calculating a new version.
 - The release-generated commit is excluded from the automatic trigger, preventing a release loop. Minor and major releases are manual only. Run **Create Release** with `bump: minor` or `bump: major` from GitHub Actions.

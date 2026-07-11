@@ -33,6 +33,8 @@ permissions:
   contents: write
   pull-requests: write
   actions: write
+  checks: read
+  statuses: read
 
 jobs:
   create-release:
@@ -103,9 +105,6 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\ntag=v${version}\nbranch=release/v${version}\n`);
           NODE
 
-      - name: Update the lockfile for the release version
-        run: pnpm install --lockfile-only --ignore-scripts
-
       - name: Verify the release is new
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -137,7 +136,7 @@ jobs:
           BRANCH: ${{ steps.version.outputs.branch }}
         run: |
           set -euo pipefail
-          EXISTING_PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" --state open --json number,url --jq '.[0] // empty')"
+          EXISTING_PR="$(gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open --json number,url,isCrossRepository,headRefName | jq --arg branch "$BRANCH" '[.[] | select(.isCrossRepository == false and .headRefName == $branch)][0] // empty')"
           if [[ -n "$EXISTING_PR" ]]; then
             PR_NUMBER="$(jq -r '.number' <<<"$EXISTING_PR")"
             PR_URL="$(jq -r '.url' <<<"$EXISTING_PR")"
@@ -146,7 +145,7 @@ jobs:
             gh workflow run plugin-ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
           else
             if git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null 2>&1; then
-              git restore --source=HEAD --staged --worktree package.json pnpm-lock.yaml src/manifest.ts
+              git restore --source=HEAD --staged --worktree package.json src/manifest.ts
               git fetch origin "$BRANCH"
               git switch -C "$BRANCH" "origin/$BRANCH"
               BRANCH_VERSION="$(node -p "require('./package.json').version")"
@@ -158,7 +157,7 @@ jobs:
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git switch -c "$BRANCH"
-              git add package.json pnpm-lock.yaml src/manifest.ts
+              git add package.json src/manifest.ts
               git commit -m "chore(release): v${VERSION}"
               git push origin "HEAD:refs/heads/${BRANCH}"
             fi
@@ -179,11 +178,12 @@ jobs:
         id: gate
         env:
           PR_NUMBER: ${{ steps.release-pr.outputs.number }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPOSITORY="${GITHUB_REPOSITORY#*/}"
-          PR_QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { state headRefOid reviews(last:100) { nodes { author { login } submittedAt commit { oid } } } } } }'
+          PR_QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { state headRefOid baseRefOid reviews(last:100) { nodes { author { login } submittedAt commit { oid } } } } } }'
           THREAD_QUERY='query($owner:String!, $repo:String!, $number:Int!, $cursor:String) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { reviewThreads(first:100, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { isResolved } } } } }'
           count_open_threads() {
             local cursor="" has_next="true" page total=0
@@ -199,10 +199,46 @@ jobs:
             done
             printf '%s' "$total"
           }
+          read_file_at_ref() {
+            gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=$2" --jq .content | base64 --decode
+          }
+          normalize_package() {
+            node -e 'const fs=require("fs"); const pkg=JSON.parse(fs.readFileSync(0, "utf8")); delete pkg.version; process.stdout.write(JSON.stringify(pkg));'
+          }
+          normalize_manifest() {
+            node -e 'const fs=require("fs"); const source=fs.readFileSync(0, "utf8"); const versions=source.match(/version: "[^"]+"/g) ?? []; if (versions.length !== 1) process.exit(1); process.stdout.write(source.replace(/version: "[^"]+"/, "version: \"<version>\""));'
+          }
+          validate_version_only_release_change() {
+            local head_oid="$1" base_oid="$2" changed_files unexpected
+            changed_files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[].filename')"
+            unexpected="$(printf '%s\n' "$changed_files" | grep -v -E '^(package\.json|src/manifest\.ts)$' || true)"
+            if [[ -n "$unexpected" ]] || ! printf '%s\n' "$changed_files" | grep -Fx 'package.json' >/dev/null || ! printf '%s\n' "$changed_files" | grep -Fx 'src/manifest.ts' >/dev/null; then
+              echo "Release PR #${PR_NUMBER} must change only package.json and src/manifest.ts." >&2
+              exit 1
+            fi
+            local base_package head_package base_manifest head_manifest
+            base_package="$(read_file_at_ref package.json "$base_oid")"
+            head_package="$(read_file_at_ref package.json "$head_oid")"
+            base_manifest="$(read_file_at_ref src/manifest.ts "$base_oid")"
+            head_manifest="$(read_file_at_ref src/manifest.ts "$head_oid")"
+            local base_package_normalized head_package_normalized base_manifest_normalized head_manifest_normalized
+            base_package_normalized="$(printf '%s' "$base_package" | normalize_package)"
+            head_package_normalized="$(printf '%s' "$head_package" | normalize_package)"
+            base_manifest_normalized="$(printf '%s' "$base_manifest" | normalize_manifest)"
+            head_manifest_normalized="$(printf '%s' "$head_manifest" | normalize_manifest)"
+            local head_package_version head_manifest_version
+            head_package_version="$(printf '%s' "$head_package" | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
+            head_manifest_version="$(printf '%s' "$head_manifest" | node -e 'const fs=require("fs"); const match=fs.readFileSync(0, "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
+            if [[ "$base_package_normalized" != "$head_package_normalized" || "$base_manifest_normalized" != "$head_manifest_normalized" || "$head_package_version" != "$VERSION" || "$head_manifest_version" != "$VERSION" ]]; then
+              echo "Release PR #${PR_NUMBER} is not a version-only update for '${VERSION}'." >&2
+              exit 1
+            fi
+          }
           for _ in $(seq 1 30); do
             REVIEW="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$PR_QUERY")"
             STATE="$(jq -r '.data.repository.pullRequest.state' <<<"$REVIEW")"
             HEAD_OID="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$REVIEW")"
+            BASE_OID="$(jq -r '.data.repository.pullRequest.baseRefOid' <<<"$REVIEW")"
             COPILOT_REVIEWS="$(jq --arg head "$HEAD_OID" '[.data.repository.pullRequest.reviews.nodes[] | select(((.author.login // "") == "copilot-pull-request-reviewer" or (.author.login // "") == "copilot-pull-request-reviewer[bot]") and .submittedAt != null and (.commit.oid // "") == $head)] | length' <<<"$REVIEW")"
             OPEN_THREADS="$(count_open_threads)"
             CHECKS="$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json name,state,link 2>/dev/null)" || true
@@ -224,12 +260,7 @@ jobs:
               echo "Release PR #${PR_NUMBER} has ${OPEN_THREADS} unresolved review thread(s)." >&2
               exit 1
             fi
-            HEAD_PACKAGE_VERSION="$(gh api "repos/${GITHUB_REPOSITORY}/contents/package.json?ref=${HEAD_OID}" --jq .content | base64 --decode | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
-            HEAD_MANIFEST_VERSION="$(gh api "repos/${GITHUB_REPOSITORY}/contents/src/manifest.ts?ref=${HEAD_OID}" --jq .content | base64 --decode | node -e 'const fs=require("fs"); const match=fs.readFileSync(0, "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
-            if [[ "$HEAD_PACKAGE_VERSION" != "$VERSION" || "$HEAD_MANIFEST_VERSION" != "$VERSION" ]]; then
-              echo "Release PR #${PR_NUMBER} head metadata does not match version '${VERSION}'." >&2
-              exit 1
-            fi
+            validate_version_only_release_change "$HEAD_OID" "$BASE_OID"
             if [[ "$COPILOT_REVIEWS" -gt 0 && "$OPEN_THREADS" -eq 0 && "$CHECK_COUNT" -gt 0 && "$SUCCESSFUL_CHECKS" -gt 0 && "$PENDING_CHECKS" -eq 0 ]]; then
               echo "head_oid=${HEAD_OID}" >> "$GITHUB_OUTPUT"
               exit 0
@@ -333,7 +364,7 @@ jobs:
           fi
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPOSITORY="${GITHUB_REPOSITORY#*/}"
-          PR_QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { headRefOid reviews(last:100) { nodes { author { login } submittedAt commit { oid } } } } } }'
+          PR_QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { headRefOid baseRefOid reviews(last:100) { nodes { author { login } submittedAt commit { oid } } } } } }'
           THREAD_QUERY='query($owner:String!, $repo:String!, $number:Int!, $cursor:String) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { reviewThreads(first:100, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { isResolved } } } } }'
           count_open_threads() {
             local cursor="" has_next="true" page total=0
@@ -349,8 +380,44 @@ jobs:
             done
             printf '%s' "$total"
           }
+          read_file_at_ref() {
+            gh api "repos/${GITHUB_REPOSITORY}/contents/$1?ref=$2" --jq .content | base64 --decode
+          }
+          normalize_package() {
+            node -e 'const fs=require("fs"); const pkg=JSON.parse(fs.readFileSync(0, "utf8")); delete pkg.version; process.stdout.write(JSON.stringify(pkg));'
+          }
+          normalize_manifest() {
+            node -e 'const fs=require("fs"); const source=fs.readFileSync(0, "utf8"); const versions=source.match(/version: "[^"]+"/g) ?? []; if (versions.length !== 1) process.exit(1); process.stdout.write(source.replace(/version: "[^"]+"/, "version: \"<version>\""));'
+          }
+          validate_version_only_release_change() {
+            local head_oid="$1" base_oid="$2" changed_files unexpected
+            changed_files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[].filename')"
+            unexpected="$(printf '%s\n' "$changed_files" | grep -v -E '^(package\.json|src/manifest\.ts)$' || true)"
+            if [[ -n "$unexpected" ]] || ! printf '%s\n' "$changed_files" | grep -Fx 'package.json' >/dev/null || ! printf '%s\n' "$changed_files" | grep -Fx 'src/manifest.ts' >/dev/null; then
+              echo "Release PR #${PR_NUMBER} must change only package.json and src/manifest.ts." >&2
+              exit 1
+            fi
+            local base_package head_package base_manifest head_manifest
+            base_package="$(read_file_at_ref package.json "$base_oid")"
+            head_package="$(read_file_at_ref package.json "$head_oid")"
+            base_manifest="$(read_file_at_ref src/manifest.ts "$base_oid")"
+            head_manifest="$(read_file_at_ref src/manifest.ts "$head_oid")"
+            local base_package_normalized head_package_normalized base_manifest_normalized head_manifest_normalized
+            base_package_normalized="$(printf '%s' "$base_package" | normalize_package)"
+            head_package_normalized="$(printf '%s' "$head_package" | normalize_package)"
+            base_manifest_normalized="$(printf '%s' "$base_manifest" | normalize_manifest)"
+            head_manifest_normalized="$(printf '%s' "$head_manifest" | normalize_manifest)"
+            local head_package_version head_manifest_version
+            head_package_version="$(printf '%s' "$head_package" | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
+            head_manifest_version="$(printf '%s' "$head_manifest" | node -e 'const fs=require("fs"); const match=fs.readFileSync(0, "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
+            if [[ "$base_package_normalized" != "$head_package_normalized" || "$base_manifest_normalized" != "$head_manifest_normalized" || "$head_package_version" != "$VERSION" || "$head_manifest_version" != "$VERSION" ]]; then
+              echo "Release PR #${PR_NUMBER} is not a version-only update for '${VERSION}'." >&2
+              exit 1
+            fi
+          }
           REVIEW="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$PR_QUERY")"
           HEAD_OID="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$REVIEW")"
+          BASE_OID="$(jq -r '.data.repository.pullRequest.baseRefOid' <<<"$REVIEW")"
           COPILOT_REVIEWS="$(jq --arg head "$HEAD_OID" '[.data.repository.pullRequest.reviews.nodes[] | select(((.author.login // "") == "copilot-pull-request-reviewer" or (.author.login // "") == "copilot-pull-request-reviewer[bot]") and .submittedAt != null and (.commit.oid // "") == $head)] | length' <<<"$REVIEW")"
           OPEN_THREADS="$(count_open_threads)"
           CHECKS="$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json name,state,link 2>/dev/null)" || true
@@ -363,6 +430,7 @@ jobs:
             echo "Merged release PR #${PR_NUMBER} did not satisfy the Copilot and check gate." >&2
             exit 1
           fi
+          validate_version_only_release_change "$HEAD_OID" "$BASE_OID"
           gh auth setup-git
           git init --quiet release
           cd release

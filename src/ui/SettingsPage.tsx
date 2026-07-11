@@ -144,6 +144,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         if (callback.installationId) {
           setManifestResult(conversion ?? null);
           deleteManifestDraftForm(callback.state);
+          void getGitHubAppManifestFlow({ state: callback.state, consume: true }).catch(() => undefined);
         }
         setSaveError(null);
         setSaveSuccess(false);
@@ -1102,7 +1103,7 @@ function getAgentIdentityDefaults(
   };
 }
 
-function getGitHubAppPrivateKeyFile(credentialSidecarPath: string, agentId: string): string {
+export function getGitHubAppPrivateKeyFile(credentialSidecarPath: string, agentId: string): string {
   const lastSeparator = Math.max(
     credentialSidecarPath.lastIndexOf("/"),
     credentialSidecarPath.lastIndexOf("\\"),
@@ -1110,7 +1111,7 @@ function getGitHubAppPrivateKeyFile(credentialSidecarPath: string, agentId: stri
   if (lastSeparator < 0) return "";
   const separator = credentialSidecarPath[lastSeparator];
   const directory = credentialSidecarPath.slice(0, lastSeparator);
-  return [directory, "github-apps", agentId, "private-key.pem"].join(separator);
+  return `${directory}${separator}github-apps${separator}${agentId}${separator}private-key.pem`;
 }
 
 function shouldPrefillIdentityField(value: string, defaultValue: string): boolean {

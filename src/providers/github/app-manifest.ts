@@ -270,6 +270,9 @@ export function contributeGitHubAppManifestActions(ctx: PluginContext): void {
     if (!flow || flow.state !== state) {
       throw new Error("Unknown or expired GitHub App manifest flow state.");
     }
+    if (input.consume === true && flow.conversion) {
+      await ctx.state.delete(githubAppManifestFlowScope(state));
+    }
     return flow;
   });
 

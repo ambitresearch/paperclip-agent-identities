@@ -175,7 +175,7 @@ The settings UI and worker actions implement GitHub's App Manifest flow.
 12. UI sends the operator to install the app; GitHub redirects back with `installation_id`.
 13. UI restores the flow and pre-fills Installation ID before the operator saves the identity.
 
-Flow state is restored by `get-github-app-manifest-flow` while the operator is returning from GitHub. After successful manifest conversion, the worker retains the flow together with the public conversion result so the later installation callback can restore the App ID, GitHub username, and private-key path. The one-time code and PEM are never stored in plugin state.
+Flow state is restored by `get-github-app-manifest-flow` while the operator is returning from GitHub. After successful manifest conversion, the worker retains the flow together with the public conversion result so the later installation callback can restore the App ID, GitHub username, and private-key path. That installation callback consumes the retained state after reading it. The one-time code and PEM are never stored in plugin state.
 
 ## Tests to inspect before changing this domain
 

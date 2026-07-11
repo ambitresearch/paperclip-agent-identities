@@ -12,6 +12,7 @@ import {
   __setGitCommandRunnerForTests,
 } from "../src/providers/github/tools/push-branch.js";
 import { CREDENTIAL_SIDECAR_PATH_ENV } from "../src/credential-sidecar.js";
+import { getGitHubAppPrivateKeyFile } from "../src/ui/SettingsPage.js";
 
 afterEach(async () => {
   __resetGitCommandRunnerForTests();
@@ -893,6 +894,14 @@ describe("agent identity settings", () => {
     await expect(harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
       state: flow.state,
     })).resolves.toEqual({ ...flow, conversion: result });
+
+    await expect(harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
+      state: flow.state,
+      consume: true,
+    })).resolves.toEqual({ ...flow, conversion: result });
+    await expect(harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
+      state: flow.state,
+    })).rejects.toThrow("Unknown or expired GitHub App manifest flow state.");
   });
 
   it("checks the private-key destination before consuming a manifest code", async () => {
@@ -1158,5 +1167,12 @@ describe("agent identity settings", () => {
 
     const sidecar = JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"));
     expect(sidecar.identities["agent-v4:github"]).toEqual({ secretId: TEST_SECRET_ID });
+  });
+});
+
+describe("settings credential paths", () => {
+  it("preserves a root-level sidecar directory", () => {
+    expect(getGitHubAppPrivateKeyFile("/credentials.json", "agent-manifest"))
+      .toBe("/github-apps/agent-manifest/private-key.pem");
   });
 });

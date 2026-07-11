@@ -137,6 +137,8 @@ jobs:
             PR_NUMBER="$(jq -r '.number' <<<"$EXISTING_PR")"
             PR_URL="$(jq -r '.url' <<<"$EXISTING_PR")"
             echo "Resuming release PR #${PR_NUMBER}."
+            gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+            gh workflow run plugin-ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
           else
             if git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null 2>&1; then
               git fetch origin "$BRANCH"

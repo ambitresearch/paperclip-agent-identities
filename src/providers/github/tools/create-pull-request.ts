@@ -138,7 +138,7 @@ export const githubCreatePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdenti
       base: { ref: string };
     };
 
-    ctx.activity.log({
+    await ctx.activity.log({
       companyId: runCtx.companyId,
       message: `Created pull request #${created.number} in ${repository.fullName}`,
       entityType: "pull_request",

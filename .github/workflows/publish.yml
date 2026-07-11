@@ -1,9 +1,6 @@
 name: Publish
 
 on:
-  release:
-    types:
-      - published
   workflow_dispatch:
     inputs:
       dry_run:
@@ -12,23 +9,55 @@ on:
         default: true
         type: boolean
       ref:
-        description: "Git ref to publish (branch, tag, or SHA)"
-        required: false
-        default: ""
+        description: "Immutable stable release tag to validate or publish, for example v0.1.4"
+        required: true
         type: string
 
 permissions:
   contents: read
 
+concurrency:
+  group: npm-publish-${{ inputs.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
-    if: ${{ false }} # Temporarily disabled while npm package publishing is paused.
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
+      - name: Validate release tag
+        id: release
+        env:
+          TAG: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "A stable release tag such as v0.1.4 is required." >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref != '' && inputs.ref || github.ref }}
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Verify package and manifest versions
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git rev-parse "refs/tags/${TAG}^{commit}" >/dev/null
+          VERSION="$(node -p "require('./package.json').version")"
+          MANIFEST_VERSION="$(node -e 'const fs=require("fs"); const match=fs.readFileSync("src/manifest.ts", "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
+          if [[ "v${VERSION}" != "$TAG" ]]; then
+            echo "Tag '${TAG}' does not match package.json version '${VERSION}'." >&2
+            exit 1
+          fi
+          if [[ "$MANIFEST_VERSION" != "$VERSION" ]]; then
+            echo "src/manifest.ts version '$MANIFEST_VERSION' does not match package.json version '$VERSION'." >&2
+            exit 1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -41,21 +70,100 @@ jobs:
           corepack enable
           corepack prepare pnpm@10.17.1 --activate
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Validate release build
+      - name: Validate package
         run: |
+          pnpm install --frozen-lockfile
           pnpm typecheck
           pnpm test
           pnpm build
 
       - name: Dry-run npm publish
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        if: ${{ inputs.dry_run }}
         run: npm publish --dry-run --access public
 
-      - name: Publish to npm
-        if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
+      - name: Publish to npm and promote main
+        if: ${{ !inputs.dry_run }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public
+        run: |
+          set -euo pipefail
+          package_version_exists() {
+            local candidate="$1" error_file status
+            error_file="$(mktemp)"
+            if npm view "${PACKAGE_NAME}@${candidate}" version --registry=https://registry.npmjs.org >/dev/null 2>"$error_file"; then
+              rm -f "$error_file"
+              return 0
+            fi
+            status=$?
+            if grep -q 'E404' "$error_file"; then
+              rm -f "$error_file"
+              return 1
+            fi
+            cat "$error_file" >&2
+            rm -f "$error_file"
+            return 2
+          }
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          if package_version_exists "$VERSION"; then
+            echo "${PACKAGE_NAME}@${VERSION} is already published."
+          else
+            LOOKUP_STATUS=$?
+            if [[ "$LOOKUP_STATUS" -ne 1 ]]; then
+              exit "$LOOKUP_STATUS"
+            fi
+            npm publish --access public --tag previous
+          fi
+          git fetch origin main
+          MAIN_VERSION="$(git show origin/main:package.json | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
+          if package_version_exists "$MAIN_VERSION"; then
+            LATEST_ERROR="$(mktemp)"
+            if LATEST_VERSION="$(npm view "$PACKAGE_NAME" dist-tags.latest --registry=https://registry.npmjs.org 2>"$LATEST_ERROR")"; then
+              rm -f "$LATEST_ERROR"
+            else
+              LOOKUP_STATUS=$?
+              if ! grep -q 'E404' "$LATEST_ERROR"; then
+                cat "$LATEST_ERROR" >&2
+                rm -f "$LATEST_ERROR"
+                exit "$LOOKUP_STATUS"
+              fi
+              rm -f "$LATEST_ERROR"
+              LATEST_VERSION=""
+            fi
+            PROMOTION="$(node - "$LATEST_VERSION" "$MAIN_VERSION" <<'NODE'
+            const parse = (value) => {
+              const match = value.match(/^(\d+)\.(\d+)\.(\d+)$/);
+              if (!match) throw new Error(`Invalid stable version: ${value}`);
+              return match.slice(1).map(Number);
+            };
+            const latest = process.argv[2];
+            const current = parse(process.argv[3]);
+            if (!latest) {
+              process.stdout.write("promote");
+              process.exit(0);
+            }
+            const prior = parse(latest);
+            for (let index = 0; index < prior.length; index += 1) {
+              if (current[index] > prior[index]) {
+                process.stdout.write("promote");
+                process.exit(0);
+              }
+              if (current[index] < prior[index]) {
+                process.stdout.write("skip");
+                process.exit(0);
+              }
+            }
+            process.stdout.write("current");
+          NODE
+            )"
+            if [[ "$PROMOTION" == "promote" ]]; then
+              npm dist-tag add "${PACKAGE_NAME}@${MAIN_VERSION}" latest
+            elif [[ "$PROMOTION" == "skip" ]]; then
+              echo "Retaining npm latest '$LATEST_VERSION' because main version '$MAIN_VERSION' is older."
+            fi
+          else
+            LOOKUP_STATUS=$?
+            if [[ "$LOOKUP_STATUS" -ne 1 ]]; then
+              exit "$LOOKUP_STATUS"
+            fi
+          fi

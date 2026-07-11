@@ -92,6 +92,48 @@ describe("identity-config v4 migration", () => {
     expect(normalizeSettingsState({ nope: true })).toEqual({ version: 4, identities: {} });
   });
 
+  it("drops malformed v4 entries rather than returning unvalidated persisted data", () => {
+    expect(normalizeSettingsState({
+      version: 4,
+      identities: {
+        broken: null,
+        missingGithubUsername: {
+          provider: "github", id: "agent-1:github", agentId: "agent-1", label: "Bot", github: {}
+        }
+      }
+    })).toEqual({ version: 4, identities: {} });
+  });
+
+  it("restores canonical identity keys and rejects incomplete v3 GitHub records", () => {
+    const normalized = normalizeSettingsState({
+      version: 3,
+      identities: {
+        mismatched: {
+          id: "not-agent-1:github", agentId: "agent-1", provider: "github",
+          label: "Bot", githubUsername: "bot"
+        },
+        incomplete: {
+          id: "agent-2:github", agentId: "agent-2", provider: "github",
+          label: "", githubUsername: ""
+        }
+      }
+    });
+    expect(Object.keys(normalized.identities)).toEqual(["agent-1:github"]);
+    expect(normalized.identities["agent-1:github"].id).toBe("agent-1:github");
+  });
+
+  it("restores canonical keys for v4 identities", () => {
+    const normalized = normalizeSettingsState({
+      version: 4,
+      identities: {
+        mismatched: {
+          id: "wrong", agentId: "agent-1", provider: "github", label: "Bot", github: { username: "bot" }
+        }
+      }
+    });
+    expect(Object.keys(normalized.identities)).toEqual(["agent-1:github"]);
+  });
+
   it("routes a v3 payload through the ladder into v4", () => {
     const normalized = normalizeSettingsState({
       version: 3,

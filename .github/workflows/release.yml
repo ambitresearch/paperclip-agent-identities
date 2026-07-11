@@ -9,10 +9,6 @@ permissions:
   contents: write
   actions: write
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -73,23 +69,40 @@ jobs:
           pnpm build
           pnpm pack --pack-destination .
 
-      - name: Tag the merged commit
+      - name: Verify release identity
+        id: identity
         if: ${{ steps.version.outputs.should_release == 'true' }}
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           EXISTING_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk 'NR == 1 { print $1 }')"
           if [[ -z "$EXISTING_TAG_SHA" ]]; then
             EXISTING_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk 'NR == 1 { print $1 }')"
           fi
-          if [[ -n "$EXISTING_TAG_SHA" ]]; then
-            if [[ "$EXISTING_TAG_SHA" != "$GITHUB_SHA" ]]; then
-              echo "Existing tag '${TAG}' points to '${EXISTING_TAG_SHA}', not '${GITHUB_SHA}'." >&2
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            if [[ -z "$EXISTING_TAG_SHA" ]]; then
+              echo "${PACKAGE_NAME}@${VERSION} is already published but '${TAG}' does not exist." >&2
               exit 1
             fi
-            exit 0
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
+          if [[ -n "$EXISTING_TAG_SHA" && "$EXISTING_TAG_SHA" != "$GITHUB_SHA" ]]; then
+            echo "Existing tag '${TAG}' points to '${EXISTING_TAG_SHA}', not '${GITHUB_SHA}'." >&2
+            exit 1
+          fi
+          echo "tag_exists=$([[ -n "$EXISTING_TAG_SHA" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the merged commit
+        if: ${{ steps.version.outputs.should_release == 'true' && steps.identity.outputs.tag_exists != 'true' }}
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" "$GITHUB_SHA" -m "Release $TAG"
@@ -105,15 +118,9 @@ jobs:
           fi
 
       - name: Dispatch npm publication
-        if: ${{ steps.version.outputs.should_release == 'true' }}
+        if: ${{ steps.version.outputs.should_release == 'true' && steps.identity.outputs.already_published != 'true' }}
         env:
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          set -euo pipefail
-          PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-            echo "${PACKAGE_NAME}@${VERSION} is already published."
-            exit 0
-          fi
           gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref main -f dry_run=false -f ref="$TAG"

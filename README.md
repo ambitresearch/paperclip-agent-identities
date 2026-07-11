@@ -175,21 +175,35 @@ Download CI artifact from GitHub:
 
 ## Adding a provider
 
-The plugin composes identity providers behind a single `IdentityProvider` contract (`src/core/provider-contract.ts`). Neither `src/worker.ts` nor `src/manifest.ts` reference any specific provider — both consume whatever the registry in `src/providers/index.ts` exposes. Adding a new provider does not require editing `worker.ts` or `manifest.ts`.
+The plugin composes runtime identity-provider tools and actions behind a single
+`IdentityProvider` contract (`src/core/provider-contract.ts`). Runtime
+registration is generic: `src/worker.ts` and `src/manifest.ts` consume the
+registry in `src/providers/index.ts`, so adding a provider's runtime tools does
+not require a provider-specific registration branch in either file.
+
+Settings persistence is a separate boundary and is not fully generic today.
+Providers that can be created or edited in the settings UI must also extend the
+persisted identity union and credential-sidecar schema, introduce or extend a
+provider-keyed settings-normalizer dispatch in `src/worker.ts`, and add the
+corresponding UI form/projection. `src/manifest.ts` remains provider-agnostic;
+`src/worker.ts` changes only at the settings-persistence boundary, not to
+register runtime tools or actions.
 
 To add a provider:
 
 1. Create a new module under `src/providers/<id>/` that implements `IdentityProvider<TIdentity, TRef>`.
 2. Write `validateConfig` to parse a single projected identity and return either the typed identity or a joined error string (see `validateGitHubConfig` in `src/providers/github/index.ts` for the pattern).
-3. Project raw settings-state identities for your provider's key (`${agentId}:<id>`) into that typed identity shape.
-4. Implement credential resolution (`resolveCredential`) — resolve secrets/tokens just in time, never eagerly, and never before params/identity/resource-ref have been validated.
-5. Provide `tools`: an array of `ProviderToolSpec` entries, each declaring its metadata, whether it requires a credential, and its `perform` implementation.
-6. Optionally contribute `actions` (e.g. an App-manifest-style setup flow) if the provider needs additional worker actions beyond tool calls.
-7. Include `manifestTools`: the manifest-facing fragments the composed manifest consumes (see `src/providers/github/manifest-tools.ts`).
-8. Append the new provider exactly once, in `src/providers/index.ts`'s `ALL_PROVIDERS` array. This is the single composition root; nothing else needs to change to register it.
-9. Add contract tests (validate/project/resolveCredential) and pipeline tests (tool execution through `createProviderTool`) alongside the existing provider test suites, and extend `tests/provider-composition.spec.ts` if the new provider changes composed output.
-
-`worker.ts` and `manifest.ts` are not edited when adding a provider — they only depend on the provider contract and the registry, not on any concrete provider module.
+3. If the provider is editable in settings, extend the persistence
+   discriminated union and sidecar schema, add its provider-keyed normalization adapter to the
+   worker's settings dispatch, and add its UI form/projection. A runtime-only
+   provider can skip this step.
+4. Project raw settings-state identities for your provider's key (`${agentId}:<id>`) into that typed identity shape.
+5. Implement credential resolution (`resolveCredential`) — resolve secrets/tokens just in time, never eagerly, and never before params/identity/resource-ref have been validated.
+6. Provide `tools`: an array of `ProviderToolSpec` entries, each declaring its metadata, whether it requires a credential, and its `perform` implementation.
+7. Optionally contribute `actions` (e.g. an App-manifest-style setup flow) if the provider needs additional worker actions beyond tool calls.
+8. Include `manifestTools`: the manifest-facing fragments the composed manifest consumes (see `src/providers/github/manifest-tools.ts`).
+9. Append the new provider exactly once, in `src/providers/index.ts`'s `ALL_PROVIDERS` array. This is the single runtime composition root; no provider-specific registration branch belongs in `worker.ts` or `manifest.ts`.
+10. Add contract tests (validate/project/resolveCredential) and pipeline tests (tool execution through `createProviderTool`) alongside the existing provider test suites, and extend `tests/provider-composition.spec.ts` if the new provider changes composed output.
 
 ### Security order (all provider tools)
 

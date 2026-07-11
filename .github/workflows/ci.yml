@@ -29,6 +29,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify package and manifest versions
+        run: |
+          set -euo pipefail
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          MANIFEST_VERSION="$(node -e 'const fs=require("fs"); const match=fs.readFileSync("src/manifest.ts", "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
+          test "$PACKAGE_VERSION" = "$MANIFEST_VERSION"
+
       - name: Typecheck
         run: pnpm typecheck
 

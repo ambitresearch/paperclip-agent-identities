@@ -77,43 +77,46 @@ jobs:
         if: ${{ inputs.dry_run }}
         run: npm publish --dry-run --access public
 
-      - name: Publish to npm
+      - name: Publish to npm and promote main
         if: ${{ !inputs.dry_run }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
+          package_version_exists() {
+            local candidate="$1" error_file status
+            error_file="$(mktemp)"
+            if npm view "${PACKAGE_NAME}@${candidate}" version --registry=https://registry.npmjs.org >/dev/null 2>"$error_file"; then
+              rm -f "$error_file"
+              return 0
+            fi
+            status=$?
+            if grep -q 'E404' "$error_file"; then
+              rm -f "$error_file"
+              return 1
+            fi
+            cat "$error_file" >&2
+            rm -f "$error_file"
+            return 2
+          }
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           VERSION="$(node -p "require('./package.json').version")"
-          if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+          if package_version_exists "$VERSION"; then
             echo "${PACKAGE_NAME}@${VERSION} is already published."
-            exit 0
+          else
+            LOOKUP_STATUS=$?
+            if [[ "$LOOKUP_STATUS" -ne 1 ]]; then
+              exit "$LOOKUP_STATUS"
+            fi
+            npm publish --access public --tag previous
           fi
-          LATEST_VERSION="$(npm view "$PACKAGE_NAME" dist-tags.latest --registry=https://registry.npmjs.org 2>/dev/null || true)"
-          DIST_TAG="$(node - "$LATEST_VERSION" "$VERSION" <<'NODE'
-          const parse = (value) => {
-            const match = value.match(/^(\d+)\.(\d+)\.(\d+)$/);
-            if (!match) throw new Error(`Invalid stable version: ${value}`);
-            return match.slice(1).map(Number);
-          };
-          const latest = process.argv[2];
-          const current = parse(process.argv[3]);
-          if (!latest) {
-            process.stdout.write("latest");
-            process.exit(0);
-          }
-          const previous = parse(latest);
-          for (let index = 0; index < previous.length; index += 1) {
-            if (current[index] > previous[index]) {
-              process.stdout.write("latest");
-              process.exit(0);
-            }
-            if (current[index] < previous[index]) {
-              process.stdout.write("previous");
-              process.exit(0);
-            }
-          }
-          process.stdout.write("previous");
-          NODE
-          )"
-          npm publish --access public --tag "$DIST_TAG"
+          git fetch origin main
+          MAIN_VERSION="$(git show origin/main:package.json | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
+          if package_version_exists "$MAIN_VERSION"; then
+            npm dist-tag add "${PACKAGE_NAME}@${MAIN_VERSION}" latest
+          else
+            LOOKUP_STATUS=$?
+            if [[ "$LOOKUP_STATUS" -ne 1 ]]; then
+              exit "$LOOKUP_STATUS"
+            fi
+          fi

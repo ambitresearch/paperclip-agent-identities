@@ -104,13 +104,22 @@ jobs:
             EXISTING_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}" | awk 'NR == 1 { print $1 }')"
           fi
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
-          if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+          LOOKUP_ERROR="$(mktemp)"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>"$LOOKUP_ERROR"; then
             echo "already_published=true" >> "$GITHUB_OUTPUT"
+            rm -f "$LOOKUP_ERROR"
             if [[ -z "$EXISTING_TAG_SHA" ]]; then
               echo "${PACKAGE_NAME}@${VERSION} is already published but '${TAG}' does not exist." >&2
               exit 1
             fi
           else
+            LOOKUP_STATUS=$?
+            if ! grep -q 'E404' "$LOOKUP_ERROR"; then
+              cat "$LOOKUP_ERROR" >&2
+              rm -f "$LOOKUP_ERROR"
+              exit "$LOOKUP_STATUS"
+            fi
+            rm -f "$LOOKUP_ERROR"
             echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
           if [[ -n "$EXISTING_TAG_SHA" && "$EXISTING_TAG_SHA" != "$GITHUB_SHA" ]]; then

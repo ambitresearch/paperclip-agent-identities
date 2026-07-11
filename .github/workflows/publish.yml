@@ -1,9 +1,6 @@
 name: Publish
 
 on:
-  release:
-    types:
-      - published
   workflow_dispatch:
     inputs:
       dry_run:
@@ -13,30 +10,27 @@ on:
         type: boolean
       ref:
         description: "Immutable stable release tag to validate or publish, for example v0.1.4"
-        required: false
-        default: ""
+        required: true
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: npm-publish-${{ github.event.release.tag_name || inputs.ref || github.ref }}
+  group: npm-publish-${{ inputs.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
   publish:
-    if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve immutable release tag
         id: release
         env:
-          EVENT_TAG: ${{ github.event.release.tag_name || '' }}
           INPUT_TAG: ${{ inputs.ref || '' }}
         run: |
           set -euo pipefail
-          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          TAG="$INPUT_TAG"
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "A stable release tag such as v0.1.4 is required." >&2
             exit 1
@@ -83,8 +77,21 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
         run: npm publish --dry-run --access public
 
+      - name: Check whether the tag version is already published
+        id: publication
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
-        if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
+        if: ${{ !inputs.dry_run && steps.publication.outputs.already_published != 'true' }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public

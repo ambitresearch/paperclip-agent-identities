@@ -117,7 +117,50 @@ jobs:
           git fetch origin main
           MAIN_VERSION="$(git show origin/main:package.json | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
           if package_version_exists "$MAIN_VERSION"; then
-            npm dist-tag add "${PACKAGE_NAME}@${MAIN_VERSION}" latest
+            LATEST_ERROR="$(mktemp)"
+            if LATEST_VERSION="$(npm view "$PACKAGE_NAME" dist-tags.latest --registry=https://registry.npmjs.org 2>"$LATEST_ERROR")"; then
+              rm -f "$LATEST_ERROR"
+            else
+              LOOKUP_STATUS=$?
+              if ! grep -q 'E404' "$LATEST_ERROR"; then
+                cat "$LATEST_ERROR" >&2
+                rm -f "$LATEST_ERROR"
+                exit "$LOOKUP_STATUS"
+              fi
+              rm -f "$LATEST_ERROR"
+              LATEST_VERSION=""
+            fi
+            PROMOTION="$(node - "$LATEST_VERSION" "$MAIN_VERSION" <<'NODE'
+            const parse = (value) => {
+              const match = value.match(/^(\d+)\.(\d+)\.(\d+)$/);
+              if (!match) throw new Error(`Invalid stable version: ${value}`);
+              return match.slice(1).map(Number);
+            };
+            const latest = process.argv[2];
+            const current = parse(process.argv[3]);
+            if (!latest) {
+              process.stdout.write("promote");
+              process.exit(0);
+            }
+            const prior = parse(latest);
+            for (let index = 0; index < prior.length; index += 1) {
+              if (current[index] > prior[index]) {
+                process.stdout.write("promote");
+                process.exit(0);
+              }
+              if (current[index] < prior[index]) {
+                process.stdout.write("skip");
+                process.exit(0);
+              }
+            }
+            process.stdout.write("current");
+          NODE
+            )"
+            if [[ "$PROMOTION" == "promote" ]]; then
+              npm dist-tag add "${PACKAGE_NAME}@${MAIN_VERSION}" latest
+            elif [[ "$PROMOTION" == "skip" ]]; then
+              echo "Retaining npm latest '$LATEST_VERSION' because main version '$MAIN_VERSION' is older."
+            fi
           else
             LOOKUP_STATUS=$?
             if [[ "$LOOKUP_STATUS" -ne 1 ]]; then

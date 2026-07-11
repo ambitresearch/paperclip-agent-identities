@@ -274,8 +274,11 @@ jobs:
             echo "Release dispatch tag '${EXPECTED_TAG}' does not match '${TAG}'." >&2
             exit 1
           fi
+          gh auth setup-git
           git init --quiet release
           cd release
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           git fetch origin "$RELEASE_SHA" --tags
           ACTUAL_VERSION="$(git show "${RELEASE_SHA}:package.json" | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
@@ -283,9 +286,20 @@ jobs:
             echo "Release commit has version '${ACTUAL_VERSION}', expected '${VERSION}'." >&2
             exit 1
           fi
-          if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+          EXISTING_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk 'NR == 1 { print $1 }')"
+          if [[ -n "$EXISTING_TAG_SHA" && "$EXISTING_TAG_SHA" != "$RELEASE_SHA" ]]; then
+            echo "Existing tag '${TAG}' points to '${EXISTING_TAG_SHA}', not release commit '${RELEASE_SHA}'." >&2
+            exit 1
+          fi
+          if [[ -z "$EXISTING_TAG_SHA" ]]; then
             git tag -a "$TAG" "$RELEASE_SHA" -m "Release v${VERSION}"
-            git push origin "refs/tags/${TAG}"
+            if ! git push origin "refs/tags/${TAG}"; then
+              EXISTING_TAG_SHA="$(git ls-remote origin "refs/tags/${TAG}^{}" | awk 'NR == 1 { print $1 }')"
+              if [[ "$EXISTING_TAG_SHA" != "$RELEASE_SHA" ]]; then
+                echo "Concurrent tag '${TAG}' does not point to release commit '${RELEASE_SHA}'." >&2
+                exit 1
+              fi
+            fi
           fi
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$RELEASE_SHA" --title "$TAG" --generate-notes

@@ -29,10 +29,6 @@ permissions:
   pull-requests: write
   actions: write
 
-concurrency:
-  group: create-release-main
-  cancel-in-progress: false
-
 jobs:
   create-release:
     if: >-
@@ -41,6 +37,9 @@ jobs:
       (github.event_name == 'workflow_dispatch' ||
       !startsWith(github.event.head_commit.message, 'chore(release):'))
     runs-on: ubuntu-latest
+    concurrency:
+      group: create-release-main
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -171,19 +170,35 @@ jobs:
           echo "url=${PR_URL}" >> "$GITHUB_OUTPUT"
 
       - name: Wait for automatic Copilot review and passing checks
+        id: gate
         env:
           PR_NUMBER: ${{ steps.release-pr.outputs.number }}
         run: |
           set -euo pipefail
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPOSITORY="${GITHUB_REPOSITORY#*/}"
-          QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { state headRefOid reviews(last:100) { nodes { author { login } submittedAt commit { oid } } } reviewThreads(first:100) { nodes { isResolved } } } } }'
+          PR_QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { state headRefOid reviews(last:100) { nodes { author { login } submittedAt commit { oid } } } } } }'
+          THREAD_QUERY='query($owner:String!, $repo:String!, $number:Int!, $cursor:String) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { reviewThreads(first:100, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { isResolved } } } } }'
+          count_open_threads() {
+            local cursor="" has_next="true" page total=0
+            while [[ "$has_next" == "true" ]]; do
+              if [[ -n "$cursor" ]]; then
+                page="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f cursor="$cursor" -f query="$THREAD_QUERY")"
+              else
+                page="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$THREAD_QUERY")"
+              fi
+              total=$((total + $(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length' <<<"$page")))
+              has_next="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$page")"
+              cursor="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' <<<"$page")"
+            done
+            printf '%s' "$total"
+          }
           for _ in $(seq 1 30); do
-            REVIEW="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$QUERY")"
+            REVIEW="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$PR_QUERY")"
             STATE="$(jq -r '.data.repository.pullRequest.state' <<<"$REVIEW")"
             HEAD_OID="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$REVIEW")"
             COPILOT_REVIEWS="$(jq --arg head "$HEAD_OID" '[.data.repository.pullRequest.reviews.nodes[] | select(((.author.login // "") == "copilot-pull-request-reviewer" or (.author.login // "") == "copilot-pull-request-reviewer[bot]") and .submittedAt != null and (.commit.oid // "") == $head)] | length' <<<"$REVIEW")"
-            OPEN_THREADS="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length' <<<"$REVIEW")"
+            OPEN_THREADS="$(count_open_threads)"
             CHECKS="$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json name,state,link 2>/dev/null)" || true
             CHECKS="${CHECKS:-[]}"
             CHECK_COUNT="$(jq 'length' <<<"$CHECKS")"
@@ -204,6 +219,7 @@ jobs:
               exit 1
             fi
             if [[ "$COPILOT_REVIEWS" -gt 0 && "$OPEN_THREADS" -eq 0 && "$CHECK_COUNT" -gt 0 && "$SUCCESSFUL_CHECKS" -gt 0 && "$PENDING_CHECKS" -eq 0 ]]; then
+              echo "head_oid=${HEAD_OID}" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             sleep 30
@@ -215,9 +231,11 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.release-pr.outputs.number }}
           VERSION: ${{ steps.version.outputs.version }}
+          VALIDATED_HEAD: ${{ steps.gate.outputs.head_oid }}
         run: |
           gh pr merge "$PR_NUMBER" \
             --repo "$GITHUB_REPOSITORY" \
+            --match-head-commit "$VALIDATED_HEAD" \
             --squash \
             --delete-branch \
             --subject "chore(release): v${VERSION}" \
@@ -248,6 +266,9 @@ jobs:
       startsWith(github.event.pull_request.head.ref, 'release/v')) ||
       (github.event_name == 'repository_dispatch' && github.event.action == 'finalize-release')
     runs-on: ubuntu-latest
+    concurrency:
+      group: finalize-release-${{ github.event_name == 'repository_dispatch' && github.event.client_payload.branch || github.event.pull_request.head.ref }}
+      cancel-in-progress: false
     env:
       GH_TOKEN: ${{ github.token }}
       PR_NUMBER: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.pr_number || github.event.pull_request.number }}
@@ -290,11 +311,26 @@ jobs:
           fi
           OWNER="${GITHUB_REPOSITORY%/*}"
           REPOSITORY="${GITHUB_REPOSITORY#*/}"
-          QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { headRefOid reviews(last:100) { nodes { author { login } submittedAt commit { oid } } } reviewThreads(first:100) { nodes { isResolved } } } } }'
-          REVIEW="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$QUERY")"
+          PR_QUERY='query($owner:String!, $repo:String!, $number:Int!) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { headRefOid reviews(last:100) { nodes { author { login } submittedAt commit { oid } } } } } }'
+          THREAD_QUERY='query($owner:String!, $repo:String!, $number:Int!, $cursor:String) { repository(owner:$owner, name:$repo) { pullRequest(number:$number) { reviewThreads(first:100, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { isResolved } } } } }'
+          count_open_threads() {
+            local cursor="" has_next="true" page total=0
+            while [[ "$has_next" == "true" ]]; do
+              if [[ -n "$cursor" ]]; then
+                page="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f cursor="$cursor" -f query="$THREAD_QUERY")"
+              else
+                page="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$THREAD_QUERY")"
+              fi
+              total=$((total + $(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length' <<<"$page")))
+              has_next="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage' <<<"$page")"
+              cursor="$(jq -r '.data.repository.pullRequest.reviewThreads.pageInfo.endCursor // empty' <<<"$page")"
+            done
+            printf '%s' "$total"
+          }
+          REVIEW="$(gh api graphql -f owner="$OWNER" -f repo="$REPOSITORY" -F number="$PR_NUMBER" -f query="$PR_QUERY")"
           HEAD_OID="$(jq -r '.data.repository.pullRequest.headRefOid' <<<"$REVIEW")"
           COPILOT_REVIEWS="$(jq --arg head "$HEAD_OID" '[.data.repository.pullRequest.reviews.nodes[] | select(((.author.login // "") == "copilot-pull-request-reviewer" or (.author.login // "") == "copilot-pull-request-reviewer[bot]") and .submittedAt != null and (.commit.oid // "") == $head)] | length' <<<"$REVIEW")"
-          OPEN_THREADS="$(jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length' <<<"$REVIEW")"
+          OPEN_THREADS="$(count_open_threads)"
           CHECKS="$(gh pr checks "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json name,state,link 2>/dev/null)" || true
           CHECKS="${CHECKS:-[]}"
           CHECK_COUNT="$(jq 'length' <<<"$CHECKS")"

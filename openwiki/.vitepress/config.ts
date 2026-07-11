@@ -38,6 +38,7 @@ export default defineConfig({
         text: "Domain",
         items: [
           { text: "Agent Identities", link: "/domain/agent-identities" },
+          { text: "Slack Provider MVP", link: "/domain/slack-provider-mvp" },
         ],
       },
       {

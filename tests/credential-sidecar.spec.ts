@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { join, resolve as resolvePath } from "node:path";
+import { homedir, tmpdir } from "node:os";
 import {
   CREDENTIAL_SIDECAR_PATH_ENV,
+  DEFAULT_CREDENTIAL_SIDECAR_PATH,
   parseCredentialSidecar,
+  resolveCredentialSidecarPath,
   resolveIdentityToken,
 } from "../src/credential-sidecar.js";
 import type { ResolvedAgentIdentity } from "../src/providers/github/config.js";
@@ -35,6 +37,27 @@ describe("credential sidecar token resolution", () => {
 
   it("validates sidecar credential sources", () => {
     expect(() => parseCredentialSidecar({ version: 1, identities: { "agent-1:github": {} } })).toThrow();
+  });
+
+  it("defaults the sidecar to the current runtime home directory", async () => {
+    delete process.env[CREDENTIAL_SIDECAR_PATH_ENV];
+    const expected = join(homedir(), ".paperclip", "agent-identities", "credentials.json");
+
+    expect(DEFAULT_CREDENTIAL_SIDECAR_PATH).toBe(expected);
+    await expect(resolveCredentialSidecarPath()).resolves.toBe(expected);
+  });
+
+  it("prefers an explicit sidecar path override", async () => {
+    const sidecar = join(directory, "custom-credentials.json");
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecar;
+
+    await expect(resolveCredentialSidecarPath()).resolves.toBe(sidecar);
+  });
+
+  it("resolves a relative sidecar override against the worker directory", async () => {
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = "custom-credentials.json";
+
+    await expect(resolveCredentialSidecarPath()).resolves.toBe(resolvePath("custom-credentials.json"));
   });
 
   it("falls back to a token file when the configured secret cannot resolve", async () => {

@@ -76,7 +76,9 @@ Private credential references live outside plugin state in a local JSON sidecar 
 Path resolution order:
 
 1. `PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS`
-2. `/paperclip/.paperclip/agent-identities/credentials.json`
+2. `<runtime-home>/.paperclip/agent-identities/credentials.json`, where runtime home comes from Node's `os.homedir()`
+
+Relative override values are resolved against the worker's current directory so the worker and settings UI share one absolute path. The native macOS server resolves the default below the current user's home directory. The Paperclip Docker image resolves it below `/paperclip` because that is the container user's configured home. Paperclip's minimal plugin-worker environment does not pass arbitrary host environment overrides, so the runtime-home default is the normal local-server path.
 
 Sidecar schema version 1 maps provider-aware identity keys to credential sources:
 
@@ -89,7 +91,7 @@ Sidecar schema version 1 maps provider-aware identity keys to credential sources
         "appId": "<github-app-id>",
         "installationId": "<github-installation-id>",
         "privateKeySecretId": "<paperclip-secret-uuid>",
-        "privateKeyFile": "/paperclip/.paperclip/agent-identities/github-apps/<agent-id>/private-key.pem"
+        "privateKeyFile": "<runtime-home>/.paperclip/agent-identities/github-apps/<agent-id>/private-key.pem"
       }
     }
   }
@@ -131,7 +133,7 @@ It reads:
 - `bot-identity-config` for saved identities, sidecar path, and credential status;
 - `paperclip-agents` for the company-scoped agent dropdown.
 
-The form supports adding, editing, and deleting one provider identity at a time. It prevents duplicate identities for the same agent/provider pair. When agents are available, selecting an agent prefills defaults derived from the agent display name and company, including the label convention `Agent Name [Company Name]`, GitHub App login, commit identity, and private key file path under `/paperclip/.paperclip/agent-identities/github-apps/<agent-id>/private-key.pem`.
+The form supports adding, editing, and deleting one provider identity at a time. It prevents duplicate identities for the same agent/provider pair. When agents are available, selecting an agent prefills defaults derived from the agent display name and company, including the label convention `Agent Name [Company Name]`, GitHub App login, commit identity, and the private-key file path derived from the worker-reported credential sidecar path.
 
 The UI also tries to load selectable Paperclip secrets from host REST endpoints for company and user secrets. If company context or secret API access is unavailable, operators can still enter a secret UUID manually.
 
@@ -165,14 +167,15 @@ The settings UI and worker actions implement GitHub's App Manifest flow.
 4. UI opens/posts to `https://github.com/settings/apps/new?state=<state>`.
 5. GitHub redirects back with a one-time `code`.
 6. UI calls `convert-github-app-manifest`.
-7. Worker exchanges the code through `POST https://api.github.com/app-manifests/{code}/conversions`.
-8. Worker requires `id`, `slug`, `name`, and `pem` in the conversion response.
-9. Worker writes the PEM to `<credential-sidecar-dir>/github-apps/<agent-id>/private-key.pem` with mode `0600`.
-10. Worker returns app ID, app slug, derived GitHub App login `<slug>[bot]`, private key file path, and install URL.
-11. UI sends the operator to install the app; GitHub redirects back with `installation_id`.
-12. UI restores the flow and pre-fills Installation ID before the operator saves the identity.
+7. Worker resolves and creates the private-key destination directory, probes it for writes, and rejects an existing non-file private-key target before making any GitHub request. Those preflight failures therefore do not consume the one-time code.
+8. Worker exchanges the code through `POST https://api.github.com/app-manifests/{code}/conversions`.
+9. Worker requires `id`, `slug`, `name`, and `pem` in the conversion response.
+10. Worker writes the PEM to `<credential-sidecar-dir>/github-apps/<agent-id>/private-key.pem` with mode `0600`.
+11. Worker returns app ID, app slug, derived GitHub App login `<slug>[bot]`, private key file path, and install URL.
+12. UI sends the operator to install the app; GitHub redirects back with `installation_id`.
+13. UI restores the flow and pre-fills Installation ID before the operator saves the identity.
 
-Flow state is restored by `get-github-app-manifest-flow` while the operator is returning from GitHub, then deleted after successful manifest conversion so one-time setup state does not accumulate.
+Flow state is restored by `get-github-app-manifest-flow` while the operator is returning from GitHub. After successful manifest conversion, the worker retains the flow together with the public conversion result so the later installation callback can restore the App ID, GitHub username, and private-key path. The one-time code and PEM are never stored in plugin state.
 
 ## Tests to inspect before changing this domain
 

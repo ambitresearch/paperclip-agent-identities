@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
@@ -888,10 +888,57 @@ describe("agent identity settings", () => {
       installUrl: `https://github.com/apps/sterling-hale-paperclip-agent/installations/new?state=${encodeURIComponent(flow.state)}`,
     });
     await expect(readFile(result.privateKeyFile, "utf8")).resolves.toBe("-----BEGIN RSA PRIVATE KEY-----\ntest-key\n-----END RSA PRIVATE KEY-----\n");
+    await expect(stat(result.privateKeyFile).then((value) => value.mode & 0o777)).resolves.toBe(0o600);
 
     await expect(harness.performAction<GetGitHubAppManifestFlowResult>("get-github-app-manifest-flow", {
       state: flow.state,
-    })).rejects.toThrow("Unknown or expired GitHub App manifest flow state.");
+    })).resolves.toEqual({ ...flow, conversion: result });
+  });
+
+  it("checks the private-key destination before consuming a manifest code", async () => {
+    const blockedPath = join(credentialSidecarDir!, "not-a-directory");
+    await writeFile(blockedPath, "blocked", "utf8");
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = join(blockedPath, "credentials.json");
+
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+    const flow = await harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      provider: "github",
+      agentId: "agent-manifest",
+      label: "Sterling Hale",
+    });
+    const fetchSpy = vi.spyOn(harness.ctx.http, "fetch");
+
+    await expect(harness.performAction<ConvertGitHubAppManifestResult>("convert-github-app-manifest", {
+      state: flow.state,
+      code: "must-not-be-consumed",
+    })).rejects.toThrow("Unable to prepare GitHub App private-key destination");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-file private-key target before consuming a manifest code", async () => {
+    const privateKeyFile = join(
+      credentialSidecarDir!,
+      "github-apps",
+      "agent-manifest",
+      "private-key.pem",
+    );
+    await mkdir(privateKeyFile, { recursive: true });
+
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    await plugin.definition.setup(harness.ctx);
+    const flow = await harness.performAction<CreateGitHubAppManifestResult>("create-github-app-manifest", {
+      provider: "github",
+      agentId: "agent-manifest",
+      label: "Sterling Hale",
+    });
+    const fetchSpy = vi.spyOn(harness.ctx.http, "fetch");
+
+    await expect(harness.performAction<ConvertGitHubAppManifestResult>("convert-github-app-manifest", {
+      state: flow.state,
+      code: "must-not-be-consumed",
+    })).rejects.toThrow("is not a regular file");
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("writes GitHub App credential references to the sidecar on save", async () => {

@@ -119,7 +119,9 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         const flow = result as GetGitHubAppManifestFlowResult;
         const savedIdentity = identities.find((entry) => entry.agentId === flow.agentId && entry.provider === flow.provider);
         const selectedAgent = agentOptions.find((agent) => agent.id === flow.agentId);
-        const defaults = selectedAgent ? getAgentIdentityDefaults(selectedAgent, companyDisplayName) : null;
+        const defaults = selectedAgent
+          ? getAgentIdentityDefaults(selectedAgent, companyDisplayName, data?.credentialSidecarPath ?? "")
+          : null;
         const restoredForm = toFormState(savedIdentity);
         const draftForm = readManifestDraftForm(callback.state);
         const conversion = flow.conversion;
@@ -161,7 +163,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [agentOptions, companyDisplayName, getGitHubAppManifestFlow, identities]);
+  }, [agentOptions, companyDisplayName, data?.credentialSidecarPath, getGitHubAppManifestFlow, identities]);
 
   useEffect(() => {
     if (!companyId) {
@@ -264,7 +266,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       if (!selectedAgent || base.previousAgentId || base.agentId === agentId) {
         return { ...base, agentId };
       }
-      const defaults = getAgentIdentityDefaults(selectedAgent, companyDisplayName);
+      const defaults = getAgentIdentityDefaults(
+        selectedAgent,
+        companyDisplayName,
+        data?.credentialSidecarPath ?? "",
+      );
       return {
         ...base,
         agentId,
@@ -437,8 +443,13 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   }
 
   return (
-    <div style={{ ...createPaperclipThemeStyle(themeMode), ...pageStyle }} data-agent-identities-theme={themeMode}>
-      <div style={headerStyle}>
+    <div
+      className="agent-identities-settings"
+      style={{ ...createPaperclipThemeStyle(themeMode), ...pageStyle }}
+      data-agent-identities-theme={themeMode}
+    >
+      <style>{responsiveSettingsStyle}</style>
+      <div className="agent-identities-header" style={headerStyle}>
         <div>
           <h2 style={pageTitleStyle}>Agent Identities</h2>
           <p style={descriptionStyle}>
@@ -455,7 +466,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         </button>
       </div>
 
-      <div style={summaryGridStyle}>
+      <div className="agent-identities-summary-grid" style={summaryGridStyle}>
         <SummaryTile label="Identities" value={summary.total} />
         <SummaryTile label="GitHub Apps" value={summary.githubApps} tone="good" />
         <SummaryTile label="Need setup" value={summary.needsSetup} tone={summary.needsSetup > 0 ? "warn" : "good"} />
@@ -467,8 +478,8 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         </div>
       )}
 
-      <div style={settingsShellStyle}>
-        <nav style={sidebarStyle} aria-label="Agent identity settings sections">
+      <div className="agent-identities-settings-shell" style={settingsShellStyle}>
+        <nav className="agent-identities-sidebar" style={sidebarStyle} aria-label="Agent identity settings sections">
           <SidebarButton
             active={activeSection === "identities"}
             title="Identities"
@@ -492,7 +503,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         <main style={workspaceStyle}>
           {activeSection === "identities" && (
             <section style={sectionStyle}>
-              <div style={sectionHeaderStyle}>
+              <div className="agent-identities-section-header" style={sectionHeaderStyle}>
                 <div>
                   <h3 style={sectionTitleStyle}>Configured identities</h3>
                   <p style={sectionDescriptionStyle}>Each row maps one Paperclip agent to a provider account and credential source.</p>
@@ -509,21 +520,21 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 </div>
               ) : (
                 <div style={listStyle}>
-                  <div style={listHeaderStyle}>
+                  <div className="agent-identities-list-header" style={listHeaderStyle}>
                     <span>Agent</span>
                     <span>Provider identity</span>
                     <span>Status</span>
                     <span />
                   </div>
                   {identities.map((entry) => (
-                    <div key={entry.id} style={rowStyle}>
+                    <div key={entry.id} className="agent-identities-list-row" style={rowStyle}>
                       <div style={{ minWidth: 0 }}>
                         <div style={rowTitleStyle}>{entry.label}</div>
                         <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
                       </div>
                       <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : ""}</div>
                       <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
-                      <div style={rowActionsStyle}>
+                      <div className="agent-identities-row-actions" style={rowActionsStyle}>
                         <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
                         <button
                           onClick={() => void handleDelete(entry)}
@@ -571,12 +582,13 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       {config && (
         <div style={dialogBackdropStyle} role="presentation">
           <section
+            className="agent-identities-dialog"
             style={dialogStyle}
             role="dialog"
             aria-modal="true"
             aria-labelledby="agent-identity-dialog-title"
           >
-          <header style={dialogHeaderStyle}>
+          <header className="agent-identities-dialog-header" style={dialogHeaderStyle}>
             <div>
               <h3 id="agent-identity-dialog-title" style={dialogTitleStyle}>{isEditingExistingIdentity ? "Edit agent identity" : "Add agent identity"}</h3>
               <p style={sectionDescriptionStyle}>Configure the agent, GitHub App credential, and optional commit metadata.</p>
@@ -585,7 +597,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
           </header>
 
           <div style={dialogBodyStyle}>
-            <div aria-label="Identity setup progress" style={wizardStepListStyle}>
+            <div className="agent-identities-wizard-steps" aria-label="Identity setup progress" style={wizardStepListStyle}>
               {FORM_STEPS.map((step, index) => (
                 <WizardStepIndicator
                   key={step.id}
@@ -811,7 +823,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 type="text"
                 value={config.privateKeyFile}
                 onChange={(e) => updateField("privateKeyFile", e.target.value)}
-                placeholder="/paperclip/.paperclip/agent-identities/github-apps/<agent>/private-key.pem"
+                placeholder="<runtime-home>/.paperclip/agent-identities/github-apps/<agent>/private-key.pem"
                 style={inputStyle}
               />
               <span style={hintStyle}>Used by plugin tools while a secret UUID is not configured or cannot be resolved. The plugin mints short-lived installation tokens from this private key; it does not store generated tokens.</span>
@@ -851,7 +863,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                     type="text"
                     value={config.tokenFile}
                     onChange={(e) => updateField("tokenFile", e.target.value)}
-                    placeholder="/paperclip/.paperclip/agent-identities/tokens/<agent-id>.token"
+                    placeholder="<runtime-home>/.paperclip/agent-identities/tokens/<agent-id>.token"
                     style={inputStyle}
                   />
                   <span style={hintStyle}>Fallback token files are available for dev and recovery flows. Prefer GitHub App credentials above.</span>
@@ -892,7 +904,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
           </div>
 
-          <footer style={dialogFooterStyle}>
+          <footer className="agent-identities-dialog-footer" style={dialogFooterStyle}>
             <div style={saveStatusStyle}>
               {saveSuccess && <span style={successStyle}>Saved successfully.</span>}
               {saveError && <span style={errorStyle}>{saveError}</span>}
@@ -1074,7 +1086,11 @@ function extractManifestCode(value: string): string {
   }
 }
 
-function getAgentIdentityDefaults(agent: PaperclipAgentOption, companyDisplayName: string): Pick<IdentityFormState, "label" | "githubUsername" | "commitName" | "commitEmail" | "privateKeyFile"> {
+function getAgentIdentityDefaults(
+  agent: PaperclipAgentOption,
+  companyDisplayName: string,
+  credentialSidecarPath: string,
+): Pick<IdentityFormState, "label" | "githubUsername" | "commitName" | "commitEmail" | "privateKeyFile"> {
   const displayName = getAgentDisplayName(agent);
   const slug = slugifyGitHubAppName(displayName);
   return {
@@ -1082,8 +1098,19 @@ function getAgentIdentityDefaults(agent: PaperclipAgentOption, companyDisplayNam
     githubUsername: `${slug}[bot]`,
     commitName: `${displayName} Paperclip Agent`,
     commitEmail: `${slug}[bot]@users.noreply.github.com`,
-    privateKeyFile: `/paperclip/.paperclip/agent-identities/github-apps/${agent.id}/private-key.pem`,
+    privateKeyFile: getGitHubAppPrivateKeyFile(credentialSidecarPath, agent.id),
   };
+}
+
+function getGitHubAppPrivateKeyFile(credentialSidecarPath: string, agentId: string): string {
+  const lastSeparator = Math.max(
+    credentialSidecarPath.lastIndexOf("/"),
+    credentialSidecarPath.lastIndexOf("\\"),
+  );
+  if (lastSeparator < 0) return "";
+  const separator = credentialSidecarPath[lastSeparator];
+  const directory = credentialSidecarPath.slice(0, lastSeparator);
+  return [directory, "github-apps", agentId, "private-key.pem"].join(separator);
 }
 
 function shouldPrefillIdentityField(value: string, defaultValue: string): boolean {
@@ -1686,11 +1713,89 @@ function getAgentFieldHint(input: {
   return "The Paperclip agent that will use this identity.";
 }
 
+const responsiveSettingsStyle = `
+.agent-identities-settings,
+.agent-identities-settings * {
+  box-sizing: border-box;
+}
+
+.agent-identities-summary-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.agent-identities-settings-shell {
+  grid-template-columns: 220px minmax(0, 1fr);
+}
+
+.agent-identities-list-header,
+.agent-identities-list-row {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(90px, auto) auto;
+}
+
+.agent-identities-row-actions {
+  justify-content: flex-end;
+}
+
+.agent-identities-wizard-steps {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@container (max-width: 720px) {
+  .agent-identities-settings-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-identities-sidebar {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 520px) {
+  .agent-identities-summary-grid,
+  .agent-identities-sidebar,
+  .agent-identities-wizard-steps {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-identities-list-header {
+    display: none !important;
+  }
+
+  .agent-identities-list-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .agent-identities-list-row > :nth-child(1) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .agent-identities-list-row > :nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .agent-identities-list-row > :nth-child(3) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .agent-identities-list-row > :nth-child(4) {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-content: flex-start;
+  }
+}
+`;
+
 const pageStyle: CSSProperties = {
+  width: "100%",
+  minWidth: 0,
   maxWidth: 1160,
   display: "grid",
   gap: "1rem",
   color: uiText,
+  containerType: "inline-size",
 };
 
 const pageTitleStyle: CSSProperties = {
@@ -1705,6 +1810,7 @@ const headerStyle: CSSProperties = {
   justifyContent: "space-between",
   alignItems: "flex-start",
   gap: "1rem",
+  flexWrap: "wrap",
 };
 
 const descriptionStyle: CSSProperties = {
@@ -1715,7 +1821,6 @@ const descriptionStyle: CSSProperties = {
 
 const summaryGridStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
   gap: "0.75rem",
 };
 
@@ -1753,9 +1858,9 @@ const credentialErrorStyle: CSSProperties = {
 
 const settingsShellStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "220px minmax(0, 1fr)",
   gap: "1rem",
   alignItems: "start",
+  minWidth: 0,
 };
 
 const sidebarStyle: CSSProperties = {
@@ -1798,6 +1903,7 @@ const workspaceStyle: CSSProperties = {
 };
 
 const sectionStyle: CSSProperties = {
+  minWidth: 0,
   border: `1px solid ${uiBorder}`,
   borderRadius: 14,
   padding: "1rem",
@@ -1811,6 +1917,7 @@ const sectionHeaderStyle: CSSProperties = {
   alignItems: "flex-start",
   justifyContent: "space-between",
   gap: "1rem",
+  flexWrap: "wrap",
 };
 
 const sectionTitleStyle: CSSProperties = {
@@ -1828,11 +1935,11 @@ const sectionDescriptionStyle: CSSProperties = {
 const listStyle: CSSProperties = {
   display: "grid",
   gap: "0.35rem",
+  minWidth: 0,
 };
 
 const listHeaderStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "minmax(180px, 1.4fr) minmax(160px, 1fr) 110px auto",
   gap: "0.75rem",
   padding: "0 0.75rem 0.25rem",
   color: uiMutedText,
@@ -1842,7 +1949,6 @@ const listHeaderStyle: CSSProperties = {
 
 const rowStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "minmax(180px, 1.4fr) minmax(160px, 1fr) 110px auto",
   gap: "0.75rem",
   alignItems: "center",
   border: `1px solid ${uiBorder}`,
@@ -1865,7 +1971,7 @@ const rowMetaStyle: CSSProperties = {
 const rowActionsStyle: CSSProperties = {
   display: "flex",
   gap: "0.5rem",
-  justifyContent: "flex-end",
+  flexWrap: "wrap",
 };
 
 const emptyStateStyle: CSSProperties = {
@@ -1973,7 +2079,6 @@ const dialogBodyStyle: CSSProperties = {
 
 const wizardStepListStyle: CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
   gap: "0.5rem",
 };
 
@@ -2013,6 +2118,7 @@ const dialogFooterStyle: CSSProperties = {
   justifyContent: "flex-end",
   alignItems: "center",
   gap: "0.75rem",
+  flexWrap: "wrap",
   padding: "0.9rem 1.25rem",
   borderTop: `1px solid ${uiBorder}`,
   backgroundColor: uiPanel,

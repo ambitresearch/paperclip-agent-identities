@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -29,14 +31,45 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify package and manifest versions
+      - name: Verify release metadata
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || '' }}
         run: |
           set -euo pipefail
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           MANIFEST_VERSION="$(node -e 'const fs=require("fs"); const match=fs.readFileSync("src/manifest.ts", "utf8").match(/version: "([^"]+)"/); process.stdout.write(match?.[1] ?? "")')"
+          if [[ ! "$PACKAGE_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "package.json version '$PACKAGE_VERSION' must be canonical major.minor.patch SemVer." >&2
+            exit 1
+          fi
           if [[ "$PACKAGE_VERSION" != "$MANIFEST_VERSION" ]]; then
             echo "package.json version '$PACKAGE_VERSION' does not match src/manifest.ts version '$MANIFEST_VERSION'." >&2
             exit 1
+          fi
+          if [[ -n "$BASE_SHA" ]] && git cat-file -e "${BASE_SHA}:package.json" 2>/dev/null; then
+            BASE_VERSION="$(git show "${BASE_SHA}:package.json" | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version || "")')"
+            if [[ "$BASE_VERSION" != "$PACKAGE_VERSION" ]]; then
+              if node - "$BASE_VERSION" "$PACKAGE_VERSION" <<'NODE'
+          const parse = (value) => {
+            const match = value.match(/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/);
+            if (!match) throw new Error(`Invalid canonical SemVer: ${value}`);
+            return match.slice(1).map(Number);
+          };
+          const base = parse(process.argv[2]);
+          const current = parse(process.argv[3]);
+          for (let index = 0; index < base.length; index += 1) {
+            if (current[index] > base[index]) process.exit(0);
+            if (current[index] < base[index]) process.exit(1);
+          }
+          process.exit(1);
+          NODE
+              then
+                :
+              else
+                echo "package.json version '$PACKAGE_VERSION' must be greater than base version '$BASE_VERSION'." >&2
+                exit 1
+              fi
+            fi
           fi
 
       - name: Typecheck

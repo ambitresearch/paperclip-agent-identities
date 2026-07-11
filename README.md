@@ -145,7 +145,7 @@ Runs on pull requests and pushes to `main`:
 
 Every push to `main` compares the merged `package.json` version with the previous commit. If the version is unchanged, the release workflow exits successfully. If it changed, the workflow requires a greater stable version, verifies that `src/manifest.ts` matches, validates the package, tags that exact merged SHA, creates the GitHub Release, and dispatches tag-based npm publication. Regular CI enforces package/manifest parity even when a release is skipped.
 
-Version bumps are explicit normal pull-request changes. Set the intended patch, minor, or major version in both `package.json` and `src/manifest.ts`; the merge is the release trigger. The workflow never increments versions or writes to `main`. Real npm publication accepts only a stable `v<major>.<minor>.<patch>` tag whose package and manifest versions match. `NPM_TOKEN` remains a repository secret used only by the publish workflow.
+Version bumps are explicit normal pull-request changes. CI requires a canonical SemVer version greater than the base revision whenever `package.json` changes. Set the intended patch, minor, or major version in both `package.json` and `src/manifest.ts`; the merge is the release trigger. The workflow never increments versions or writes to `main`. Real npm publication accepts only a stable `v<major>.<minor>.<patch>` tag whose package and manifest versions match. `NPM_TOKEN` remains a repository secret used only by the publish workflow.
 
 
 Run the same validation locally:

@@ -133,7 +133,7 @@ pnpm docs:preview   # preview the built static site
 
 GitHub Actions workflows: [CI](.github/workflows/ci.yml), [Release](.github/workflows/release.yml), [Publish](.github/workflows/publish.yml), and [Publish Docs](.github/workflows/pages.yml)
 
-Runs on pull requests, pushes to `main`, and manual dispatches used to validate generated release branches:
+Runs on pull requests and pushes to `main`:
 
 - `pnpm typecheck`
 - `pnpm test`
@@ -143,9 +143,10 @@ Runs on pull requests, pushes to `main`, and manual dispatches used to validate 
 
 ### Releases
 
-Every qualifying push to `main` creates a release pull request for the next stable patch version. It updates only the synchronized version fields in `package.json` and `src/manifest.ts`, validates the package, dispatches CI explicitly for its release branch, waits for the automatic Copilot review on that branch to finish at the current head with zero open threads and for successful checks to pass, then squash-merges the release PR through the repository ruleset. An idempotent finalizer tags that exact immutable merge commit, creates a GitHub Release, and dispatches npm publication of the matching tag. If Copilot leaves feedback or a check fails, the release PR remains open for remediation and no tag or publication occurs; a rerun resumes the same release PR. If a merged release PR needs finalization retried after a dispatch failure, run **Create Release** manually with `finalize_pr` set to that PR number; this finalizes the same immutable release rather than calculating a new version.
+Every push to `main` compares the merged `package.json` version with the previous commit. If the version is unchanged, the release workflow exits successfully. If it changed, the workflow verifies that `src/manifest.ts` matches, validates the package, tags that exact merged SHA, creates the GitHub Release, and dispatches tag-based npm publication.
 
-Minor and major releases are manual only. Run **Create Release** from GitHub Actions and choose `minor` or `major`. Real npm publication accepts only a stable `v<major>.<minor>.<patch>` tag whose version exactly matches `package.json`; dispatch **Publish** with `dry_run: true` to validate a tag without publishing. `NPM_TOKEN` must be configured as a repository secret.
+Version bumps are explicit normal pull-request changes. Set the intended patch, minor, or major version in both `package.json` and `src/manifest.ts`; the merge is the release trigger. The workflow never increments versions or writes to `main`. Real npm publication accepts only a stable `v<major>.<minor>.<patch>` tag whose package and manifest versions match. `NPM_TOKEN` remains a repository secret used only by the publish workflow.
+
 
 Run the same validation locally:
 

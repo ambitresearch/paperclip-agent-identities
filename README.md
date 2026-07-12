@@ -83,14 +83,14 @@ The settings page stores public identity metadata in plugin state, writes creden
         "appId": "<github-app-id>",
         "installationId": "<github-installation-id>",
         "privateKeySecretId": "<paperclip-company-secret-uuid-containing-private-key>",
-        "privateKeyFile": "/paperclip/.paperclip/agent-identities/github-apps/<agent>/private-key.pem"
+        "privateKeyFile": "<runtime-home>/.paperclip/agent-identities/github-apps/<agent>/private-key.pem"
       }
     }
   }
 }
 ```
 
-Default sidecar path in Paperclip: `/paperclip/.paperclip/agent-identities/credentials.json`. Override with `PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS` for tests or custom deployments. The plugin worker reads this sidecar when its GitHub provider tools need credentials. The saved agent environment receives `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, and either `GITHUB_APP_PRIVATE_KEY` as a Paperclip secret reference or `GITHUB_APP_PRIVATE_KEY_FILE` as a private-key file path. The plugin tries the configured private-key secret first and falls back to `privateKeyFile` when a file path is present. It uses those GitHub App credentials to mint a fresh installation token on each GitHub tool call; generated tokens are not stored.
+Default sidecar path: `<runtime-home>/.paperclip/agent-identities/credentials.json`, resolved with Node's `os.homedir()`. This is `/Users/<user>/.paperclip/...` for a native macOS run and remains `/paperclip/.paperclip/...` in the Paperclip container, whose runtime home is `/paperclip`. `PAPERCLIP_AGENT_IDENTITIES_CREDENTIALS` overrides the default when the worker host passes that environment variable (including tests and custom worker hosts); relative override values are resolved against the worker's current directory and reported to the settings UI as absolute paths. The plugin worker reads this sidecar when its GitHub provider tools need credentials. The saved agent environment receives `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, and either `GITHUB_APP_PRIVATE_KEY` as a Paperclip secret reference or `GITHUB_APP_PRIVATE_KEY_FILE` as a private-key file path. The plugin tries the configured private-key secret first and falls back to `privateKeyFile` when a file path is present. It uses those GitHub App credentials to mint a fresh installation token on each GitHub tool call; generated tokens are not stored.
 
 The settings page includes a **Create GitHub App on GitHub** button for bootstrapping this credential source with GitHub's App Manifest flow. The generated manifest opens GitHub with the required permissions (`contents`, `pull_requests`, `issues`, and `workflows` as `write`), marks the app private, uses the selected agent dashboard as the GitHub App homepage, redirects back to the current settings URL for manifest conversion, configures a GitHub App `setup_url` plus `setup_on_update` for post-install and repository-selection callbacks, explicitly disables OAuth-on-install, and intentionally omits `hook_attributes` for the no-webhook case; GitHub rejects `hook_attributes: { "active": false }` even though the resulting error says the URL is missing. After GitHub creates the app, the callback returns to the settings page and restores the relevant identity form with the one-time code prefilled; if the browser loses that state, paste the returned callback URL or `code=...` value into the field manually. The plugin exchanges that one-time code, writes the returned PEM content to `github-apps/<agent-id>/private-key.pem` beside the sidecar credentials file, prefills the App ID, private key file, and GitHub App login fields, then sends the browser into the GitHub App installation flow. GitHub redirects back to the setup URL with `installation_id`, and the settings page restores the same form with Installation ID prefilled before saving. The generated private key file is the automatic credential source. Operators can also copy that PEM into a Paperclip secret and select its UUID to prefer secret resolution over the file fallback. When editing an agent that already has GitHub App credentials, the manifest creation CTA is treated as a replacement/rotation flow and is tucked behind a disclosure so normal edits focus on the existing App ID, Installation ID, and key source.
 
@@ -175,21 +175,35 @@ Download CI artifact from GitHub:
 
 ## Adding a provider
 
-The plugin composes identity providers behind a single `IdentityProvider` contract (`src/core/provider-contract.ts`). Neither `src/worker.ts` nor `src/manifest.ts` reference any specific provider — both consume whatever the registry in `src/providers/index.ts` exposes. Adding a new provider does not require editing `worker.ts` or `manifest.ts`.
+The plugin composes runtime identity-provider tools and actions behind a single
+`IdentityProvider` contract (`src/core/provider-contract.ts`). Runtime
+registration is generic: `src/worker.ts` and `src/manifest.ts` consume the
+registry in `src/providers/index.ts`, so adding a provider's runtime tools does
+not require a provider-specific registration branch in either file.
+
+Settings persistence is a separate boundary and is not fully generic today.
+Providers that can be created or edited in the settings UI must also extend the
+persisted identity union and credential-sidecar schema, introduce or extend a
+provider-keyed settings-normalizer dispatch in `src/worker.ts`, and add the
+corresponding UI form/projection. `src/manifest.ts` remains provider-agnostic;
+`src/worker.ts` changes only at the settings-persistence boundary, not to
+register runtime tools or actions.
 
 To add a provider:
 
 1. Create a new module under `src/providers/<id>/` that implements `IdentityProvider<TIdentity, TRef>`.
 2. Write `validateConfig` to parse a single projected identity and return either the typed identity or a joined error string (see `validateGitHubConfig` in `src/providers/github/index.ts` for the pattern).
-3. Project raw settings-state identities for your provider's key (`${agentId}:<id>`) into that typed identity shape.
-4. Implement credential resolution (`resolveCredential`) — resolve secrets/tokens just in time, never eagerly, and never before params/identity/resource-ref have been validated.
-5. Provide `tools`: an array of `ProviderToolSpec` entries, each declaring its metadata, whether it requires a credential, and its `perform` implementation.
-6. Optionally contribute `actions` (e.g. an App-manifest-style setup flow) if the provider needs additional worker actions beyond tool calls.
-7. Include `manifestTools`: the manifest-facing fragments the composed manifest consumes (see `src/providers/github/manifest-tools.ts`).
-8. Append the new provider exactly once, in `src/providers/index.ts`'s `ALL_PROVIDERS` array. This is the single composition root; nothing else needs to change to register it.
-9. Add contract tests (validate/project/resolveCredential) and pipeline tests (tool execution through `createProviderTool`) alongside the existing provider test suites, and extend `tests/provider-composition.spec.ts` if the new provider changes composed output.
-
-`worker.ts` and `manifest.ts` are not edited when adding a provider — they only depend on the provider contract and the registry, not on any concrete provider module.
+3. If the provider is editable in settings, extend the persistence
+   discriminated union and sidecar schema, add its provider-keyed normalization adapter to the
+   worker's settings dispatch, and add its UI form/projection. A runtime-only
+   provider can skip this step.
+4. Project raw settings-state identities for your provider's key (`${agentId}:<id>`) into that typed identity shape.
+5. Implement credential resolution (`resolveCredential`) — resolve secrets/tokens just in time, never eagerly, and never before params/identity/resource-ref have been validated.
+6. Provide `tools`: an array of `ProviderToolSpec` entries, each declaring its metadata, whether it requires a credential, and its `perform` implementation.
+7. Optionally contribute `actions` (e.g. an App-manifest-style setup flow) if the provider needs additional worker actions beyond tool calls.
+8. Include `manifestTools`: the manifest-facing fragments the composed manifest consumes (see `src/providers/github/manifest-tools.ts`).
+9. Append the new provider exactly once, in `src/providers/index.ts`'s `ALL_PROVIDERS` array. This is the single runtime composition root; no provider-specific registration branch belongs in `worker.ts` or `manifest.ts`.
+10. Add contract tests (validate/project/resolveCredential) and pipeline tests (tool execution through `createProviderTool`) alongside the existing provider test suites, and extend `tests/provider-composition.spec.ts` if the new provider changes composed output.
 
 ### Security order (all provider tools)
 

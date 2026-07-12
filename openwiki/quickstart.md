@@ -24,6 +24,9 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
 | Change GitHub App setup or settings UI behavior | [Agent identity domain](domain/agent-identities.md) | `/src/ui/SettingsPage.tsx`, `/src/worker.ts` manifest-flow actions |
 | Change PR or push tools | [GitHub contribution tools](tools/github-contribution-tools.md) | `/src/providers/github/tools/create-pull-request.ts`, `/src/providers/github/tools/push-branch.ts` |
 | Run validation or understand test coverage | [Testing and operations](operations/testing-and-release.md) | `/tests/*.spec.ts`, `/package.json` |
+| Register a provider's runtime tools/actions | [Plugin runtime architecture](architecture/plugin-runtime.md) | `/src/providers/<id>/`, `/src/providers/index.ts` |
+| Add provider settings persistence/UI | [Agent identity domain](domain/agent-identities.md) | `/src/core/identity-config.ts`, `/src/credential-sidecar.ts`, `/src/worker.ts`, `/src/ui/SettingsPage.tsx` |
+| Implement the Slack provider | [Slack provider MVP and threat model](domain/slack-provider-design.md) | `/src/providers/slack/` plus the settings-persistence files above |
 
 ## Repository layout
 
@@ -90,7 +93,7 @@ See [Plugin runtime architecture](architecture/plugin-runtime.md) for details.
 
 - **Agent identity**: a provider-aware mapping keyed by `${agentId}:${provider}`, with label, provider ID, provider account fields, selected-agent credential cascade, and optional commit author fields. GitHub is the only enabled provider today; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are listed as coming soon.
 - **Provider authorization**: repository/resource access is owned by the provider. For GitHub, App installation permissions and scopes decide which repositories tools can access.
-- **Credential sidecar**: an operator-local JSON file, defaulting to `/paperclip/.paperclip/agent-identities/credentials.json`, that stores credential references by `${agentId}:${provider}` but not generated installation tokens.
+- **Credential sidecar**: an operator-local JSON file, defaulting to `<runtime-home>/.paperclip/agent-identities/credentials.json` via `os.homedir()`, that stores credential references by `${agentId}:${provider}` but not generated installation tokens. Native and container runs therefore use their own writable runtime homes.
 - **GitHub App path**: preferred credential mode. The settings UI creates a GitHub App manifest, the worker converts the one-time code, writes a private key file, and later mints short-lived installation tokens on tool calls.
 - **Fallback credentials**: secret ID or token file sources are still supported for dev and recovery flows, but GitHub App credentials are the durable path described in the README.
 
@@ -104,4 +107,9 @@ See [Agent identity domain](domain/agent-identities.md) for the canonical model.
 - Do not document or inspect live secret material. Avoid `.env` files and private key/token files.
 - If adding settings fields, update shared types, worker normalization, UI form behavior, and tests together.
 - If changing tool schemas, update both manifest metadata and worker registration behavior, then run `pnpm typecheck` and `pnpm test`.
-- When adding a new identity provider, follow `/README.md#adding-a-provider`: implement the `IdentityProvider` contract under `/src/providers/<id>/`, and append it once to `/src/providers/index.ts`. Do not edit `/src/worker.ts` or `/src/manifest.ts` for a provider addition.
+- When adding a new identity provider, follow `/README.md#adding-a-provider`:
+  implement the runtime `IdentityProvider` under `/src/providers/<id>/` and
+  append it once to `/src/providers/index.ts`; do not add provider-specific
+  runtime registration branches to `/src/worker.ts` or `/src/manifest.ts`. A
+  provider exposed in settings must still extend the persistence normalization
+  in `/src/worker.ts`, the shared schemas, and the UI as described there.

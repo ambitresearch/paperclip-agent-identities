@@ -151,6 +151,7 @@ export type CreateGitHubAppManifestResult = GitHubAppManifestFlowState & {
 
 export type GetGitHubAppManifestFlowInput = {
   state: string;
+  consume?: boolean;
 };
 
 export type GetGitHubAppManifestFlowResult = CreateGitHubAppManifestResult;

@@ -1,4 +1,4 @@
-import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { z, type PluginContext } from "@paperclipai/plugin-sdk";
 import { createHash, randomBytes } from "node:crypto";
 import { upsertCredentialSidecarIdentity, slackBotTokenSecretIdSchema } from "../../credential-sidecar.js";
 import { getIdentityKey } from "../../shared/types.js";
@@ -64,9 +64,20 @@ function slackAppManifestFlowScope(companyId: string, state: string) {
   };
 }
 
+// Slack's App Manifest schema caps `display_information.name` at 80
+// characters and `display_information.description` at 100. These are
+// display-only truncations of the manifest text; the full, untruncated
+// `label` is always retained in flow/config state.
+const SLACK_APP_NAME_MAX_LENGTH = 80;
+const SLACK_APP_DESCRIPTION_MAX_LENGTH = 100;
+
+function truncateForManifest(value: string, maxLength: number): string {
+  return value.length > maxLength ? value.slice(0, maxLength) : value;
+}
+
 function buildSlackAppName(label: string): string {
   const cleaned = label.replace(/\[[^\]]*\]/g, "").trim();
-  return `Paperclip Agent — ${cleaned || label}`;
+  return truncateForManifest(`Paperclip Agent — ${cleaned || label}`, SLACK_APP_NAME_MAX_LENGTH);
 }
 
 function buildSlackAppManifest(label: string): string {
@@ -74,7 +85,7 @@ function buildSlackAppManifest(label: string): string {
     _metadata: { major_version: 1, minor_version: 1 },
     display_information: {
       name: buildSlackAppName(label),
-      description: `Paperclip agent identity for ${label}`,
+      description: truncateForManifest(`Paperclip agent identity for ${label}`, SLACK_APP_DESCRIPTION_MAX_LENGTH),
       background_color: "#4A154B",
     },
     oauth_config: {
@@ -109,6 +120,14 @@ function requireCompanyId(context: { companyId?: string | null } | undefined): s
   }
   return companyId;
 }
+
+// Same channel-ID syntax the resource resolver will enforce later (see
+// openwiki/domain/slack-provider-design.md:568-570 /
+// slack-provider-design.md:86): `C...` for public channels, `G...` for
+// private channels and multi-person conversations. This is syntax-only
+// validation — authenticated existence/membership is checked at tool-use
+// time, not here.
+const slackDefaultChannelSchema = z.string().trim().regex(/^[CG][A-Z0-9]{8,}$/);
 
 async function requireCompanyAgent(ctx: PluginContext, companyId: string, agentId: string): Promise<void> {
   const agents = await ctx.agents.list({ companyId });
@@ -255,7 +274,19 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       throw new Error("botTokenSecretId must be a valid UUID.");
     }
     const botTokenSecretId = botTokenSecretIdResult.data;
-    const defaultChannel = readString(input.defaultChannel) || undefined;
+    // Syntax-only channel-ID validation up front (before any mutation), per
+    // the provider contract in openwiki/domain/slack-provider-design.md:
+    // `^[CG][A-Z0-9]{8,}$`. Persisting a malformed/name-style value would
+    // create config the resource resolver later rejects.
+    const defaultChannelRaw = readString(input.defaultChannel) || undefined;
+    let defaultChannel: string | undefined;
+    if (defaultChannelRaw) {
+      const defaultChannelResult = slackDefaultChannelSchema.safeParse(defaultChannelRaw);
+      if (!defaultChannelResult.success) {
+        throw new Error("defaultChannel must match the Slack channel ID pattern ^[CG][A-Z0-9]{8,}$.");
+      }
+      defaultChannel = defaultChannelResult.data;
+    }
 
     const flow = await loadUnexpiredUnconsumedFlow(ctx, companyId, state);
     // Idempotency / anti-replay: a duplicate or replayed callback bound to a
@@ -264,6 +295,14 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
     if (flow.agentId !== agentId) {
       throw new Error("Slack App manifest flow state does not match the requested agentId.");
     }
+
+    // Re-check company membership immediately before claiming the flow.
+    // Membership was already checked at create time, but the flow's 30-minute
+    // TTL means the agent could be deleted or moved to another company
+    // before this save runs. Enforcing it again here means authorization is
+    // checked at the point the write actually happens, not just at an
+    // earlier point in time.
+    await requireCompanyAgent(ctx, companyId, agentId);
 
     // Claim the flow (mark it consumed) BEFORE performing any further
     // mutations. `ctx.state` has no compare-and-swap/setIfAbsent primitive,
@@ -296,9 +335,21 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       },
     };
     await ctx.state.set(CONFIG_SCOPE, nextState);
-    await upsertCredentialSidecarIdentity(agentId, SLACK_PROVIDER, {
-      slackBotToken: { botTokenSecretId },
-    });
+    try {
+      await upsertCredentialSidecarIdentity(agentId, SLACK_PROVIDER, {
+        slackBotToken: { botTokenSecretId },
+      });
+    } catch (err) {
+      // The flow is already consumed and CONFIG_SCOPE already reflects the
+      // new identity, but the credential sidecar write — the last step —
+      // failed. Roll CONFIG_SCOPE back to its previous value and re-open the
+      // flow state (un-consume it) so the operator can safely retry the same
+      // `state` instead of being left with identity metadata but no usable
+      // credential and no way to resubmit.
+      await ctx.state.set(CONFIG_SCOPE, previousState).catch(() => undefined);
+      await ctx.state.set(slackAppManifestFlowScope(companyId, state), flow).catch(() => undefined);
+      throw err;
+    }
 
     // Do not log `state` here either — same short-lived secret material
     // constraint as above.

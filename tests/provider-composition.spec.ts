@@ -3,10 +3,11 @@ import { describe, it, expect } from "vitest";
 import { ALL_PROVIDERS, createProviderRegistry } from "../src/providers/index.js";
 import { githubProvider } from "../src/providers/github/index.js";
 import { exampleProvider } from "../src/providers/example/index.js";
+import { slackProvider } from "../src/providers/slack/index.js";
 
 describe("provider composition root", () => {
-  it("registers github then example, in order", () => {
-    expect(ALL_PROVIDERS.map((p) => p.id)).toEqual(["github", "example"]);
+  it("registers github, example, then slack, in order", () => {
+    expect(ALL_PROVIDERS.map((p) => p.id)).toEqual(["github", "example", "slack"]);
   });
 
   it("enables only providers whose status is enabled", () => {
@@ -18,6 +19,7 @@ describe("provider composition root", () => {
     const registry = createProviderRegistry();
     expect(registry.get("github")).toBe(githubProvider);
     expect(registry.get("example")).toBe(exampleProvider);
+    expect(registry.get("slack")).toBe(slackProvider);
     expect(registry.get("nope")).toBeUndefined();
   });
 

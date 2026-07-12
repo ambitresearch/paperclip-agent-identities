@@ -15,6 +15,16 @@ export interface ExampleIdentityFields {
   readonly demoTokenSecretId: string;
 }
 
+// Shareable Slack install metadata only — never a credential. See
+// openwiki/domain/slack-provider-mvp.md §1: bot token / signing secret live
+// exclusively in the credential sidecar, never in this persisted config shape.
+export interface SlackIdentityFields {
+  readonly teamId: string;
+  readonly appId: string;
+  readonly botUserId: string;
+  readonly defaultChannel?: string;
+}
+
 export interface GitHubAgentIdentityConfig {
   readonly provider: "github";
   readonly id: string;
@@ -31,9 +41,20 @@ export interface ExampleAgentIdentityConfig {
   readonly example: ExampleIdentityFields;
 }
 
+export interface SlackAgentIdentityConfig {
+  readonly provider: "slack";
+  readonly id: string;
+  readonly agentId: string;
+  readonly label: string;
+  readonly slack: SlackIdentityFields;
+}
+
 // Persistence-boundary discriminated union. New providers append a variant here.
 // The runtime registry/pipeline stay provider-agnostic; only serialization enumerates.
-export type AgentIdentityConfig = GitHubAgentIdentityConfig | ExampleAgentIdentityConfig;
+export type AgentIdentityConfig =
+  | GitHubAgentIdentityConfig
+  | ExampleAgentIdentityConfig
+  | SlackAgentIdentityConfig;
 
 export interface AgentIdentitySettingsState {
   readonly version: typeof BOT_IDENTITY_SETTINGS_VERSION;
@@ -153,6 +174,21 @@ function normalizeV4Identity(raw: unknown): AgentIdentityConfig | null {
     const demoTokenSecretId = readString(raw.example.demoTokenSecretId);
     if (!demoTokenSecretId) return null;
     return { provider: "example", id: getIdentityKey(agentId, "example"), agentId, label, example: { demoTokenSecretId } };
+  }
+
+  if (raw.provider === "slack" && isRecord(raw.slack)) {
+    const teamId = readString(raw.slack.teamId);
+    const appId = readString(raw.slack.appId);
+    const botUserId = readString(raw.slack.botUserId);
+    if (!teamId || !appId || !botUserId) return null;
+    const slack: { teamId: string; appId: string; botUserId: string; defaultChannel?: string } = {
+      teamId,
+      appId,
+      botUserId,
+    };
+    const defaultChannel = readOptionalString(raw.slack.defaultChannel);
+    if (defaultChannel) slack.defaultChannel = defaultChannel;
+    return { provider: "slack", id: getIdentityKey(agentId, "slack"), agentId, label, slack };
   }
 
   return null;

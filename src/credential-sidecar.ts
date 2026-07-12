@@ -17,12 +17,24 @@ const githubAppCredentialSchema = z.object({
   message: "Expected either privateKeySecretId or privateKeyFile for GitHub App credentials"
 });
 
+// Slack MVP credential source: a Paperclip-secret-backed bot token, with an
+// optional signing secret. No tokenFile fallback — see
+// openwiki/domain/slack-provider-mvp.md §2: the signing secret is used for
+// per-request HMAC verification, not bearer auth, so it must not be written
+// to a file the way a GitHub PEM is. Rotation is deliberately unimplemented
+// (design decision) — see that same section.
+const slackBotTokenCredentialSchema = z.object({
+  botTokenSecretId: z.string().trim().uuid(),
+  signingSecretId: z.string().trim().uuid().optional(),
+});
+
 const sidecarIdentitySchema = z.object({
   secretId: z.string().trim().uuid().optional(),
   tokenFile: z.string().trim().min(1).optional(),
   githubApp: githubAppCredentialSchema.optional(),
-}).refine((value) => Boolean(value.githubApp || value.secretId || value.tokenFile), {
-  message: "Expected githubApp, secretId, or tokenFile"
+  slackBotToken: slackBotTokenCredentialSchema.optional(),
+}).refine((value) => Boolean(value.githubApp || value.secretId || value.tokenFile || value.slackBotToken), {
+  message: "Expected githubApp, secretId, tokenFile, or slackBotToken"
 });
 
 const credentialSidecarSchema = z.object({
@@ -180,12 +192,27 @@ export async function resolveIdentityToken(
 }
 
 async function readSidecarIdentity(resolvedIdentity: ResolvedAgentIdentity, sidecarPath: string) {
+  return readSidecarIdentityForProvider(resolvedIdentity.agentId, GITHUB_IDENTITY_PROVIDER_ID, sidecarPath);
+}
+
+/**
+ * Generic (provider-agnostic) sidecar identity lookup. Reused by non-GitHub
+ * providers (e.g. Slack, `src/providers/slack/credentials.ts`) so they read
+ * through the same atomic-write/0600 sidecar primitives without duplicating
+ * the identity-key lookup or fail-closed error path.
+ */
+export async function readSidecarIdentityForProvider(
+  agentId: string,
+  provider: IdentityProviderId,
+  path?: string
+): Promise<CredentialSidecarIdentity> {
+  const sidecarPath = path ?? await resolveCredentialSidecarPath();
   const sidecar = await readCredentialSidecar(sidecarPath);
-  const identityKey = getIdentityKey(resolvedIdentity.agentId, GITHUB_IDENTITY_PROVIDER_ID);
+  const identityKey = getIdentityKey(agentId, provider);
   const sidecarIdentity = sidecar.identities[identityKey];
   if (!sidecarIdentity) {
     throw new Error(
-      `Missing agent identity credential sidecar entry for agent '${resolvedIdentity.agentId}' and provider '${GITHUB_IDENTITY_PROVIDER_ID}'. ` +
+      `Missing agent identity credential sidecar entry for agent '${agentId}' and provider '${provider}'. ` +
       `Expected identities.${identityKey} in ${sidecarPath}.`
     );
   }

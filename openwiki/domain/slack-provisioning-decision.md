@@ -1,8 +1,10 @@
 # Slack app manifests and per-agent provisioning — decision record
 
-Status: **decided (research)** — no Slack provider code exists yet. This document is the
-authoritative input for a future `feat(providers): add Slack identity provider` task; it does not
-itself add a provider.
+Status: **decided (research)** — this remains a research/decision record, not an implementation
+spec. The identity-config and credential-resolver slice it informed (`src/providers/slack/`,
+see [`slack-provider-mvp.md`](./slack-provider-mvp.md)) is now implemented; the per-agent
+provisioning automation (manifest deep link / App Manifest API flow) and the actual Slack tools
+described below remain **deferred, unimplemented** future work.
 
 ## Decision
 
@@ -205,7 +207,9 @@ above, including `socket_mode_enabled` and `token_rotation_enabled`).
   identities" requirement outright.
 - **Socket Mode as the default transport.** Rejected as default: needs an extra app-level-token
   credential class, is unsupported for Marketplace distribution, and adds reconnect/ack handling
-  complexity with no benefit here since the worker can already host an HTTPS endpoint.
+  complexity with no offsetting benefit: HTTP Events API is the simpler default once its
+  ingress prerequisite is built, and Socket Mode's dial-out model isn't needed just to avoid
+  building that ingress (see the inbound-routing gap noted above).
 - **App Manifest API automation as the default per-agent install path.** Rejected as default:
   requires holding a 12-hour configuration token plus a rotating refresh token — an extra secret
   class the manifest-deep-link path avoids entirely. Kept as an optional, clearly-labeled

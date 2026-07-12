@@ -4,12 +4,13 @@ import type { ProviderRegistry } from "../core/provider-registry.js";
 import type { IdentityProvider } from "../core/provider-contract.js";
 import { githubProvider } from "./github/index.js";
 import { exampleProvider } from "./example/index.js";
+import { slackProvider } from "./slack/index.js";
 
 // The ONE place that knows the concrete set of identity providers and their
 // order. Adding a provider = import its module here and append it to this array.
 // Nothing else in the plugin (worker, manifest) references a specific provider —
 // they consume the registry this composition root builds.
-export const ALL_PROVIDERS: readonly IdentityProvider[] = [githubProvider, exampleProvider];
+export const ALL_PROVIDERS: readonly IdentityProvider[] = [githubProvider, exampleProvider, slackProvider];
 
 export function createProviderRegistry(): ProviderRegistry {
   return buildProviderRegistry([...ALL_PROVIDERS]);

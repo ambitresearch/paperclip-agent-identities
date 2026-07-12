@@ -310,6 +310,9 @@ source and its resolver (§2), and the `slackProvider` composition (§14) — wi
 
 ## Implementation status (DRO-971: manifest-assisted app setup actions)
 
+*(This section supersedes DRO-969's note above regarding DRO-971's own status — that note is
+scoped to the five Slack tools, not the setup actions this section documents.)*
+
 This slice implements §6's `contributeActions` for Slack, wired through `slackProvider` in
 `src/providers/slack/index.ts` exactly like `contributeGitHubAppManifestActions` is wired for
 GitHub — no new `if (provider === "slack")` branch was added to `src/worker.ts` or

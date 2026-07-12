@@ -1,0 +1,287 @@
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { createHash, randomBytes } from "node:crypto";
+import { upsertCredentialSidecarIdentity } from "../../credential-sidecar.js";
+import { getIdentityKey } from "../../shared/types.js";
+import { normalizeSettingsState, BOT_IDENTITY_SETTINGS_VERSION, type AgentIdentitySettingsState } from "../../core/identity-config.js";
+import { CONFIG_SCOPE } from "../../config-source.js";
+import type {
+  CreateSlackAppManifestInput,
+  CreateSlackAppManifestResult,
+  GetSlackAppManifestFlowInput,
+  SaveSlackInstallMetadataInput,
+  SaveSlackInstallMetadataResult,
+  SlackAppManifestFlowState,
+} from "../../shared/types.js";
+
+const SLACK_APP_MANIFEST_FLOW_STATE_PREFIX = "slack-app-manifest-flow:";
+const DEFAULT_SLACK_WORKER_HOST = "paperclip.example.com";
+const SLACK_PROVIDER = "slack" as const;
+// Setup-state flow is deliberately short-lived: it only needs to survive the
+// operator's manifest-review -> install -> paste-back round trip, not a
+// long-lived session.
+const SLACK_APP_MANIFEST_FLOW_TTL_MS = 30 * 60 * 1000;
+
+// MVP bot scopes only (see openwiki/domain/slack-provider-mvp.md §5 and
+// §13): no `app_mentions:read` because inbound Events API ingress is
+// deferred entirely for this slice.
+const SLACK_MVP_BOT_SCOPES = ["chat:write", "channels:read", "groups:read", "reactions:write"] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function readRequiredString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`Required fields: ${field}`);
+  }
+  return value.trim();
+}
+
+function validateSinglePathSegment(value: string, field: string): string {
+  if (!value || value === "." || value === ".." || /[\\/]/.test(value)) {
+    throw new Error(`${field} must be a single path segment.`);
+  }
+  return value;
+}
+
+function normalizeSlackProviderInput(value: unknown): typeof SLACK_PROVIDER {
+  const provider = readString(value);
+  if (provider && provider !== SLACK_PROVIDER) {
+    throw new Error("Slack App manifest flow only supports the Slack provider.");
+  }
+  return SLACK_PROVIDER;
+}
+
+function slackAppManifestFlowScope(companyId: string, state: string) {
+  return {
+    scopeKind: "company" as const,
+    scopeId: companyId,
+    stateKey: `${SLACK_APP_MANIFEST_FLOW_STATE_PREFIX}${state}`,
+  };
+}
+
+function buildSlackAppName(label: string): string {
+  const cleaned = label.replace(/\[[^\]]*\]/g, "").trim();
+  return `Paperclip Agent — ${cleaned || label}`;
+}
+
+function buildSlackAppManifest(label: string): string {
+  return JSON.stringify({
+    _metadata: { major_version: 1, minor_version: 1 },
+    display_information: {
+      name: buildSlackAppName(label),
+      description: `Paperclip agent identity for ${label}`,
+      background_color: "#4A154B",
+    },
+    oauth_config: {
+      scopes: {
+        bot: [...SLACK_MVP_BOT_SCOPES],
+      },
+    },
+    settings: {
+      interactivity: { is_enabled: false },
+      org_deploy_enabled: false,
+      socket_mode_enabled: false,
+      token_rotation_enabled: false,
+    },
+  });
+}
+
+function buildSlackManifestDeepLink(manifest: string): string {
+  return `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(manifest)}`;
+}
+
+function requireCompanyId(context: { companyId?: string | null } | undefined, params: Record<string, unknown>): string {
+  const fromContext = readString(context?.companyId ?? undefined);
+  const fromParams = readString((params as { companyId?: unknown }).companyId);
+  const companyId = fromContext || fromParams;
+  if (!companyId) {
+    throw new Error("A host-authorized companyId is required for the Slack App manifest flow.");
+  }
+  return companyId;
+}
+
+export function createSlackAppManifestFlow(
+  input: CreateSlackAppManifestInput,
+  companyId: string,
+): SlackAppManifestFlowState {
+  const agentId = validateSinglePathSegment(readRequiredString(input.agentId, "agentId"), "agentId");
+  const provider = normalizeSlackProviderInput(input.provider);
+  const label = readRequiredString(input.label, "label");
+  // `workerHost` is accepted for API-shape parity with the design record's
+  // `{{workerHost}}` placeholder, but the MVP manifest template intentionally
+  // omits any Request URL / redirect URL (no event_subscriptions block), so
+  // it is not interpolated into the manifest JSON itself.
+  const manifest = buildSlackAppManifest(label);
+  const state = `pc_${createHash("sha256")
+    .update(`${companyId}:${agentId}:${provider}:${Date.now()}:${randomBytes(16).toString("hex")}`)
+    .digest("hex")
+    .slice(0, 32)}`;
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + SLACK_APP_MANIFEST_FLOW_TTL_MS);
+
+  return {
+    agentId,
+    provider,
+    companyId,
+    state,
+    manifest,
+    deepLink: buildSlackManifestDeepLink(manifest),
+    createdAt: createdAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+    label,
+  };
+}
+
+export function normalizeSlackAppManifestFlowState(raw: unknown): SlackAppManifestFlowState | null {
+  if (!isRecord(raw)) return null;
+  const agentId = readString(raw.agentId);
+  const provider = readString(raw.provider) === SLACK_PROVIDER ? SLACK_PROVIDER : null;
+  const companyId = readString(raw.companyId);
+  const state = readString(raw.state);
+  const manifest = readString(raw.manifest);
+  const deepLink = readString(raw.deepLink);
+  const createdAt = readString(raw.createdAt);
+  const expiresAt = readString(raw.expiresAt);
+  const label = readString(raw.label);
+  if (!agentId || !provider || !companyId || !state || !manifest || !deepLink || !createdAt || !expiresAt || !label) {
+    return null;
+  }
+  const consumed = raw.consumed === true;
+  return {
+    agentId,
+    provider,
+    companyId,
+    state,
+    manifest,
+    deepLink,
+    createdAt,
+    expiresAt,
+    label,
+    ...(consumed ? { consumed: true } : {}),
+  };
+}
+
+function toCreateResult(flow: SlackAppManifestFlowState): CreateSlackAppManifestResult {
+  return {
+    agentId: flow.agentId,
+    provider: flow.provider,
+    state: flow.state,
+    manifest: flow.manifest,
+    deepLink: flow.deepLink,
+    createdAt: flow.createdAt,
+    expiresAt: flow.expiresAt,
+    label: flow.label,
+  };
+}
+
+function isFlowExpired(flow: SlackAppManifestFlowState, now = new Date()): boolean {
+  return new Date(flow.expiresAt).getTime() <= now.getTime();
+}
+
+async function loadUnexpiredUnconsumedFlow(
+  ctx: PluginContext,
+  companyId: string,
+  state: string,
+): Promise<SlackAppManifestFlowState> {
+  const flow = normalizeSlackAppManifestFlowState(await ctx.state.get(slackAppManifestFlowScope(companyId, state)));
+  if (!flow || flow.state !== state || flow.companyId !== companyId) {
+    throw new Error("Unknown or expired Slack App manifest flow state.");
+  }
+  if (flow.consumed) {
+    throw new Error("Slack App manifest flow state has already been used.");
+  }
+  if (isFlowExpired(flow)) {
+    // Best-effort cleanup; do not let a delete failure mask the expiry error.
+    await ctx.state.delete(slackAppManifestFlowScope(companyId, state)).catch(() => undefined);
+    throw new Error("Slack App manifest flow state has expired.");
+  }
+  return flow;
+}
+
+export function contributeSlackAppManifestActions(ctx: PluginContext): void {
+  ctx.actions.register("create-slack-app-manifest", async (params, context) => {
+    const companyId = requireCompanyId(context as { companyId?: string | null } | undefined, params);
+    const flow = createSlackAppManifestFlow(params as CreateSlackAppManifestInput, companyId);
+    await ctx.state.set(slackAppManifestFlowScope(companyId, flow.state), flow);
+    ctx.logger.info("Slack App manifest flow created", { agentId: flow.agentId, state: flow.state });
+    return toCreateResult(flow);
+  });
+
+  ctx.actions.register("get-slack-app-manifest-flow", async (params, context) => {
+    const companyId = requireCompanyId(context as { companyId?: string | null } | undefined, params);
+    const input = params as GetSlackAppManifestFlowInput;
+    const state = readRequiredString(input.state, "state");
+    const flow = await loadUnexpiredUnconsumedFlow(ctx, companyId, state);
+    return toCreateResult(flow);
+  });
+
+  ctx.actions.register("save-slack-install-metadata", async (params, context) => {
+    const companyId = requireCompanyId(context as { companyId?: string | null } | undefined, params);
+    const input = params as SaveSlackInstallMetadataInput;
+    const state = readRequiredString(input.state, "state");
+    const agentId = validateSinglePathSegment(readRequiredString(input.agentId, "agentId"), "agentId");
+    const teamId = readRequiredString(input.teamId, "teamId");
+    const appId = readRequiredString(input.appId, "appId");
+    const botUserId = readRequiredString(input.botUserId, "botUserId");
+    const botTokenSecretId = readRequiredString(input.botTokenSecretId, "botTokenSecretId");
+    const defaultChannel = readString(input.defaultChannel) || undefined;
+
+    const flow = await loadUnexpiredUnconsumedFlow(ctx, companyId, state);
+    // Idempotency / anti-replay: a duplicate or replayed callback bound to a
+    // different agent than the flow was created for must not be able to
+    // overwrite that other agent's identity.
+    if (flow.agentId !== agentId) {
+      throw new Error("Slack App manifest flow state does not match the requested agentId.");
+    }
+
+    const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+    const identityId = getIdentityKey(agentId, SLACK_PROVIDER);
+    const nextState: AgentIdentitySettingsState = {
+      version: BOT_IDENTITY_SETTINGS_VERSION,
+      identities: {
+        ...previousState.identities,
+        [identityId]: {
+          provider: "slack",
+          id: identityId,
+          agentId,
+          label: flow.label,
+          slack: {
+            teamId,
+            appId,
+            botUserId,
+            ...(defaultChannel ? { defaultChannel } : {}),
+          },
+        },
+      },
+    };
+    await ctx.state.set(CONFIG_SCOPE, nextState);
+    await upsertCredentialSidecarIdentity(agentId, SLACK_PROVIDER, {
+      slackBotToken: { botTokenSecretId },
+    });
+
+    // Single-use: mark the flow consumed so a replayed callback with the
+    // same state can never run again, whether to overwrite this agent again
+    // or (already denied above) a different one.
+    await ctx.state.set(slackAppManifestFlowScope(companyId, state), { ...flow, consumed: true });
+
+    ctx.logger.info("Slack install metadata saved", { agentId, teamId, appId, botUserId });
+
+    const result: SaveSlackInstallMetadataResult = {
+      agentId,
+      provider: SLACK_PROVIDER,
+      teamId,
+      appId,
+      botUserId,
+      ...(defaultChannel ? { defaultChannel } : {}),
+      status: "saved",
+    };
+    return result;
+  });
+}
+
+export { DEFAULT_SLACK_WORKER_HOST };

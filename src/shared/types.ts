@@ -172,6 +172,63 @@ export type ConvertGitHubAppManifestResult = {
   installUrl: string;
 };
 
+export type SlackAppManifestFlowState = {
+  agentId: string;
+  provider: IdentityProviderId;
+  companyId: string;
+  state: string;
+  manifest: string;
+  deepLink: string;
+  createdAt: string;
+  expiresAt: string;
+  label: string;
+  consumed?: boolean;
+};
+
+export type CreateSlackAppManifestInput = {
+  agentId: string;
+  provider?: IdentityProviderId;
+  label: string;
+  workerHost?: string;
+};
+
+export type CreateSlackAppManifestResult = {
+  agentId: string;
+  provider: IdentityProviderId;
+  state: string;
+  manifest: string;
+  deepLink: string;
+  createdAt: string;
+  expiresAt: string;
+  label: string;
+};
+
+export type GetSlackAppManifestFlowInput = {
+  state: string;
+};
+
+export type GetSlackAppManifestFlowResult = CreateSlackAppManifestResult;
+
+export type SaveSlackInstallMetadataInput = {
+  state: string;
+  agentId: string;
+  teamId: string;
+  appId: string;
+  botUserId: string;
+  defaultChannel?: string;
+  botTokenSecretId: string;
+};
+
+export type SaveSlackInstallMetadataResult = {
+  agentId: string;
+  provider: IdentityProviderId;
+  teamId: string;
+  appId: string;
+  botUserId: string;
+  defaultChannel?: string;
+  status: "saved";
+};
+
 export const DEFAULT_BOT_IDENTITY_CONFIG: GitHubAgentIdentityConfig = {
   provider: GITHUB_IDENTITY_PROVIDER_ID,
   id: "",

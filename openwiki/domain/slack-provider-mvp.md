@@ -303,5 +303,50 @@ source and its resolver (§2), and the `slackProvider` composition (§14) — wi
   task lands the full refresh lifecycle as one unit.
 - **The five Slack tools** (`slack-whoami`, `slack-post-message`, `slack-reply-thread`,
   `slack-react`, `slack-lookup-channel`, §4) are out of scope for this issue — they are separate,
-  blocked issues DRO-971/973/974/975. `slackProvider.definition.status` therefore stays
+  blocked issues DRO-973/974/975. `slackProvider.definition.status` therefore stays
   `"coming-soon"` and `tools`/`manifestTools` stay empty until those issues land.
+
+## Implementation status (DRO-971: manifest-assisted app setup actions)
+
+This slice implements §6's `contributeActions` for Slack, wired through `slackProvider` in
+`src/providers/slack/index.ts` exactly like `contributeGitHubAppManifestActions` is wired for
+GitHub — no new `if (provider === "slack")` branch was added to `src/worker.ts` or
+`src/manifest.ts` (the existing `provider.contributeActions?.(ctx)` loop was widened to run for
+every registered provider, not just enabled ones, since a "coming-soon" provider like Slack can
+still ship setup actions ahead of its tool surface; this is a provider-agnostic change, not a
+Slack-specific one). Three actions are registered (`src/providers/slack/app-manifest.ts`):
+
+- `create-slack-app-manifest`: builds the MVP app manifest (minimum bot scopes only, no
+  `settings.event_subscriptions` block, `interactivity.is_enabled: false`,
+  `socket_mode_enabled: false`, `token_rotation_enabled: false` — per §5 above), generates a
+  one-time `pc_`-prefixed `state`, and persists a short-lived (30-minute), company-scoped setup-state
+  record via `ctx.state.set` keyed by `(companyId, agentId, provider, state)`. Returns the manifest
+  JSON, `state`, and the `https://api.slack.com/apps?new_app=1&manifest_json=...` deep link.
+- `get-slack-app-manifest-flow`: reads back a flow by `state`, scoped to the calling company;
+  rejects unknown, expired, or already-consumed state.
+- `save-slack-install-metadata`: binds back to the setup-state flow by `state`, asserts the flow's
+  `agentId` matches the caller-supplied `agentId` (so a replayed/duplicate callback cannot
+  overwrite a *different* agent's identity), persists `teamId`/`appId`/`botUserId`/`defaultChannel`
+  into the `SlackAgentIdentityConfig` variant, writes `slackBotToken.botTokenSecretId` into the
+  credential sidecar via the existing `upsertCredentialSidecarIdentity` helper, and marks the flow
+  consumed (single-use — a second `save-slack-install-metadata` call with the same `state`, even for
+  the same agent, is rejected). The action never receives or stores a raw bot token — only the
+  Paperclip secret UUID the operator already created via the host UI, per §6 step 2 above.
+
+**Reconciling this against the GitHub issue's acceptance-criteria language:** DRO-971's issue text
+(and its acceptance criteria) describe "OAuth v2 state validation," "exchange the code," and "App
+Manifest API automation." Those phrases describe capability classes this document and
+[`slack-provisioning-decision.md`](./slack-provisioning-decision.md) explicitly deferred out of
+MVP scope (see §1 above and that record's "Explicitly out of scope for MVP" list): automated
+OAuth code exchange needs public callback routing, Slack `client_id`/`client_secret` storage, and
+a host-supported secret-*creation* API (`ctx.secrets` here exposes only `.resolve()`); this
+plugin's manifest declares no inbound HTTP route today, so there is no callback endpoint to
+receive a code against in the first place. The App Manifest API (`apps.manifest.*`) bulk-creation
+path needs a rotating 12-hour configuration token that is not modeled anywhere in this codebase.
+Per this design record's own framing — "this document...is still the input for that follow-on
+work" — the authoritative contract is what ships here: manifest deep-link generation plus a
+single `state`-bound, single-use, expiring operator-paste-back flow (`create` → `get` →
+`save`), not an in-house OAuth callback or Manifest-API automation. A future issue that lands
+public inbound routing, secret-*creation*, and config-token storage is the correct place to build
+the deferred flows described in §1/§7 and in `slack-provisioning-decision.md`'s "OAuth v2 install
+flow (for reference / future automation)" section — this slice does not attempt them.

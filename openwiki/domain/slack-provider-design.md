@@ -108,7 +108,7 @@ must add an optional `slack` member to the existing sidecar identity object and
 extend its refinement so `slack` alone is a valid credential source:
 
 Operator-local sidecar, default
-`/paperclip/.paperclip/agent-identities/credentials.json`:
+`<runtime-home>/.paperclip/agent-identities/credentials.json`:
 
 ```json
 {

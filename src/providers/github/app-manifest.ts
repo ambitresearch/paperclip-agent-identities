@@ -1,6 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { resolveCredentialSidecarPath } from "../../credential-sidecar.js";
 import type {
@@ -159,7 +159,50 @@ function normalizeGitHubAppManifestConversionResult(raw: unknown): ConvertGitHub
   return { agentId, provider, appId, appSlug, appName, githubUsername, privateKeyFile, installUrl };
 }
 
-async function persistGitHubAppManifestConversion(flow: GitHubAppManifestFlowState, rawConversion: unknown): Promise<ConvertGitHubAppManifestResult> {
+async function prepareGitHubAppPrivateKeyFile(flow: GitHubAppManifestFlowState): Promise<string> {
+  const agentId = validateSinglePathSegment(readRequiredString(flow.agentId, "agentId"), "agentId");
+  const privateKeyFile = join(dirname(await resolveCredentialSidecarPath()), "github-apps", agentId, "private-key.pem");
+  const privateKeyDirectory = dirname(privateKeyFile);
+  const writeProbe = join(
+    privateKeyDirectory,
+    `.paperclip-write-test-${process.pid}-${randomBytes(8).toString("hex")}`,
+  );
+  try {
+    await mkdir(privateKeyDirectory, { recursive: true, mode: 0o700 });
+    await assertReplaceablePrivateKeyTarget(privateKeyFile);
+    await writeFile(writeProbe, "", { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await rm(writeProbe);
+  } catch (error) {
+    await rm(writeProbe, { force: true }).catch(() => undefined);
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to prepare GitHub App private-key destination '${privateKeyFile}': ${message}`, {
+      cause: error,
+    });
+  }
+  return privateKeyFile;
+}
+
+async function assertReplaceablePrivateKeyTarget(privateKeyFile: string): Promise<void> {
+  try {
+    const target = await lstat(privateKeyFile);
+    if (!target.isFile()) {
+      throw new Error(`Existing private-key target '${privateKeyFile}' is not a regular file.`);
+    }
+  } catch (error) {
+    if (isFileSystemError(error) && error.code === "ENOENT") return;
+    throw error;
+  }
+}
+
+function isFileSystemError(error: unknown): error is Error & { code: string } {
+  return error instanceof Error && typeof (error as Error & { code?: unknown }).code === "string";
+}
+
+async function persistGitHubAppManifestConversion(
+  flow: GitHubAppManifestFlowState,
+  rawConversion: unknown,
+  privateKeyFile: string,
+): Promise<ConvertGitHubAppManifestResult> {
   if (!isRecord(rawConversion)) {
     throw new Error("GitHub App manifest conversion returned an invalid response.");
   }
@@ -172,9 +215,7 @@ async function persistGitHubAppManifestConversion(flow: GitHubAppManifestFlowSta
   }
 
   const agentId = validateSinglePathSegment(readRequiredString(flow.agentId, "agentId"), "agentId");
-  const privateKeyFile = join(dirname(await resolveCredentialSidecarPath()), "github-apps", agentId, "private-key.pem");
-  await mkdir(dirname(privateKeyFile), { recursive: true });
-  await writeFile(privateKeyFile, pem.endsWith("\n") ? pem : `${pem}\n`, { encoding: "utf8", mode: 0o600 });
+  await writePrivateKeyFile(privateKeyFile, pem.endsWith("\n") ? pem : `${pem}\n`);
 
   return {
     agentId,
@@ -186,6 +227,17 @@ async function persistGitHubAppManifestConversion(flow: GitHubAppManifestFlowSta
     privateKeyFile,
     installUrl: `https://github.com/apps/${appSlug}/installations/new?state=${encodeURIComponent(flow.state)}`,
   };
+}
+
+async function writePrivateKeyFile(privateKeyFile: string, contents: string): Promise<void> {
+  const tempPath = `${privateKeyFile}.tmp-${process.pid}-${randomBytes(8).toString("hex")}`;
+  try {
+    await writeFile(tempPath, contents, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await rename(tempPath, privateKeyFile);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function readOptionalUrl(value: unknown, field: string): string | undefined {
@@ -218,6 +270,9 @@ export function contributeGitHubAppManifestActions(ctx: PluginContext): void {
     if (!flow || flow.state !== state) {
       throw new Error("Unknown or expired GitHub App manifest flow state.");
     }
+    if (input.consume === true && flow.conversion) {
+      await ctx.state.delete(githubAppManifestFlowScope(state));
+    }
     return flow;
   });
 
@@ -229,7 +284,11 @@ export function contributeGitHubAppManifestActions(ctx: PluginContext): void {
     if (!flow || flow.state !== state) {
       throw new Error("Unknown or expired GitHub App manifest flow state.");
     }
+    if (flow.conversion) return flow.conversion;
 
+    // GitHub manifest codes are single-use. Prepare the local destination first
+    // so a path/configuration failure cannot consume a code before persistence.
+    const privateKeyFile = await prepareGitHubAppPrivateKeyFile(flow);
     const response = await ctx.http.fetch(`https://api.github.com/app-manifests/${encodeURIComponent(code)}/conversions`, {
       method: "POST",
       headers: {
@@ -243,8 +302,8 @@ export function contributeGitHubAppManifestActions(ctx: PluginContext): void {
     }
 
     const conversion = await response.json();
-    const converted = await persistGitHubAppManifestConversion(flow, conversion);
-    await ctx.state.delete(githubAppManifestFlowScope(flow.state));
+    const converted = await persistGitHubAppManifestConversion(flow, conversion, privateKeyFile);
+    await ctx.state.set(githubAppManifestFlowScope(flow.state), { ...flow, conversion: converted });
     ctx.logger.info("GitHub App manifest converted", { agentId: converted.agentId, appId: converted.appId, appSlug: converted.appSlug });
     return converted;
   });

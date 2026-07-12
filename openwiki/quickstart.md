@@ -93,7 +93,7 @@ See [Plugin runtime architecture](architecture/plugin-runtime.md) for details.
 
 - **Agent identity**: a provider-aware mapping keyed by `${agentId}:${provider}`, with label, provider ID, provider account fields, selected-agent credential cascade, and optional commit author fields. GitHub is the only enabled provider today; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are listed as coming soon.
 - **Provider authorization**: repository/resource access is owned by the provider. For GitHub, App installation permissions and scopes decide which repositories tools can access.
-- **Credential sidecar**: an operator-local JSON file, defaulting to `/paperclip/.paperclip/agent-identities/credentials.json`, that stores credential references by `${agentId}:${provider}` but not generated installation tokens.
+- **Credential sidecar**: an operator-local JSON file, defaulting to `<runtime-home>/.paperclip/agent-identities/credentials.json` via `os.homedir()`, that stores credential references by `${agentId}:${provider}` but not generated installation tokens. Native and container runs therefore use their own writable runtime homes.
 - **GitHub App path**: preferred credential mode. The settings UI creates a GitHub App manifest, the worker converts the one-time code, writes a private key file, and later mints short-lived installation tokens on tool calls.
 - **Fallback credentials**: secret ID or token file sources are still supported for dev and recovery flows, but GitHub App credentials are the durable path described in the README.
 

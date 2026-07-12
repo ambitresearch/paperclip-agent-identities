@@ -1,11 +1,14 @@
 # Slack provider MVP — contract, product boundary, threat model
 
-Status: **architecture decision (design)**, no provider code exists yet. This document
-translates the research in [`slack-provisioning-decision.md`](./slack-provisioning-decision.md)
-(pending merge in PR #66) into the concrete `IdentityProvider` contract this repo already
-enforces (see `agent-identities.md` and `/src/core/provider-contract.ts`). It is the input for a
-future `feat(providers): add Slack identity provider` implementation task; it does not itself add
-a provider.
+Status: **partially implemented**. The identity-config slice (`src/providers/slack/config.ts`) and
+the credential resolver (`resolveSlackBotToken` / `resolveSlackCredential` in
+`src/providers/slack/credentials.ts`), composed through `src/providers/index.ts` per the existing
+`IdentityProvider` contract
+(`/src/core/provider-contract.ts`, see `agent-identities.md`), now exist and are covered by tests.
+Actual Slack tools (posting messages, reacting, etc.) and inbound Events API handling remain
+**disabled/deferred** — this document, together with
+[`slack-provisioning-decision.md`](./slack-provisioning-decision.md), is still the input for that
+follow-on `feat(providers): add Slack tools` work.
 
 ## 1. Identity shape
 

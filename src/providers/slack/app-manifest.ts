@@ -1,6 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { createHash, randomBytes } from "node:crypto";
-import { upsertCredentialSidecarIdentity } from "../../credential-sidecar.js";
+import { upsertCredentialSidecarIdentity, slackBotTokenSecretIdSchema } from "../../credential-sidecar.js";
 import { getIdentityKey } from "../../shared/types.js";
 import { normalizeSettingsState, BOT_IDENTITY_SETTINGS_VERSION, type AgentIdentitySettingsState } from "../../core/identity-config.js";
 import { CONFIG_SCOPE } from "../../config-source.js";
@@ -91,18 +91,31 @@ function buildSlackAppManifest(label: string): string {
   });
 }
 
-function buildSlackManifestDeepLink(manifest: string): string {
-  return `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(manifest)}`;
-}
+// `manifest_json` is not a documented Slack app-dashboard query parameter
+// (see openwiki/domain/slack-provider-design.md:438-441), so it cannot
+// reliably prefill the "Create an app" flow. The MVP setup flow is
+// documented copy/paste only: this is the plain "create app" entry point,
+// and the manifest JSON is surfaced separately (see
+// `SlackAppManifestFlowState.manifest`) for the operator to paste in.
+const SLACK_CREATE_APP_URL = "https://api.slack.com/apps?new_app=1";
 
-function requireCompanyId(context: { companyId?: string | null } | undefined, params: Record<string, unknown>): string {
-  const fromContext = readString(context?.companyId ?? undefined);
-  const fromParams = readString((params as { companyId?: unknown }).companyId);
-  const companyId = fromContext || fromParams;
+function requireCompanyId(context: { companyId?: string | null } | undefined): string {
+  // Only a host-authorized `context.companyId` is trusted. Caller-supplied
+  // `params.companyId` must never be consulted here: accepting it would let
+  // a caller in one company target another company's state namespace.
+  const companyId = readString(context?.companyId ?? undefined);
   if (!companyId) {
     throw new Error("A host-authorized companyId is required for the Slack App manifest flow.");
   }
   return companyId;
+}
+
+async function requireCompanyAgent(ctx: PluginContext, companyId: string, agentId: string): Promise<void> {
+  const agents = await ctx.agents.list({ companyId });
+  const belongs = agents.some((agent) => agent.id === agentId);
+  if (!belongs) {
+    throw new Error("agentId does not belong to the host-authorized company.");
+  }
 }
 
 export function createSlackAppManifestFlow(
@@ -130,7 +143,7 @@ export function createSlackAppManifestFlow(
     companyId,
     state,
     manifest,
-    deepLink: buildSlackManifestDeepLink(manifest),
+    createAppUrl: SLACK_CREATE_APP_URL,
     createdAt: createdAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
     label,
@@ -144,11 +157,11 @@ export function normalizeSlackAppManifestFlowState(raw: unknown): SlackAppManife
   const companyId = readString(raw.companyId);
   const state = readString(raw.state);
   const manifest = readString(raw.manifest);
-  const deepLink = readString(raw.deepLink);
+  const createAppUrl = readString(raw.createAppUrl);
   const createdAt = readString(raw.createdAt);
   const expiresAt = readString(raw.expiresAt);
   const label = readString(raw.label);
-  if (!agentId || !provider || !companyId || !state || !manifest || !deepLink || !createdAt || !expiresAt || !label) {
+  if (!agentId || !provider || !companyId || !state || !manifest || !createAppUrl || !createdAt || !expiresAt || !label) {
     return null;
   }
   const consumed = raw.consumed === true;
@@ -158,7 +171,7 @@ export function normalizeSlackAppManifestFlowState(raw: unknown): SlackAppManife
     companyId,
     state,
     manifest,
-    deepLink,
+    createAppUrl,
     createdAt,
     expiresAt,
     label,
@@ -172,7 +185,7 @@ function toCreateResult(flow: SlackAppManifestFlowState): CreateSlackAppManifest
     provider: flow.provider,
     state: flow.state,
     manifest: flow.manifest,
-    deepLink: flow.deepLink,
+    createAppUrl: flow.createAppUrl,
     createdAt: flow.createdAt,
     expiresAt: flow.expiresAt,
     label: flow.label,
@@ -205,15 +218,19 @@ async function loadUnexpiredUnconsumedFlow(
 
 export function contributeSlackAppManifestActions(ctx: PluginContext): void {
   ctx.actions.register("create-slack-app-manifest", async (params, context) => {
-    const companyId = requireCompanyId(context as { companyId?: string | null } | undefined, params);
+    const companyId = requireCompanyId(context as { companyId?: string | null } | undefined);
     const flow = createSlackAppManifestFlow(params as CreateSlackAppManifestInput, companyId);
+    await requireCompanyAgent(ctx, companyId, flow.agentId);
     await ctx.state.set(slackAppManifestFlowScope(companyId, flow.state), flow);
-    ctx.logger.info("Slack App manifest flow created", { agentId: flow.agentId, state: flow.state });
+    // Do not log `state` — it is short-lived secret material (see
+    // openwiki/domain/slack-provisioning-decision.md:147) that must never
+    // appear in logs.
+    ctx.logger.info("Slack App manifest flow created", { agentId: flow.agentId });
     return toCreateResult(flow);
   });
 
   ctx.actions.register("get-slack-app-manifest-flow", async (params, context) => {
-    const companyId = requireCompanyId(context as { companyId?: string | null } | undefined, params);
+    const companyId = requireCompanyId(context as { companyId?: string | null } | undefined);
     const input = params as GetSlackAppManifestFlowInput;
     const state = readRequiredString(input.state, "state");
     const flow = await loadUnexpiredUnconsumedFlow(ctx, companyId, state);
@@ -221,14 +238,23 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
   });
 
   ctx.actions.register("save-slack-install-metadata", async (params, context) => {
-    const companyId = requireCompanyId(context as { companyId?: string | null } | undefined, params);
+    const companyId = requireCompanyId(context as { companyId?: string | null } | undefined);
     const input = params as SaveSlackInstallMetadataInput;
     const state = readRequiredString(input.state, "state");
     const agentId = validateSinglePathSegment(readRequiredString(input.agentId, "agentId"), "agentId");
     const teamId = readRequiredString(input.teamId, "teamId");
     const appId = readRequiredString(input.appId, "appId");
     const botUserId = readRequiredString(input.botUserId, "botUserId");
-    const botTokenSecretId = readRequiredString(input.botTokenSecretId, "botTokenSecretId");
+    const botTokenSecretIdRaw = readRequiredString(input.botTokenSecretId, "botTokenSecretId");
+    // Validate the secret reference shape up front — before any mutation —
+    // using the same schema `upsertCredentialSidecarIdentity` enforces
+    // later, so an invalid reference fails atomically instead of after
+    // state has already been persisted.
+    const botTokenSecretIdResult = slackBotTokenSecretIdSchema.safeParse(botTokenSecretIdRaw);
+    if (!botTokenSecretIdResult.success) {
+      throw new Error("botTokenSecretId must be a valid UUID.");
+    }
+    const botTokenSecretId = botTokenSecretIdResult.data;
     const defaultChannel = readString(input.defaultChannel) || undefined;
 
     const flow = await loadUnexpiredUnconsumedFlow(ctx, companyId, state);
@@ -238,6 +264,16 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
     if (flow.agentId !== agentId) {
       throw new Error("Slack App manifest flow state does not match the requested agentId.");
     }
+
+    // Claim the flow (mark it consumed) BEFORE performing any further
+    // mutations. `ctx.state` has no compare-and-swap/setIfAbsent primitive,
+    // so this cannot be made fully atomic against a concurrent duplicate
+    // save — both could still race between the `loadUnexpiredUnconsumedFlow`
+    // read above and this write. Moving the consumed-write to be the first
+    // mutation (instead of the last) shrinks that race window to a single
+    // read-then-write instead of spanning the CONFIG_SCOPE and
+    // credential-sidecar writes too.
+    await ctx.state.set(slackAppManifestFlowScope(companyId, state), { ...flow, consumed: true });
 
     const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
     const identityId = getIdentityKey(agentId, SLACK_PROVIDER);
@@ -264,11 +300,8 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       slackBotToken: { botTokenSecretId },
     });
 
-    // Single-use: mark the flow consumed so a replayed callback with the
-    // same state can never run again, whether to overwrite this agent again
-    // or (already denied above) a different one.
-    await ctx.state.set(slackAppManifestFlowScope(companyId, state), { ...flow, consumed: true });
-
+    // Do not log `state` here either — same short-lived secret material
+    // constraint as above.
     ctx.logger.info("Slack install metadata saved", { agentId, teamId, appId, botUserId });
 
     const result: SaveSlackInstallMetadataResult = {

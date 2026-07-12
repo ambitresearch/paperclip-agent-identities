@@ -178,7 +178,12 @@ export type SlackAppManifestFlowState = {
   companyId: string;
   state: string;
   manifest: string;
-  deepLink: string;
+  // Plain link to the Slack "create app" page. Slack does not support a
+  // documented query parameter to prefill a manifest, so this is NOT a deep
+  // link into a prefilled form — the operator must paste `manifest` in
+  // manually via the "From an app manifest" flow. See
+  // openwiki/domain/slack-provider-design.md.
+  createAppUrl: string;
   createdAt: string;
   expiresAt: string;
   label: string;
@@ -197,7 +202,7 @@ export type CreateSlackAppManifestResult = {
   provider: IdentityProviderId;
   state: string;
   manifest: string;
-  deepLink: string;
+  createAppUrl: string;
   createdAt: string;
   expiresAt: string;
   label: string;

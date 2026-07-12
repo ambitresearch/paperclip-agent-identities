@@ -142,8 +142,10 @@ unaffected by this.
 ## 6. Actions (`contributeActions`)
 
 Mirrors `contributeGitHubAppManifestActions`: a `create-slack-app-manifest` worker action that
-builds the per-agent manifest JSON and returns the `https://api.slack.com/apps?new_app=1&manifest_json=...`
-deep link (URL-encoded), and a `save-slack-install-metadata` action the settings UI calls once the
+builds the per-agent manifest JSON and returns the plain `https://api.slack.com/apps?new_app=1`
+"create app" URL alongside it (Slack has no documented query parameter to prefill a manifest, so
+this is not a deep link — see §7), and a `save-slack-install-metadata` action the settings UI
+calls once the
 operator finishes Slack's own click-through install. This action's input is **not** limited to the
 shareable IDs (`teamId`/`appId`/`botUserId`) — the credential source in §2 requires at least a
 `botTokenSecretId` reference before any credentialed Slack tool can resolve successfully. There is
@@ -160,11 +162,11 @@ no supported host/plugin API for a worker action to create a Paperclip secret fr
    the UUID to the `slackBotToken.botTokenSecretId` sidecar entry (§2) — it never receives or
    stores the raw token itself.
 
-(no OAuth code exchange in MVP — Slack's manifest deep-link flow produces the bot token via its own
-UI, not a callback we handle). This is a deliberately smaller flow than GitHub's manifest
-conversion, because Slack's manifest-json deep link does not have a GitHub-style
-"exchange code for PEM" step; the operator relays back shareable IDs plus one secret reference, not
-the token itself.
+(no OAuth code exchange in MVP — Slack's copy/paste manifest flow produces the bot token via its
+own UI, not a callback we handle). This is a deliberately smaller flow than GitHub's manifest
+conversion, because there is no documented Slack mechanism to prefill a manifest via URL and so no
+GitHub-style "exchange code for PEM" step either; the operator relays back shareable IDs plus one
+secret reference, not the token itself.
 
 ## 7. UI contributions
 
@@ -192,10 +194,10 @@ which a Slack token could land in an agent's environment/logs.
   been invited to (or that are public and it has `channels:read` for lookup only, not necessarily
   post rights without membership). No allow-list config is required for MVP; document that an
   operator-configured channel allow-list is a possible deferred hardening step.
-- **Install ownership**: the operator who runs the manifest deep link and completes the Slack
-  "Install to Workspace" click-through owns the resulting app at the Slack-workspace-admin level.
-  Paperclip only receives back the bot token (via secret) and shareable IDs — it never becomes a
-  Slack workspace admin.
+- **Install ownership**: the operator who opens the "create app" link, pastes in the manifest, and
+  completes the Slack "Install to Workspace" click-through owns the resulting app at the
+  Slack-workspace-admin level. Paperclip only receives back the bot token (via secret) and
+  shareable IDs — it never becomes a Slack workspace admin.
 
 ## 9. Threat model
 
@@ -318,20 +320,28 @@ Slack-specific one). Three actions are registered (`src/providers/slack/app-mani
 
 - `create-slack-app-manifest`: builds the MVP app manifest (minimum bot scopes only, no
   `settings.event_subscriptions` block, `interactivity.is_enabled: false`,
-  `socket_mode_enabled: false`, `token_rotation_enabled: false` — per §5 above), generates a
+  `socket_mode_enabled: false`, `token_rotation_enabled: false` — per §5 above), verifies the
+  target `agentId` belongs to the host-authorized `companyId` (via `ctx.agents.list`), generates a
   one-time `pc_`-prefixed `state`, and persists a short-lived (30-minute), company-scoped setup-state
   record via `ctx.state.set` keyed by `(companyId, agentId, provider, state)`. Returns the manifest
-  JSON, `state`, and the `https://api.slack.com/apps?new_app=1&manifest_json=...` deep link.
+  JSON, `state`, and a plain `https://api.slack.com/apps?new_app=1` link to Slack's "create an app"
+  entry point — **not** a prefilled deep link: Slack has no documented query parameter that
+  prefills a manifest (see `slack-provider-design.md` §14), so the operator pastes the manifest
+  JSON in manually via Slack's "From an app manifest" flow.
 - `get-slack-app-manifest-flow`: reads back a flow by `state`, scoped to the calling company;
   rejects unknown, expired, or already-consumed state.
 - `save-slack-install-metadata`: binds back to the setup-state flow by `state`, asserts the flow's
   `agentId` matches the caller-supplied `agentId` (so a replayed/duplicate callback cannot
-  overwrite a *different* agent's identity), persists `teamId`/`appId`/`botUserId`/`defaultChannel`
-  into the `SlackAgentIdentityConfig` variant, writes `slackBotToken.botTokenSecretId` into the
-  credential sidecar via the existing `upsertCredentialSidecarIdentity` helper, and marks the flow
-  consumed (single-use — a second `save-slack-install-metadata` call with the same `state`, even for
-  the same agent, is rejected). The action never receives or stores a raw bot token — only the
-  Paperclip secret UUID the operator already created via the host UI, per §6 step 2 above.
+  overwrite a *different* agent's identity), validates `botTokenSecretId` as a UUID before any
+  mutation (matching the credential-sidecar schema, so an invalid reference fails atomically
+  instead of after settings state is already persisted), claims the flow (marks it consumed) before
+  performing the settings/credential-sidecar writes to shrink the window for a concurrent duplicate
+  callback, persists `teamId`/`appId`/`botUserId`/`defaultChannel` into the
+  `SlackAgentIdentityConfig` variant, and writes `slackBotToken.botTokenSecretId` into the
+  credential sidecar via the existing `upsertCredentialSidecarIdentity` helper. The action never
+  receives or stores a raw bot token — only the Paperclip secret UUID the operator already created
+  via the host UI, per §6 step 2 above. Neither action logs the one-time `state` value (it is
+  short-lived secret material per `slack-provisioning-decision.md`).
 
 **Reconciling this against the GitHub issue's acceptance-criteria language:** DRO-971's issue text
 (and its acceptance criteria) describe "OAuth v2 state validation," "exchange the code," and "App
@@ -344,9 +354,29 @@ plugin's manifest declares no inbound HTTP route today, so there is no callback 
 receive a code against in the first place. The App Manifest API (`apps.manifest.*`) bulk-creation
 path needs a rotating 12-hour configuration token that is not modeled anywhere in this codebase.
 Per this design record's own framing — "this document...is still the input for that follow-on
-work" — the authoritative contract is what ships here: manifest deep-link generation plus a
+work" — the authoritative contract is what ships here: manifest JSON generation plus a
 single `state`-bound, single-use, expiring operator-paste-back flow (`create` → `get` →
 `save`), not an in-house OAuth callback or Manifest-API automation. A future issue that lands
 public inbound routing, secret-*creation*, and config-token storage is the correct place to build
 the deferred flows described in §1/§7 and in `slack-provisioning-decision.md`'s "OAuth v2 install
 flow (for reference / future automation)" section — this slice does not attempt them.
+
+**Operator-facing UI is explicitly deferred, not included in this slice.** `src/ui/SettingsPage.tsx`
+today only wires GitHub's manifest actions; it does not yet call `create-slack-app-manifest`,
+`get-slack-app-manifest-flow`, or `save-slack-install-metadata`, and `slackProvider.definition.status`
+stays `"coming-soon"` so the Slack identity option stays hidden from the settings UI (§7 of this
+document describes the target UI shape, not what has shipped). Consequently this PR does not give
+operators an end-to-end path to create/install a Slack app from the UI yet, and does not fully
+satisfy DRO-971 / issue #58's acceptance criteria on its own — it lands the worker-side actions
+those criteria depend on. A follow-up child issue should wire the settings-UI flow (manifest
+display + copy/paste-back form) on top of these actions, mirroring the existing GitHub UI pattern.
+
+
+**Scope note — settings-UI wiring is a separate follow-up.** This slice lands the three worker
+actions above with full test coverage, but does **not** wire them into `src/ui/SettingsPage.tsx`.
+`slackProvider.definition.status` therefore correctly stays `"coming-soon"` and Slack stays hidden
+in the operator-facing settings UI — the same as before this PR. Landing that UI (a create/paste
+manifest step, a paste-back form for `state`/`teamId`/`appId`/`botUserId`/`botTokenSecretId`, and
+clear success/error status, mirroring the GitHub manifest flow already wired in
+`SettingsPage.tsx`) is tracked as a separate follow-up issue so it can go through its own
+TDD/review cycle rather than being bundled into this action-layer slice.

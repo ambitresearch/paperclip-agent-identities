@@ -17,7 +17,8 @@ describe("createSlackAppManifestFlow", () => {
     expect(result.provider).toBe("slack");
     expect(result.companyId).toBe(COMPANY_ID);
     expect(result.state).toMatch(/^pc_[0-9a-f]{32}$/);
-    expect(result.deepLink).toContain("https://api.slack.com/apps?new_app=1&manifest_json=");
+    expect(result.createAppUrl).toBe("https://api.slack.com/apps?new_app=1");
+    expect(result.createAppUrl).not.toContain("manifest_json");
     expect(new Date(result.expiresAt).getTime()).toBeGreaterThan(new Date(result.createdAt).getTime());
 
     const manifest = JSON.parse(result.manifest);

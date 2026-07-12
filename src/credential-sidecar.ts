@@ -29,8 +29,14 @@ const githubAppCredentialSchema = z.object({
 // per-request HMAC verification, not bearer auth, so it must not be written
 // to a file the way a GitHub PEM is. Rotation is deliberately unimplemented
 // (design decision) — see that same section.
+// Exported so callers that must validate a `botTokenSecretId` up front (e.g.
+// before persisting any state, so a bad reference fails atomically rather
+// than after other mutations) can reuse the exact same UUID format check
+// that `upsertCredentialSidecarIdentity` enforces later.
+export const slackBotTokenSecretIdSchema = z.string().trim().uuid();
+
 const slackBotTokenCredentialSchema = z.object({
-  botTokenSecretId: z.string().trim().uuid(),
+  botTokenSecretId: slackBotTokenSecretIdSchema,
   signingSecretId: z.string().trim().uuid().optional(),
 });
 

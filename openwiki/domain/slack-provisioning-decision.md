@@ -14,18 +14,21 @@ described below remain **deferred, unimplemented** future work.
   that shapes everything below.
   Source: [Enabling interactions with bots](https://api.slack.com/bot-users) (bot users belong to
   one app each); [Differences between bot and user tokens](https://api.slack.com/authentication/token-types#bot).
-- **MVP install path: manifest deep link, operator-driven, manual per agent.** For each agent,
-  the operator opens `https://api.slack.com/apps?new_app=1&manifest_json=<url-encoded manifest>`,
-  reviews the manifest Slack renders, picks the target workspace, and clicks
-  **Create**. Slack then walks the operator through installing the app to the workspace, which
-  produces the bot token (and, per the canonical manifest, a signing secret). This install
-  sequence itself requires no Slack credential of any kind inside Paperclip's config, workspace,
-  or logs — only a URL our plugin generates. The resulting bot token and signing secret are still
-  mandatory downstream artifacts: the operator must copy them into a Paperclip company secret and
-  record only that secret's UUID in the credential sidecar (see "Downstream assumptions" and the
-  shareable-vs-secret table below) before any Slack tool can resolve credentials.
-  Source: [App manifests overview](https://api.slack.com/reference/manifests) (documents the
-  `manifest_json` query-string param on `api.slack.com/apps?new_app=1`).
+- **MVP install path: manual copy/paste manifest, operator-driven, per agent.** For each agent,
+  our plugin generates the manifest JSON and a plain link to `https://api.slack.com/apps?new_app=1`.
+  Slack does **not** support a documented query parameter that prefills the manifest on that page
+  (there is no `manifest_json` param in Slack's app-manifest reference) — the operator opens the
+  link, chooses "From an app manifest," pastes in the JSON our plugin generated, reviews what
+  Slack renders, picks the target workspace, and clicks **Create**. Slack then walks the operator
+  through installing the app to the workspace, which produces the bot token (and, per the
+  canonical manifest, a signing secret). This install sequence itself requires no Slack credential
+  of any kind inside Paperclip's config, workspace, or logs — only a URL and manifest JSON our
+  plugin generates. The resulting bot token and signing secret are still mandatory downstream
+  artifacts: the operator must copy them into a Paperclip company secret and record only that
+  secret's UUID in the credential sidecar (see "Downstream assumptions" and the shareable-vs-secret
+  table below) before any Slack tool can resolve credentials.
+  Source: [App manifests overview](https://api.slack.com/reference/manifests) (the "From an app
+  manifest" creation flow is UI paste-in; no query-string prefill parameter is documented).
 - **Event transport: HTTP Events API (Request URL), not Socket Mode.** Rejected Socket Mode for
   the default path — see rationale below. Socket Mode remains an optional advanced mode for
   operators who cannot expose a public HTTPS endpoint.

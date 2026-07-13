@@ -64,6 +64,7 @@ describe("Slack setup wizard: paste-back form validation gating save completion"
       teamId: config.slackTeamId,
       appId: config.slackAppId,
       botUserId: config.slackBotUserId,
+      botTokenSecretId: config.slackBotTokenSecretId,
       status: "saved",
     };
     const validation = getIdentityFormValidation(config, false, matchingResult, false);
@@ -79,9 +80,32 @@ describe("Slack setup wizard: paste-back form validation gating save completion"
       teamId: "T_DIFFERENT_TEAM",
       appId: config.slackAppId,
       botUserId: config.slackBotUserId,
+      botTokenSecretId: config.slackBotTokenSecretId,
       status: "saved",
     };
     const validation = getIdentityFormValidation(config, false, staleResult, false);
+    expect(validation.credentialComplete).toBe(false);
+    expect(validation.isComplete).toBe(false);
+  });
+
+  it("treats a save result whose bot token secret no longer matches the current field as incomplete", () => {
+    // Regression coverage: if the operator changes only the secret selection
+    // (e.g. after a save completes, or while a stale response is in
+    // flight -- see handleSaveSlackInstallMetadata's generation guard), a
+    // result that matches every OTHER public field must still not report
+    // completion, since the sidecar was persisted with the OLD secret
+    // reference.
+    const config = slackConfig({ slackBotTokenSecretId: "22222222-2222-4222-8222-222222222222" });
+    const resultForOldSecret: SaveSlackInstallMetadataResult = {
+      agentId: config.agentId,
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      teamId: config.slackTeamId,
+      appId: config.slackAppId,
+      botUserId: config.slackBotUserId,
+      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      status: "saved",
+    };
+    const validation = getIdentityFormValidation(config, false, resultForOldSecret, false);
     expect(validation.credentialComplete).toBe(false);
     expect(validation.isComplete).toBe(false);
   });

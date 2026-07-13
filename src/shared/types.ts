@@ -231,6 +231,7 @@ export type SaveSlackInstallMetadataResult = {
   teamId: string;
   appId: string;
   botUserId: string;
+  botTokenSecretId: string;
   defaultChannel?: string;
   status: "saved";
 };

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
 import {
@@ -118,6 +118,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [slackResumeStateInput, setSlackResumeStateInput] = useState("");
   const [slackResumeBusy, setSlackResumeBusy] = useState(false);
   const [slackResumeError, setSlackResumeError] = useState<string | null>(null);
+  const slackSaveGenerationRef = useRef(0);
   const [activeSection, setActiveSection] = useState<SettingsSection>("identities");
   const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
@@ -221,6 +222,47 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   const hasAgentOptions = agentOptions.length > 0;
   const config = formState;
+
+  // Restore an in-progress Slack manifest flow after a reload or editor
+  // reopen. Unlike GitHub, Slack has no redirect callback to carry state
+  // back in via the URL, so the only place to look is the state token this
+  // component persisted to sessionStorage when the flow was created (see
+  // writeSlackManifestFlowState). Re-validate against the server (rather
+  // than trusting the stored token blindly) since the flow may have expired
+  // or been consumed since it was written.
+  useEffect(() => {
+    if (!config || config.provider !== SLACK_IDENTITY_PROVIDER_ID) return;
+    if (slackManifestFlow) return;
+    const agentId = config.agentId.trim();
+    if (!agentId) return;
+    const storedState = readSlackManifestFlowState(agentId);
+    if (!storedState) return;
+
+    let cancelled = false;
+    void getSlackAppManifestFlow({ state: storedState })
+      .then((result) => {
+        if (cancelled) return;
+        const flow = result as GetSlackAppManifestFlowResult;
+        if (flow.agentId !== agentId) {
+          deleteSlackManifestFlowState(agentId);
+          return;
+        }
+        setSlackManifestFlow(flow);
+        setSlackManifestCopied(false);
+      })
+      .catch(() => {
+        // Flow expired, was consumed, or no longer exists -- drop the
+        // stale pointer so we don't keep retrying every render.
+        if (!cancelled) {
+          deleteSlackManifestFlowState(agentId);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [config, getSlackAppManifestFlow, slackManifestFlow]);
+
   const hasSavedAgentOutsideOptions = Boolean(
     config?.agentId && !agentOptions.some((agent) => agent.id === config.agentId)
   );
@@ -286,8 +328,12 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     } else if (field.startsWith("slack") && config?.[field] !== value) {
       // Any edit to the Slack install fields invalidates a prior successful
       // save-slack-install-metadata result -- it was only valid for the
-      // exact field values it was saved with.
+      // exact field values it was saved with. Also bump the save
+      // generation so an in-flight save-slack-install-metadata response
+      // (started before this edit) is discarded when it arrives, rather
+      // than being applied against fields it no longer reflects.
       setSlackSaveResult(null);
+      slackSaveGenerationRef.current += 1;
     }
   }
 
@@ -345,6 +391,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       setSlackManifestFlow(flow);
       setSlackManifestCopied(false);
       setSlackManifestError(null);
+      writeSlackManifestFlowState(config.agentId.trim(), flow.state);
     } catch (err) {
       setSlackResumeError(err instanceof Error ? err.message : "Could not restore the Slack App manifest flow for that state token.");
     } finally {
@@ -369,6 +416,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       }) as CreateSlackAppManifestResult;
       setSlackManifestFlow(result);
       setSlackManifestCopied(false);
+      writeSlackManifestFlowState(config.agentId.trim(), result.state);
     } catch (err) {
       setSlackManifestError(err instanceof Error ? err.message : "Failed to create Slack App manifest");
     } finally {
@@ -378,20 +426,31 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   async function handleSaveSlackInstallMetadata() {
     if (!config || !slackManifestFlow) return;
+    const generation = ++slackSaveGenerationRef.current;
     setSlackManifestBusy(true);
     setSlackManifestError(null);
     try {
       const targetAgentId = config.agentId.trim();
       const previousAgentId = config.previousAgentId.trim();
+      const botTokenSecretId = config.slackBotTokenSecretId.trim();
       const result = await saveSlackInstallMetadata({
         state: slackManifestFlow.state,
         agentId: targetAgentId,
         teamId: config.slackTeamId.trim(),
         appId: config.slackAppId.trim(),
         botUserId: config.slackBotUserId.trim(),
-        botTokenSecretId: config.slackBotTokenSecretId.trim(),
+        botTokenSecretId,
         ...(config.slackDefaultChannel.trim() ? { defaultChannel: config.slackDefaultChannel.trim() } : {}),
       }) as SaveSlackInstallMetadataResult;
+      // Stale-response guard: if another save started (or the fields were
+      // edited, invalidating slackSaveResult) after this request was sent,
+      // a newer generation has already been assigned. Applying this result
+      // anyway would let a late/aborted-in-spirit response silently mark
+      // the (now different) form values as saved when the fields underneath
+      // it may no longer match what was actually persisted server-side.
+      if (slackSaveGenerationRef.current !== generation) {
+        return;
+      }
       // save-slack-install-metadata only upserts `${agentId}:slack`; it has
       // no knowledge of a rename. If the Agent field was changed while
       // editing an existing Slack identity, the old `${previousAgentId}:slack`
@@ -407,6 +466,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         }
       }
       setSlackSaveResult(result);
+      deleteSlackManifestFlowState(targetAgentId);
       // Record the just-saved identity as the form's "previous" identity before
       // refreshing. Otherwise refresh() adds this identity to `identities`, and
       // duplicateIdentity (which compares against previousAgentId) would then
@@ -415,9 +475,12 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       setFormState((prev) => (prev ? { ...prev, previousAgentId: result.agentId } : prev));
       await refresh();
     } catch (err) {
+      if (slackSaveGenerationRef.current !== generation) return;
       setSlackManifestError(err instanceof Error ? err.message : "Failed to save Slack install metadata");
     } finally {
-      setSlackManifestBusy(false);
+      if (slackSaveGenerationRef.current === generation) {
+        setSlackManifestBusy(false);
+      }
     }
   }
 
@@ -1032,7 +1095,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               <button
                 type="button"
                 onClick={() => void handleCreateSlackAppManifest()}
-                disabled={slackManifestBusy || !config.agentId || !config.label}
+                disabled={slackManifestBusy || slackResumeBusy || !config.agentId || !config.label}
                 style={secondaryButtonStyle}
               >
                 {slackManifestBusy ? "Working..." : "Create Slack App manifest"}
@@ -1059,7 +1122,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 <button
                   type="button"
                   onClick={() => void handleResumeSlackAppManifestFlow()}
-                  disabled={slackResumeBusy || !slackResumeStateInput.trim()}
+                  disabled={slackResumeBusy || slackManifestBusy || !slackResumeStateInput.trim()}
                   style={secondaryButtonStyle}
                 >
                   {slackResumeBusy ? "Restoring..." : "Restore flow"}
@@ -1574,6 +1637,45 @@ function deleteManifestDraftForm(state: string): void {
   }
 }
 
+// Slack has no redirect/callback leg (the operator manually pastes install
+// IDs back in after creating the app in a separate Slack tab), so unlike the
+// GitHub draft above there is no page navigation to survive. But reloading
+// settings or closing/reopening the editor still loses `slackManifestFlow`
+// from React state alone. Persist just the opaque state token (not the
+// manifest/fields) per identity so it can be handed to
+// get-slack-app-manifest-flow to restore the flow within its 30-minute
+// server-side window.
+const SLACK_MANIFEST_STATE_STORAGE_PREFIX = "paperclip-agent-identities:slack-app-manifest-state:";
+
+function getSlackManifestStateStorageKey(agentId: string): string {
+  return SLACK_MANIFEST_STATE_STORAGE_PREFIX + agentId;
+}
+
+function writeSlackManifestFlowState(agentId: string, state: string): void {
+  try {
+    window.sessionStorage.setItem(getSlackManifestStateStorageKey(agentId), state);
+  } catch {
+    // Persistence is best-effort; losing it only means the operator must
+    // paste the state token manually via "Resume an existing manifest flow".
+  }
+}
+
+function readSlackManifestFlowState(agentId: string): string | null {
+  try {
+    return window.sessionStorage.getItem(getSlackManifestStateStorageKey(agentId));
+  } catch {
+    return null;
+  }
+}
+
+function deleteSlackManifestFlowState(agentId: string): void {
+  try {
+    window.sessionStorage.removeItem(getSlackManifestStateStorageKey(agentId));
+  } catch {
+    // Ignore sessionStorage cleanup failures.
+  }
+}
+
 function normalizeManifestDraftForm(raw: unknown): IdentityFormState | null {
   if (!isRecord(raw)) return null;
   return {
@@ -1640,6 +1742,7 @@ export function getIdentityFormValidation(
       slackSaveResult.teamId === config.slackTeamId.trim() &&
       slackSaveResult.appId === config.slackAppId.trim() &&
       slackSaveResult.botUserId === config.slackBotUserId.trim() &&
+      slackSaveResult.botTokenSecretId === config.slackBotTokenSecretId.trim() &&
       (slackSaveResult.defaultChannel ?? "") === config.slackDefaultChannel.trim()
     );
     const hasSlackInstall = hasSlackInstallFields && slackSaveMatchesCurrentFields && !slackManifestBusy;

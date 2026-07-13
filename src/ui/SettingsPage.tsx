@@ -283,7 +283,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     config?.previousPrivateKeyFile
   );
   const formValidation = config
-    ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackSaveResult, slackManifestBusy)
+    ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackSaveResult, slackSaveBusy)
     : null;
   const activeFormSteps = getFormSteps(config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
   const activeFormStepIndex = getFormStepIndex(activeFormSection, config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
@@ -433,7 +433,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   async function handleSaveSlackInstallMetadata() {
     if (!config || !slackManifestFlow) return;
     const generation = ++slackSaveGenerationRef.current;
-    setSlackManifestBusy(true);
+    setSlackSaveBusy(true);
     setSlackManifestError(null);
     try {
       const targetAgentId = config.agentId.trim();
@@ -485,7 +485,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       setSlackManifestError(err instanceof Error ? err.message : "Failed to save Slack install metadata");
     } finally {
       if (slackSaveGenerationRef.current === generation) {
-        setSlackManifestBusy(false);
+        setSlackSaveBusy(false);
       }
     }
   }
@@ -547,7 +547,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   async function handleSave() {
     if (!config) return;
-    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity), slackSaveResult, slackManifestBusy);
+    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity), slackSaveResult, slackSaveBusy);
     if (!validation.isComplete) {
       setSaveSuccess(false);
       setSaveError(validation.saveMessage);
@@ -1101,7 +1101,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               <button
                 type="button"
                 onClick={() => void handleCreateSlackAppManifest()}
-                disabled={slackManifestBusy || slackResumeBusy || !config.agentId || !config.label}
+                disabled={slackManifestBusy || slackSaveBusy || slackResumeBusy || !config.agentId || !config.label}
                 style={secondaryButtonStyle}
               >
                 {slackManifestBusy ? "Working..." : "Create Slack App manifest"}
@@ -1128,7 +1128,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 <button
                   type="button"
                   onClick={() => void handleResumeSlackAppManifestFlow()}
-                  disabled={slackResumeBusy || slackManifestBusy || !slackResumeStateInput.trim()}
+                  disabled={slackResumeBusy || slackManifestBusy || slackSaveBusy || !slackResumeStateInput.trim()}
                   style={secondaryButtonStyle}
                 >
                   {slackResumeBusy ? "Restoring..." : "Restore flow"}
@@ -1260,6 +1260,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 onClick={() => void handleSaveSlackInstallMetadata()}
                 disabled={
                   slackManifestBusy ||
+                  slackSaveBusy ||
                   !slackManifestFlow ||
                   !config.slackTeamId.trim() ||
                   !config.slackAppId.trim() ||
@@ -1268,7 +1269,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 }
                 style={secondaryButtonStyle}
               >
-                {slackManifestBusy ? "Working..." : "Save Slack install metadata"}
+                {slackSaveBusy ? "Saving..." : "Save Slack install metadata"}
               </button>
             </div>
 
@@ -1729,7 +1730,7 @@ export function getIdentityFormValidation(
   config: IdentityFormState,
   hasDuplicate = false,
   slackSaveResult: SaveSlackInstallMetadataResult | null = null,
-  slackManifestBusy = false,
+  slackSaveBusy = false,
 ): IdentityFormValidation {
   if (config.provider === SLACK_IDENTITY_PROVIDER_ID) {
     const hasIdentity = Boolean(config.agentId.trim() && config.provider.trim() && config.label.trim()) && !hasDuplicate;
@@ -1751,7 +1752,7 @@ export function getIdentityFormValidation(
       slackSaveResult.botTokenSecretId === config.slackBotTokenSecretId.trim() &&
       (slackSaveResult.defaultChannel ?? "") === config.slackDefaultChannel.trim()
     );
-    const hasSlackInstall = hasSlackInstallFields && slackSaveMatchesCurrentFields && !slackManifestBusy;
+    const hasSlackInstall = hasSlackInstallFields && slackSaveMatchesCurrentFields && !slackSaveBusy;
     const identityComplete = hasIdentity;
     const credentialComplete = hasSlackInstall;
     const identityMessage = hasDuplicate
@@ -1761,7 +1762,7 @@ export function getIdentityFormValidation(
       : "Identity details are complete.";
     const credentialMessage = credentialComplete
       ? "Slack install metadata is complete."
-      : slackManifestBusy
+      : slackSaveBusy
         ? "Saving Slack install metadata..."
         : "Create the Slack App manifest, install it, and paste back the team/app/bot IDs and bot token secret, then save install metadata before this identity can be saved.";
     const saveMessage = !identityComplete

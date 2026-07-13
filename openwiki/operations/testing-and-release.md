@@ -47,7 +47,7 @@ The package metadata points Paperclip at:
 
 ## Test suite
 
-Tests run with Vitest in Node environment. `/vitest.config.ts` includes `tests/**/*.spec.ts`.
+Tests run with Vitest in Node environment. `/vitest.config.ts` includes `tests/**/*.spec.ts` and `tests/**/*.spec.tsx` (the latter for React component interaction tests, e.g. `tests/ui/settings-page-interactions.spec.tsx`).
 
 Current test files:
 

@@ -6,6 +6,7 @@ import type { ResourceReference } from "../../core/resource-reference.js";
 import { validateSlackConfig, projectSlackPluginConfig, type SlackAgentIdentity } from "./config.js";
 import { resolveSlackCredential } from "./credentials.js";
 import { contributeSlackAppManifestActions } from "./app-manifest.js";
+import { slackReactToolSpec } from "./tools/react.js";
 
 export const SLACK_PROVIDER_ID = "slack";
 
@@ -29,13 +30,10 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
   validateConfig: validateSlackConfig,
   projectPluginConfig: projectSlackPluginConfig,
   resolveCredential: resolveSlackCredential,
-  // No tools yet — the five Slack tools are implemented by separate,
-  // dependency-blocked issues. This provider slice adds manifest-assisted
-  // setup actions (DRO-971: create-slack-app-manifest,
-  // get-slack-app-manifest-flow, save-slack-install-metadata) on top of the
-  // credential storage/resolution slice (DRO-969); the tool surface itself
-  // stays empty until those blocked issues land.
-  tools: [],
+  // DRO-974: slack-react is the first tool to land in the Slack tool
+  // surface. The remaining tools (whoami/post-message/reply-thread/
+  // lookup-channel) are separate, still-in-flight issues.
+  tools: [slackReactToolSpec],
   contributeActions: contributeSlackAppManifestActions,
   manifestTools: []
 };

@@ -68,30 +68,36 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
 
 const SLACK_MANIFEST_STATE_STORAGE_PREFIX = "paperclip-agent-identities:slack-app-manifest-state:";
 
-function getSlackManifestStateStorageKey(agentId: string): string {
-  return SLACK_MANIFEST_STATE_STORAGE_PREFIX + agentId;
+// The storage key is scoped by both companyId and agentId: sessionStorage is
+// shared across the whole origin, and operators can switch between companies
+// in the same browser session/tab without a reload. Without the companyId
+// segment, an in-progress Slack manifest flow for agent "bot" in company A
+// would be silently picked up (and potentially restored/resumed) while
+// viewing agent "bot" in company B.
+function getSlackManifestStateStorageKey(companyId: string, agentId: string): string {
+  return `${SLACK_MANIFEST_STATE_STORAGE_PREFIX}${companyId}:${agentId}`;
 }
 
-function writeSlackManifestFlowState(agentId: string, state: string): void {
+function writeSlackManifestFlowState(companyId: string, agentId: string, state: string): void {
   try {
-    window.sessionStorage.setItem(getSlackManifestStateStorageKey(agentId), state);
+    window.sessionStorage.setItem(getSlackManifestStateStorageKey(companyId, agentId), state);
   } catch {
     // Persistence is best-effort; losing it only means the operator must
     // paste the state token manually via "Resume an existing manifest flow".
   }
 }
 
-function readSlackManifestFlowState(agentId: string): string | null {
+function readSlackManifestFlowState(companyId: string, agentId: string): string | null {
   try {
-    return window.sessionStorage.getItem(getSlackManifestStateStorageKey(agentId));
+    return window.sessionStorage.getItem(getSlackManifestStateStorageKey(companyId, agentId));
   } catch {
     return null;
   }
 }
 
-function deleteSlackManifestFlowState(agentId: string): void {
+function deleteSlackManifestFlowState(companyId: string, agentId: string): void {
   try {
-    window.sessionStorage.removeItem(getSlackManifestStateStorageKey(agentId));
+    window.sessionStorage.removeItem(getSlackManifestStateStorageKey(companyId, agentId));
   } catch {
     // Ignore sessionStorage cleanup failures.
   }
@@ -126,7 +132,7 @@ async function copyTextToClipboard(value: string): Promise<void> {
 type SlackCredentialStepInput = ProviderSettingsUIHookInput<SlackSettingsUIFormConfig> & SlackSettingsUIActionsInput;
 
 function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsUIHookResult {
-  const { config, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, saveSlackInstallMetadata } = input;
+  const { config, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, saveSlackInstallMetadata, companyId } = input;
 
   const [slackManifestFlow, setSlackManifestFlow] = useState<CreateSlackAppManifestResult | null>(null);
   const [slackManifestBusy, setSlackManifestBusy] = useState(false);
@@ -157,6 +163,15 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     // create-slack-app-manifest / get-slack-app-manifest-flow response
     // started before this reset is discarded when it arrives (finding #4/#8).
     slackManifestFlowGenerationRef.current += 1;
+    // Bumping the generation makes the pending create/restore requests'
+    // `finally` blocks skip their own busy-flag cleanup (the generation
+    // check fails), so this reset must clear those busy flags itself --
+    // otherwise an agent/label reset or dialog reopen while a
+    // create-slack-app-manifest / get-slack-app-manifest-flow /
+    // resume request is in flight would leave the Slack setup controls
+    // disabled permanently.
+    setSlackManifestBusy(false);
+    setSlackResumeBusy(false);
     // Also invalidate an in-flight save-slack-install-metadata request: a
     // reset (e.g. starting a new/different identity, or closing the dialog)
     // means a stale response should never attach to whatever form comes
@@ -200,7 +215,7 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     if (slackManifestFlow) return;
     const agentId = config.agentId.trim();
     if (!agentId) return;
-    const storedState = readSlackManifestFlowState(agentId);
+    const storedState = readSlackManifestFlowState(companyId, agentId);
     if (!storedState) return;
 
     let cancelled = false;
@@ -210,7 +225,7 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
         if (cancelled || slackManifestFlowGenerationRef.current !== generation) return;
         const flow = result as GetSlackAppManifestFlowResult;
         if (flow.agentId !== agentId) {
-          deleteSlackManifestFlowState(agentId);
+          deleteSlackManifestFlowState(companyId, agentId);
           return;
         }
         // The worker persists flow.label alongside flow.agentId (see
@@ -220,7 +235,7 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
         // save-slack-install-metadata records another. Reject a
         // label-mismatched flow rather than restoring it.
         if (config.label.trim() && flow.label && flow.label !== config.label.trim()) {
-          deleteSlackManifestFlowState(agentId);
+          deleteSlackManifestFlowState(companyId, agentId);
           return;
         }
         setSlackManifestFlow(flow);
@@ -230,14 +245,14 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
         // Flow expired, was consumed, or no longer exists -- drop the
         // stale pointer so we don't keep retrying every render.
         if (!cancelled) {
-          deleteSlackManifestFlowState(agentId);
+          deleteSlackManifestFlowState(companyId, agentId);
         }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [config, getSlackAppManifestFlow, slackManifestFlow]);
+  }, [config, getSlackAppManifestFlow, slackManifestFlow, companyId]);
 
   async function handleResumeSlackAppManifestFlow() {
     if (!config) return;
@@ -265,7 +280,7 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
       setSlackManifestFlow(flow);
       setSlackManifestCopied(false);
       setSlackManifestError(null);
-      writeSlackManifestFlowState(config.agentId.trim(), flow.state);
+      writeSlackManifestFlowState(companyId, config.agentId.trim(), flow.state);
     } catch (err) {
       if (slackManifestFlowGenerationRef.current !== generation) return;
       setSlackResumeError(err instanceof Error ? err.message : "Could not restore the Slack App manifest flow for that state token.");
@@ -299,7 +314,7 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
       if (slackManifestFlowGenerationRef.current !== generation) return;
       setSlackManifestFlow(result);
       setSlackManifestCopied(false);
-      writeSlackManifestFlowState(config.agentId.trim(), result.state);
+      writeSlackManifestFlowState(companyId, config.agentId.trim(), result.state);
     } catch (err) {
       if (slackManifestFlowGenerationRef.current !== generation) return;
       setSlackManifestError(err instanceof Error ? err.message : "Failed to create Slack App manifest");
@@ -360,7 +375,7 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
         }
       }
       setSlackSaveResult(result);
-      deleteSlackManifestFlowState(targetAgentId);
+      deleteSlackManifestFlowState(companyId, targetAgentId);
       // Record the just-saved identity as the form's "previous" identity before
       // refreshing. Otherwise refresh() adds this identity to `identities`, and
       // duplicateIdentity (which compares against previousAgentId) would then

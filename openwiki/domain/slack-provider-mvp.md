@@ -364,22 +364,13 @@ public inbound routing, secret-*creation*, and config-token storage is the corre
 the deferred flows described in §1/§7 and in `slack-provisioning-decision.md`'s "OAuth v2 install
 flow (for reference / future automation)" section — this slice does not attempt them.
 
-**Operator-facing UI is explicitly deferred, not included in this slice.** `src/ui/SettingsPage.tsx`
-today only wires GitHub's manifest actions; it does not yet call `create-slack-app-manifest`,
-`get-slack-app-manifest-flow`, or `save-slack-install-metadata`, and `slackProvider.definition.status`
-stays `"coming-soon"` so the Slack identity option stays hidden from the settings UI (§7 of this
-document describes the target UI shape, not what has shipped). Consequently this PR does not give
-operators an end-to-end path to create/install a Slack app from the UI yet, and does not fully
-satisfy DRO-971 / issue #58's acceptance criteria on its own — it lands the worker-side actions
-those criteria depend on. A follow-up child issue should wire the settings-UI flow (manifest
-display + copy/paste-back form) on top of these actions, mirroring the existing GitHub UI pattern.
-
-
-**Scope note — settings-UI wiring is a separate follow-up.** This slice lands the three worker
-actions above with full test coverage, but does **not** wire them into `src/ui/SettingsPage.tsx`.
-`slackProvider.definition.status` therefore correctly stays `"coming-soon"` and Slack stays hidden
-in the operator-facing settings UI — the same as before this PR. Landing that UI (a create/paste
-manifest step, a paste-back form for `state`/`teamId`/`appId`/`botUserId`/`botTokenSecretId`, and
-clear success/error status, mirroring the GitHub manifest flow already wired in
-`SettingsPage.tsx`) is tracked as a separate follow-up issue so it can go through its own
-TDD/review cycle rather than being bundled into this action-layer slice.
+**Operator-facing UI landed in a follow-up (DRO-1025).** At the time this DRO-971 slice merged,
+`src/ui/SettingsPage.tsx` only wired GitHub's manifest actions and did not call
+`create-slack-app-manifest`, `get-slack-app-manifest-flow`, or `save-slack-install-metadata`. That
+gap has since been closed: the Slack settings-UI flow (manifest display + copy/paste-back form,
+mirroring the GitHub pattern) is now implemented as a provider-owned adapter in
+`src/providers/slack/settings-adapter-ui.tsx` (see `ProviderSettingsUIAdapter` in
+`src/core/provider-settings-ui-contract.ts`), giving operators an end-to-end create/install path
+for a Slack app from the UI. `slackProvider.definition.status` intentionally still stays
+`"coming-soon"` — that flag now gates strictly on the five Slack tools (DRO-973/974/975) landing,
+not on setup-UI availability, since `tools`/`manifestTools` stay empty until those issues land.

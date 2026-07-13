@@ -172,6 +172,68 @@ export type ConvertGitHubAppManifestResult = {
   installUrl: string;
 };
 
+export type SlackAppManifestFlowState = {
+  agentId: string;
+  provider: IdentityProviderId;
+  companyId: string;
+  state: string;
+  manifest: string;
+  // Plain link to the Slack "create app" page. Slack does not support a
+  // documented query parameter to prefill a manifest, so this is NOT a deep
+  // link into a prefilled form — the operator must paste `manifest` in
+  // manually via the "From an app manifest" flow. See
+  // openwiki/domain/slack-provider-design.md.
+  createAppUrl: string;
+  createdAt: string;
+  expiresAt: string;
+  label: string;
+  consumed?: boolean;
+};
+
+export type CreateSlackAppManifestInput = {
+  agentId: string;
+  provider?: IdentityProviderId;
+  label: string;
+  workerHost?: string;
+};
+
+export type CreateSlackAppManifestResult = {
+  agentId: string;
+  provider: IdentityProviderId;
+  state: string;
+  manifest: string;
+  createAppUrl: string;
+  createdAt: string;
+  expiresAt: string;
+  label: string;
+};
+
+export type GetSlackAppManifestFlowInput = {
+  state: string;
+};
+
+export type GetSlackAppManifestFlowResult = CreateSlackAppManifestResult;
+
+export type SaveSlackInstallMetadataInput = {
+  state: string;
+  agentId: string;
+  teamId: string;
+  appId: string;
+  botUserId: string;
+  defaultChannel?: string;
+  botTokenSecretId: string;
+};
+
+export type SaveSlackInstallMetadataResult = {
+  agentId: string;
+  provider: IdentityProviderId;
+  teamId: string;
+  appId: string;
+  botUserId: string;
+  defaultChannel?: string;
+  status: "saved";
+};
+
 export const DEFAULT_BOT_IDENTITY_CONFIG: GitHubAgentIdentityConfig = {
   provider: GITHUB_IDENTITY_PROVIDER_ID,
   id: "",

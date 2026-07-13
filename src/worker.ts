@@ -81,6 +81,13 @@ const plugin = definePlugin({
           registered.handler as Parameters<typeof ctx.tools.register>[2],
         );
       }
+    }
+    // contributeActions is composed for EVERY registered provider, not just
+    // "enabled" ones: a "coming-soon" provider (no tools yet) can still ship
+    // setup/bootstrap actions (e.g. Slack's manifest-assisted app setup) ahead
+    // of its tool surface landing. This loop stays provider-agnostic — no
+    // provider-specific branch is added here.
+    for (const provider of registry.all()) {
       provider.contributeActions?.(ctx);
     }
 

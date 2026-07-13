@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
+import { buildProviderSettingsRegistry } from "../core/provider-settings-contract.js";
+import { ALL_SETTINGS_ADAPTERS } from "../providers/settings-index.js";
 import {
   createPaperclipThemeStyle,
   uiBorder,
@@ -551,10 +553,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     if (!validation.isComplete) {
       setSaveSuccess(false);
       setSaveError(validation.saveMessage);
-      setActiveFormSection(validation.identityComplete ? (config.provider === SLACK_IDENTITY_PROVIDER_ID ? "slack" : "github") : "identity");
+      const adapter = providerSettingsRegistry.get(config.provider);
+      setActiveFormSection(validation.identityComplete ? (adapter.credentialStepId as IdentityFormSection) : "identity");
       return;
     }
-    if (config.provider === SLACK_IDENTITY_PROVIDER_ID) {
+    if (providerSettingsRegistry.get(config.provider).savesViaSeparateAction) {
       // Slack identities are persisted by save-slack-install-metadata itself
       // (see handleSaveSlackInstallMetadata); there is no separate
       // save-bot-identity-config call for Slack. Reaching this step with a
@@ -880,7 +883,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
             </label>
           </fieldset>
 
-          {config.provider !== SLACK_IDENTITY_PROVIDER_ID && (
+          {providerSettingsRegistry.get(config.provider).hasProviderAccountFieldsInIdentityStep && (
           <fieldset style={fieldsetStyle}>
             <legend style={legendStyle}>Provider account</legend>
 
@@ -1711,19 +1714,18 @@ function normalizeManifestDraftForm(raw: unknown): IdentityFormState | null {
   };
 }
 
-const GITHUB_FORM_STEPS: Array<{ id: IdentityFormSection; label: string }> = [
-  { id: "identity", label: "Identity" },
-  { id: "github", label: "GitHub App" },
-  { id: "commit", label: "Commit" },
-];
-
-const SLACK_FORM_STEPS: Array<{ id: IdentityFormSection; label: string }> = [
-  { id: "identity", label: "Identity" },
-  { id: "slack", label: "Slack App" },
-];
+// Composed once here from the per-provider Settings-UI adapters
+// (src/providers/*/settings-adapter.ts) via src/providers/settings-index.ts,
+// mirroring how src/providers/index.ts composes ALL_PROVIDERS for the
+// worker/manifest tool surface -- kept as a separate composition root because
+// providers/index.ts pulls in server-only code unsafe for this client bundle
+// (see settings-index.ts). SettingsPage no longer branches on provider id
+// strings to pick a step list or validation rule set -- it looks up the
+// adapter for the active provider and delegates.
+const providerSettingsRegistry = buildProviderSettingsRegistry([...ALL_SETTINGS_ADAPTERS], GITHUB_IDENTITY_PROVIDER_ID);
 
 export function getFormSteps(provider: string): Array<{ id: IdentityFormSection; label: string }> {
-  return provider === SLACK_IDENTITY_PROVIDER_ID ? SLACK_FORM_STEPS : GITHUB_FORM_STEPS;
+  return providerSettingsRegistry.get(provider).formSteps as Array<{ id: IdentityFormSection; label: string }>;
 }
 
 export function getIdentityFormValidation(
@@ -1732,83 +1734,8 @@ export function getIdentityFormValidation(
   slackSaveResult: SaveSlackInstallMetadataResult | null = null,
   slackSaveBusy = false,
 ): IdentityFormValidation {
-  if (config.provider === SLACK_IDENTITY_PROVIDER_ID) {
-    const hasIdentity = Boolean(config.agentId.trim() && config.provider.trim() && config.label.trim()) && !hasDuplicate;
-    const hasSlackInstallFields = Boolean(
-      config.slackTeamId.trim() &&
-      config.slackAppId.trim() &&
-      config.slackBotUserId.trim() &&
-      config.slackBotTokenSecretId.trim()
-    );
-    // The install metadata is only considered saved when save-slack-install-metadata
-    // has actually completed for the CURRENT field values -- editing any Slack field
-    // after a successful save invalidates that prior result (see updateField), and a
-    // save still in flight must not let the footer report completion early.
-    const slackSaveMatchesCurrentFields = Boolean(
-      slackSaveResult &&
-      slackSaveResult.teamId === config.slackTeamId.trim() &&
-      slackSaveResult.appId === config.slackAppId.trim() &&
-      slackSaveResult.botUserId === config.slackBotUserId.trim() &&
-      slackSaveResult.botTokenSecretId === config.slackBotTokenSecretId.trim() &&
-      (slackSaveResult.defaultChannel ?? "") === config.slackDefaultChannel.trim()
-    );
-    const hasSlackInstall = hasSlackInstallFields && slackSaveMatchesCurrentFields && !slackSaveBusy;
-    const identityComplete = hasIdentity;
-    const credentialComplete = hasSlackInstall;
-    const identityMessage = hasDuplicate
-      ? "This agent already has an identity for the selected provider. Edit the existing identity instead."
-      : !hasIdentity
-        ? "Choose an agent, provider, and label before continuing."
-      : "Identity details are complete.";
-    const credentialMessage = credentialComplete
-      ? "Slack install metadata is complete."
-      : slackSaveBusy
-        ? "Saving Slack install metadata..."
-        : "Create the Slack App manifest, install it, and paste back the team/app/bot IDs and bot token secret, then save install metadata before this identity can be saved.";
-    const saveMessage = !identityComplete
-      ? identityMessage
-      : !credentialComplete
-        ? credentialMessage
-        : "Required setup is complete.";
-    return {
-      identityComplete,
-      credentialComplete,
-      isComplete: identityComplete && credentialComplete,
-      identityMessage,
-      credentialMessage,
-      saveMessage,
-    };
-  }
-  const hasIdentity = Boolean(config.agentId.trim() && config.provider.trim() && config.label.trim() && config.githubUsername.trim()) && !hasDuplicate;
-  const hasGitHubAppCredential = Boolean(
-    config.githubAppId.trim() &&
-    config.githubInstallationId.trim() &&
-    (config.privateKeySecretId.trim() || config.privateKeyFile.trim())
-  );
-  const hasFallbackCredential = Boolean(config.fallbackTokenSecretId.trim() || config.tokenFile.trim());
-  const identityComplete = hasIdentity;
-  const credentialComplete = hasGitHubAppCredential || hasFallbackCredential;
-  const identityMessage = hasDuplicate
-    ? "This agent already has an identity for the selected provider. Edit the existing identity instead."
-    : !hasIdentity
-      ? "Choose an agent, provider, label, and provider username before continuing."
-    : "Identity details are complete.";
-  const credentialMessage = credentialComplete
-    ? "Credential source is complete."
-    : "Add a complete GitHub App credential, or choose a fallback token source, before this identity can be saved.";
-  const saveMessage = !identityComplete
-    ? identityMessage
-    : !credentialComplete
-      ? credentialMessage
-      : "Required setup is complete. Review optional commit metadata, then save.";
-  return {
-    identityComplete,
-    credentialComplete,
-    isComplete: identityComplete && credentialComplete,
-    identityMessage,
-    credentialMessage,
-    saveMessage,
-  };
+  const adapter = providerSettingsRegistry.get(config.provider);
+  return adapter.getValidation(config, hasDuplicate, { slackSaveResult, slackSaveBusy });
 }
 
 function getFormStepIndex(step: IdentityFormSection, provider: string): number {

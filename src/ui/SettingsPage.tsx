@@ -32,6 +32,7 @@ import type {
   ConvertGitHubAppManifestResult,
   GetGitHubAppManifestFlowResult,
   CreateSlackAppManifestResult,
+  GetSlackAppManifestFlowResult,
   SaveSlackInstallMetadataResult
 } from "../shared/types.js";
 
@@ -44,7 +45,7 @@ type PaperclipSecretOption = {
   status?: string;
 };
 
-type IdentityFormState = {
+export type IdentityFormState = {
   agentId: string;
   provider: string;
   label: string;
@@ -114,6 +115,9 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [slackManifestError, setSlackManifestError] = useState<string | null>(null);
   const [slackSaveResult, setSlackSaveResult] = useState<SaveSlackInstallMetadataResult | null>(null);
   const [slackManifestCopied, setSlackManifestCopied] = useState(false);
+  const [slackResumeStateInput, setSlackResumeStateInput] = useState("");
+  const [slackResumeBusy, setSlackResumeBusy] = useState(false);
+  const [slackResumeError, setSlackResumeError] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("identities");
   const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
@@ -323,6 +327,29 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setSlackManifestError(null);
     setSlackSaveResult(null);
     setSlackManifestCopied(false);
+    setSlackResumeStateInput("");
+    setSlackResumeError(null);
+  }
+
+  async function handleResumeSlackAppManifestFlow() {
+    if (!config) return;
+    const state = slackResumeStateInput.trim();
+    if (!state) return;
+    setSlackResumeBusy(true);
+    setSlackResumeError(null);
+    try {
+      const flow = await getSlackAppManifestFlow({ state }) as GetSlackAppManifestFlowResult;
+      if (flow.agentId !== config.agentId.trim()) {
+        throw new Error("This state token belongs to a different agent than the one currently selected.");
+      }
+      setSlackManifestFlow(flow);
+      setSlackManifestCopied(false);
+      setSlackManifestError(null);
+    } catch (err) {
+      setSlackResumeError(err instanceof Error ? err.message : "Could not restore the Slack App manifest flow for that state token.");
+    } finally {
+      setSlackResumeBusy(false);
+    }
   }
 
   async function handleCreateSlackAppManifest() {
@@ -354,15 +381,31 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setSlackManifestBusy(true);
     setSlackManifestError(null);
     try {
+      const targetAgentId = config.agentId.trim();
+      const previousAgentId = config.previousAgentId.trim();
       const result = await saveSlackInstallMetadata({
         state: slackManifestFlow.state,
-        agentId: config.agentId.trim(),
+        agentId: targetAgentId,
         teamId: config.slackTeamId.trim(),
         appId: config.slackAppId.trim(),
         botUserId: config.slackBotUserId.trim(),
         botTokenSecretId: config.slackBotTokenSecretId.trim(),
         ...(config.slackDefaultChannel.trim() ? { defaultChannel: config.slackDefaultChannel.trim() } : {}),
       }) as SaveSlackInstallMetadataResult;
+      // save-slack-install-metadata only upserts `${agentId}:slack`; it has
+      // no knowledge of a rename. If the Agent field was changed while
+      // editing an existing Slack identity, the old `${previousAgentId}:slack`
+      // identity + credential would otherwise be orphaned, so clean it up
+      // explicitly via the existing delete action.
+      if (previousAgentId && previousAgentId !== targetAgentId) {
+        try {
+          await deleteConfig({ agentId: previousAgentId, provider: SLACK_IDENTITY_PROVIDER_ID });
+        } catch (err) {
+          setSlackManifestError(
+            `Slack install metadata saved, but could not remove the previous identity for ${previousAgentId}: ${err instanceof Error ? err.message : "unknown error"}`
+          );
+        }
+      }
       setSlackSaveResult(result);
       // Record the just-saved identity as the form's "previous" identity before
       // refreshing. Otherwise refresh() adds this identity to `identities`, and
@@ -747,7 +790,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                     value={provider.id}
                     disabled={provider.status !== "enabled" && provider.id !== SLACK_IDENTITY_PROVIDER_ID}
                   >
-                    {provider.name}{provider.status === "coming-soon" ? " (setup only — tools coming soon)" : ""}
+                    {provider.name}{provider.status === "coming-soon" ? (provider.id === SLACK_IDENTITY_PROVIDER_ID ? " (setup only — tools coming soon)" : " (coming soon)") : ""}
                   </option>
                 ))}
               </select>
@@ -996,6 +1039,36 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               </button>
             </div>
 
+            {!slackManifestFlow && (
+              <div style={formActionsStyle}>
+                <label style={fieldStyle}>
+                  <span>Resume an existing manifest flow</span>
+                  <input
+                    type="text"
+                    value={slackResumeStateInput}
+                    onChange={(e) => setSlackResumeStateInput(e.target.value)}
+                    placeholder="Paste the pc_... state token from a previous session"
+                    style={inputStyle}
+                  />
+                  <span style={hintStyle}>
+                    Reloading settings or closing this editor loses the in-progress manifest flow from local state.
+                    If you saved the state token from when the manifest was created, paste it here to resume within
+                    its 30-minute server-side window instead of creating a new Slack App.
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void handleResumeSlackAppManifestFlow()}
+                  disabled={slackResumeBusy || !slackResumeStateInput.trim()}
+                  style={secondaryButtonStyle}
+                >
+                  {slackResumeBusy ? "Restoring..." : "Restore flow"}
+                </button>
+              </div>
+            )}
+
+            {slackResumeError && <span style={errorStyle}>{slackResumeError}</span>}
+
             {slackManifestFlow && (
               <div style={manifestPanelStyle}>
                 <label style={fieldStyle}>
@@ -1025,6 +1098,15 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 <span style={hintStyle}>
                   On the Slack page, choose "From an app manifest," select the workspace, then paste the copied JSON. After Slack creates and you install the app, come back and paste the resulting IDs below.
                 </span>
+                <label style={fieldStyle}>
+                  <span>Flow state token</span>
+                  <input type="text" readOnly value={slackManifestFlow.state} style={inputStyle} />
+                  <span style={hintStyle}>
+                    Save this token if you might reload settings or close this editor before finishing setup. Paste it
+                    into "Resume an existing manifest flow" above to restore this in-progress flow within its
+                    30-minute window.
+                  </span>
+                </label>
               </div>
             )}
 
@@ -1433,7 +1515,7 @@ function slugifyGitHubAppName(value: string): string {
     .replace(/^-+|-+$/g, "") || "paperclip-agent";
 }
 
-function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState {
+export function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState {
   return {
     agentId: entry?.agentId ?? DEFAULT_BOT_IDENTITY_CONFIG.agentId,
     provider: entry?.provider ?? DEFAULT_BOT_IDENTITY_CONFIG.provider,
@@ -1531,11 +1613,11 @@ const SLACK_FORM_STEPS: Array<{ id: IdentityFormSection; label: string }> = [
   { id: "slack", label: "Slack App" },
 ];
 
-function getFormSteps(provider: string): Array<{ id: IdentityFormSection; label: string }> {
+export function getFormSteps(provider: string): Array<{ id: IdentityFormSection; label: string }> {
   return provider === SLACK_IDENTITY_PROVIDER_ID ? SLACK_FORM_STEPS : GITHUB_FORM_STEPS;
 }
 
-function getIdentityFormValidation(
+export function getIdentityFormValidation(
   config: IdentityFormState,
   hasDuplicate = false,
   slackSaveResult: SaveSlackInstallMetadataResult | null = null,

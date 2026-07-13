@@ -112,6 +112,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [manifestResult, setManifestResult] = useState<ConvertGitHubAppManifestResult | null>(null);
   const [slackManifestFlow, setSlackManifestFlow] = useState<CreateSlackAppManifestResult | null>(null);
   const [slackManifestBusy, setSlackManifestBusy] = useState(false);
+  const [slackSaveBusy, setSlackSaveBusy] = useState(false);
   const [slackManifestError, setSlackManifestError] = useState<string | null>(null);
   const [slackSaveResult, setSlackSaveResult] = useState<SaveSlackInstallMetadataResult | null>(null);
   const [slackManifestCopied, setSlackManifestCopied] = useState(false);
@@ -334,6 +335,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       // than being applied against fields it no longer reflects.
       setSlackSaveResult(null);
       slackSaveGenerationRef.current += 1;
+      // The in-flight save (if any) is now stale and its finally() will no
+      // longer match the current generation, so it will never clear
+      // slackSaveBusy itself -- clear it here so the wizard doesn't get
+      // stuck showing "Saving..." after an edit invalidates the request.
+      setSlackSaveBusy(false);
     }
   }
 

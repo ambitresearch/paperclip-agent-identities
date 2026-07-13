@@ -76,10 +76,10 @@ This is scaffold-like behavior but is covered by `/tests/plugin.spec.ts`.
 
 ### Tools and provider registry iteration
 
-`/src/worker.ts` does not register provider tools one-by-one. It builds a provider registry (`createProviderRegistry()` from `/src/providers/index.ts`) and, for every enabled `IdentityProvider`:
+`/src/worker.ts` does not register provider tools one-by-one. It builds a provider registry (`createProviderRegistry()` from `/src/providers/index.ts`) and:
 
-- wraps each of the provider's `tools` (its `ProviderToolSpec[]`) through `createProviderTool()` in `/src/core/tool-pipeline.ts`, which enforces the common deny-before-secret pipeline (validate params -> resolve identity -> resolve/deny resource ref -> resolve credential -> perform -> redact secrets), and registers the resulting handler with `ctx.tools.register`;
-- calls the provider's optional `contributeActions(ctx)` hook, which is how the GitHub provider registers its GitHub App manifest actions (`create-github-app-manifest`, `get-github-app-manifest-flow`, `convert-github-app-manifest`) without `/src/worker.ts` importing GitHub-specific action code directly.
+- for every **enabled** `IdentityProvider`, wraps each of the provider's `tools` (its `ProviderToolSpec[]`) through `createProviderTool()` in `/src/core/tool-pipeline.ts`, which enforces the common deny-before-secret pipeline (validate params -> resolve identity -> resolve/deny resource ref -> resolve credential -> perform -> redact secrets), and registers the resulting handler with `ctx.tools.register`;
+- for **every registered provider, enabled or not** (`registry.all()`), calls the provider's optional `contributeActions(ctx)` hook. This is how the GitHub provider registers its GitHub App manifest actions (`create-github-app-manifest`, `get-github-app-manifest-flow`, `convert-github-app-manifest`) without `/src/worker.ts` importing GitHub-specific action code directly, and it's also why a "coming-soon" provider with no tool surface yet (e.g. Slack) can still ship setup/bootstrap actions ahead of `tools` landing — `contributeActions` is intentionally not gated on `enabled()`.
 
 Concretely, GitHub's tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`) live in `/src/providers/github/tools/*.ts` and are exposed through `githubProvider.tools` in `/src/providers/github/index.ts` — the worker loop is provider-agnostic and would pick up a new provider's tools/actions the same way once it's added to the registry.
 

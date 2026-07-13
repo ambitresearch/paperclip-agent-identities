@@ -72,7 +72,12 @@ const SLACK_APP_NAME_MAX_LENGTH = 80;
 const SLACK_APP_DESCRIPTION_MAX_LENGTH = 100;
 
 function truncateForManifest(value: string, maxLength: number): string {
-  return value.length > maxLength ? value.slice(0, maxLength) : value;
+  // Truncate by Unicode code points, not UTF-16 code units: `.length`/`.slice`
+  // operate on UTF-16 units, so an astral character (e.g. an emoji) straddling
+  // the limit would otherwise be split into an unpaired surrogate, producing
+  // an invalid Slack-facing display value.
+  const codePoints = Array.from(value);
+  return codePoints.length > maxLength ? codePoints.slice(0, maxLength).join("") : value;
 }
 
 function buildSlackAppName(label: string): string {
@@ -314,39 +319,58 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
     // credential-sidecar writes too.
     await ctx.state.set(slackAppManifestFlowScope(companyId, state), { ...flow, consumed: true });
 
-    const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
     const identityId = getIdentityKey(agentId, SLACK_PROVIDER);
-    const nextState: AgentIdentitySettingsState = {
-      version: BOT_IDENTITY_SETTINGS_VERSION,
-      identities: {
-        ...previousState.identities,
-        [identityId]: {
-          provider: "slack",
-          id: identityId,
-          agentId,
-          label: flow.label,
-          slack: {
-            teamId,
-            appId,
-            botUserId,
-            ...(defaultChannel ? { defaultChannel } : {}),
+    let configWritten = false;
+    let previousIdentity: AgentIdentitySettingsState["identities"][string] | undefined;
+    try {
+      // Re-read CONFIG_SCOPE immediately before writing (not the value read
+      // earlier, if any) and patch in only this identity's key. Restoring an
+      // entire earlier snapshot on rollback could clobber unrelated identity
+      // changes committed concurrently after this read; compensating only
+      // this one key preserves any such newer entries.
+      const currentState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+      previousIdentity = currentState.identities[identityId];
+      const nextState: AgentIdentitySettingsState = {
+        version: BOT_IDENTITY_SETTINGS_VERSION,
+        identities: {
+          ...currentState.identities,
+          [identityId]: {
+            provider: "slack",
+            id: identityId,
+            agentId,
+            label: flow.label,
+            slack: {
+              teamId,
+              appId,
+              botUserId,
+              ...(defaultChannel ? { defaultChannel } : {}),
+            },
           },
         },
-      },
-    };
-    await ctx.state.set(CONFIG_SCOPE, nextState);
-    try {
+      };
+      await ctx.state.set(CONFIG_SCOPE, nextState);
+      configWritten = true;
+
       await upsertCredentialSidecarIdentity(agentId, SLACK_PROVIDER, {
         slackBotToken: { botTokenSecretId },
       });
     } catch (err) {
-      // The flow is already consumed and CONFIG_SCOPE already reflects the
-      // new identity, but the credential sidecar write — the last step —
-      // failed. Roll CONFIG_SCOPE back to its previous value and re-open the
-      // flow state (un-consume it) so the operator can safely retry the same
-      // `state` instead of being left with identity metadata but no usable
+      // Either the CONFIG_SCOPE write or the credential-sidecar write (the
+      // last step) failed, but the flow was already claimed above. Roll back
+      // whatever partial mutation happened and re-open the flow state
+      // (un-consume it) so the operator can safely retry the same `state`
+      // instead of being left with identity metadata but no usable
       // credential and no way to resubmit.
-      await ctx.state.set(CONFIG_SCOPE, previousState).catch(() => undefined);
+      if (configWritten) {
+        const rollbackState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE).catch(() => null));
+        const { [identityId]: _current, ...remainingIdentities } = rollbackState.identities;
+        const restoredIdentities = previousIdentity
+          ? { ...remainingIdentities, [identityId]: previousIdentity }
+          : remainingIdentities;
+        await ctx.state
+          .set(CONFIG_SCOPE, { version: BOT_IDENTITY_SETTINGS_VERSION, identities: restoredIdentities })
+          .catch(() => undefined);
+      }
       await ctx.state.set(slackAppManifestFlowScope(companyId, state), flow).catch(() => undefined);
       throw err;
     }
@@ -354,6 +378,14 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
     // Do not log `state` here either — same short-lived secret material
     // constraint as above.
     ctx.logger.info("Slack install metadata saved", { agentId, teamId, appId, botUserId });
+
+    // Success: delete the flow entirely rather than leaving a `consumed`
+    // record behind indefinitely. `ctx.state` has no storage-level TTL, so
+    // without this, both abandoned (never revisited) and successfully
+    // consumed flows would retain the operator/company/agent linkage and
+    // manifest text forever; expiry-driven cleanup in
+    // `loadUnexpiredUnconsumedFlow` only covers flows someone looks up again.
+    await ctx.state.delete(slackAppManifestFlowScope(companyId, state)).catch(() => undefined);
 
     const result: SaveSlackInstallMetadataResult = {
       agentId,

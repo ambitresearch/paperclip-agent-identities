@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
@@ -227,7 +227,11 @@ describe("Slack manifest-assisted app setup actions", () => {
       { companyId: COMPANY_A },
     );
 
-    // Replaying the same state — even for the SAME agent — must fail (single use).
+    // Replaying the same state — even for the SAME agent — must fail (single
+    // use). A successfully-saved flow is now deleted outright (not merely
+    // marked consumed) to avoid retaining flow state indefinitely, so the
+    // replay is rejected as "unknown" rather than "already used" — either way
+    // it is not re-processed and does not overwrite the identity.
     await expect(harness.performAction<SaveSlackInstallMetadataResult>(
       "save-slack-install-metadata",
       {
@@ -239,7 +243,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         botTokenSecretId: FAKE_SECRET_ID_2,
       },
       { companyId: COMPANY_A },
-    )).rejects.toThrow(/used/);
+    )).rejects.toThrow(/unknown|expired/i);
 
     // Replaying against a DIFFERENT agent must also fail, and must not
     // overwrite that other agent's identity.
@@ -507,9 +511,18 @@ describe("Slack manifest-assisted app setup actions", () => {
     );
 
     // Force the credential sidecar write to fail by pointing its path at a
-    // location that cannot be written to (a directory, not a file).
+    // location that cannot be written to (a directory, not a file). Use a
+    // directory *inside* the already-tracked `credentialSidecarDir` (removed
+    // wholesale by `afterEach`), not `credentialSidecarDir` itself: writing
+    // fails when `rename(tempPath, path)` targets a directory, but the
+    // `${path}.tmp-*` sibling temp file that `writeCredentialSidecar` creates
+    // first still succeeds and would otherwise leak next to the tracked temp
+    // dir (a `credentialSidecarDir` sibling is outside what `afterEach`
+    // removes).
     const originalPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
-    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = credentialSidecarDir!;
+    const unwritableTargetDir = join(credentialSidecarDir!, "unwritable-target");
+    await mkdir(unwritableTargetDir, { recursive: true });
+    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = unwritableTargetDir;
 
     await expect(harness.performAction<SaveSlackInstallMetadataResult>(
       "save-slack-install-metadata",

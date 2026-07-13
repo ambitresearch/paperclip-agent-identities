@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
-import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
+import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
 import {
   createPaperclipThemeStyle,
   uiBorder,
@@ -30,7 +30,9 @@ import type {
   SaveBotIdentityConfigInput,
   CreateGitHubAppManifestResult,
   ConvertGitHubAppManifestResult,
-  GetGitHubAppManifestFlowResult
+  GetGitHubAppManifestFlowResult,
+  CreateSlackAppManifestResult,
+  SaveSlackInstallMetadataResult
 } from "../shared/types.js";
 
 type PaperclipSecretOption = {
@@ -60,10 +62,15 @@ type IdentityFormState = {
   previousGithubInstallationId: string;
   previousPrivateKeySecretId: string;
   previousPrivateKeyFile: string;
+  slackTeamId: string;
+  slackAppId: string;
+  slackBotUserId: string;
+  slackDefaultChannel: string;
+  slackBotTokenSecretId: string;
 };
 
 type SettingsSection = "identities" | "setup" | "environment";
-type IdentityFormSection = "identity" | "github" | "commit";
+type IdentityFormSection = "identity" | "github" | "slack" | "commit";
 type IdentityFormValidation = {
   identityComplete: boolean;
   credentialComplete: boolean;
@@ -85,6 +92,9 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const createGitHubAppManifest = usePluginAction("create-github-app-manifest");
   const getGitHubAppManifestFlow = usePluginAction("get-github-app-manifest-flow");
   const convertGitHubAppManifest = usePluginAction("convert-github-app-manifest");
+  const createSlackAppManifest = usePluginAction("create-slack-app-manifest");
+  const getSlackAppManifestFlow = usePluginAction("get-slack-app-manifest-flow");
+  const saveSlackInstallMetadata = usePluginAction("save-slack-install-metadata");
 
   const [formState, setFormState] = useState<IdentityFormState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -99,6 +109,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [manifestCode, setManifestCode] = useState("");
   const [manifestError, setManifestError] = useState<string | null>(null);
   const [manifestResult, setManifestResult] = useState<ConvertGitHubAppManifestResult | null>(null);
+  const [slackManifestFlow, setSlackManifestFlow] = useState<CreateSlackAppManifestResult | null>(null);
+  const [slackManifestBusy, setSlackManifestBusy] = useState(false);
+  const [slackManifestError, setSlackManifestError] = useState<string | null>(null);
+  const [slackSaveResult, setSlackSaveResult] = useState<SaveSlackInstallMetadataResult | null>(null);
+  const [slackManifestCopied, setSlackManifestCopied] = useState(false);
   const [activeSection, setActiveSection] = useState<SettingsSection>("identities");
   const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
@@ -221,9 +236,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     config?.previousPrivateKeyFile
   );
   const formValidation = config ? getIdentityFormValidation(config, Boolean(duplicateIdentity)) : null;
-  const activeFormStepIndex = getFormStepIndex(activeFormSection);
+  const activeFormSteps = getFormSteps(config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
+  const activeFormStepIndex = getFormStepIndex(activeFormSection, config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
+  const isLastFormStep = activeFormStepIndex === activeFormSteps.length - 1;
   const canGoNext = formValidation ? canAdvanceFromStep(activeFormSection, formValidation) : false;
-  const canSave = Boolean(formValidation?.isComplete && activeFormSection === "commit" && !saving);
+  const canSave = Boolean(formValidation?.isComplete && isLastFormStep && !saving);
 
   if (loading) return <div>Loading settings...</div>;
   if (error) return <div>Error loading settings: {error.message}</div>;
@@ -234,6 +251,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setSaveError(null);
     setSaveSuccess(false);
     resetManifestFlow();
+    resetSlackManifestFlow();
   }
 
   function startEdit(entry: BotIdentitySettingsEntry) {
@@ -242,6 +260,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setSaveError(null);
     setSaveSuccess(false);
     resetManifestFlow();
+    resetSlackManifestFlow();
   }
 
   function updateField(field: keyof IdentityFormState, value: string) {
@@ -257,6 +276,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setSaveError(null);
     if ((field === "agentId" || field === "label") && config?.[field] !== value) {
       resetManifestFlow();
+      resetSlackManifestFlow();
     }
   }
 
@@ -289,6 +309,60 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setManifestCode("");
     setManifestError(null);
     setManifestResult(null);
+  }
+
+  function resetSlackManifestFlow() {
+    setSlackManifestFlow(null);
+    setSlackManifestError(null);
+    setSlackSaveResult(null);
+    setSlackManifestCopied(false);
+  }
+
+  async function handleCreateSlackAppManifest() {
+    if (!config) return;
+    if (config.provider !== SLACK_IDENTITY_PROVIDER_ID) {
+      setSlackManifestError("Slack App setup is only available for the Slack provider.");
+      return;
+    }
+    setSlackManifestBusy(true);
+    setSlackManifestError(null);
+    setSlackSaveResult(null);
+    try {
+      const result = await createSlackAppManifest({
+        agentId: config.agentId.trim(),
+        provider: config.provider,
+        label: config.label.trim(),
+      }) as CreateSlackAppManifestResult;
+      setSlackManifestFlow(result);
+      setSlackManifestCopied(false);
+    } catch (err) {
+      setSlackManifestError(err instanceof Error ? err.message : "Failed to create Slack App manifest");
+    } finally {
+      setSlackManifestBusy(false);
+    }
+  }
+
+  async function handleSaveSlackInstallMetadata() {
+    if (!config || !slackManifestFlow) return;
+    setSlackManifestBusy(true);
+    setSlackManifestError(null);
+    try {
+      const result = await saveSlackInstallMetadata({
+        state: slackManifestFlow.state,
+        agentId: config.agentId.trim(),
+        teamId: config.slackTeamId.trim(),
+        appId: config.slackAppId.trim(),
+        botUserId: config.slackBotUserId.trim(),
+        botTokenSecretId: config.slackBotTokenSecretId.trim(),
+        ...(config.slackDefaultChannel.trim() ? { defaultChannel: config.slackDefaultChannel.trim() } : {}),
+      }) as SaveSlackInstallMetadataResult;
+      setSlackSaveResult(result);
+      await refresh();
+    } catch (err) {
+      setSlackManifestError(err instanceof Error ? err.message : "Failed to save Slack install metadata");
+    } finally {
+      setSlackManifestBusy(false);
+    }
   }
 
   async function handleCreateGitHubAppManifest() {
@@ -352,7 +426,16 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     if (!validation.isComplete) {
       setSaveSuccess(false);
       setSaveError(validation.saveMessage);
-      setActiveFormSection(validation.identityComplete ? "github" : "identity");
+      setActiveFormSection(validation.identityComplete ? (config.provider === SLACK_IDENTITY_PROVIDER_ID ? "slack" : "github") : "identity");
+      return;
+    }
+    if (config.provider === SLACK_IDENTITY_PROVIDER_ID) {
+      // Slack identities are persisted by save-slack-install-metadata itself
+      // (see handleSaveSlackInstallMetadata); there is no separate
+      // save-bot-identity-config call for Slack. Reaching this step with a
+      // complete validation means that action already ran successfully.
+      setSaveSuccess(true);
+      setFormState(null);
       return;
     }
     setSaving(true);
@@ -533,7 +616,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                         <div style={rowTitleStyle}>{entry.label}</div>
                         <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
                       </div>
-                      <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : ""}</div>
+                      <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : entry.provider === "slack" ? `Team ${entry.slack.teamId}` : ""}</div>
                       <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
                       <div className="agent-identities-row-actions" style={rowActionsStyle}>
                         <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
@@ -599,7 +682,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
           <div style={dialogBodyStyle}>
             <div className="agent-identities-wizard-steps" aria-label="Identity setup progress" style={wizardStepListStyle}>
-              {FORM_STEPS.map((step, index) => (
+              {activeFormSteps.map((step, index) => (
                 <WizardStepIndicator
                   key={step.id}
                   index={index + 1}
@@ -646,12 +729,16 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               <span>Provider <span style={requiredStyle}>*</span></span>
               <select value={config.provider} onChange={(e) => updateField("provider", e.target.value)} style={inputStyle} disabled={isEditingExistingIdentity}>
                 {(data?.providers ?? []).map((provider) => (
-                  <option key={provider.id} value={provider.id} disabled={provider.status !== "enabled"}>
-                    {provider.name}{provider.status === "coming-soon" ? " (coming soon)" : ""}
+                  <option
+                    key={provider.id}
+                    value={provider.id}
+                    disabled={provider.status !== "enabled" && provider.id !== SLACK_IDENTITY_PROVIDER_ID}
+                  >
+                    {provider.name}{provider.status === "coming-soon" ? " (setup only — tools coming soon)" : ""}
                   </option>
                 ))}
               </select>
-              <span style={hintStyle}>Each agent can have one identity per provider. GitHub is available now; additional providers are listed as they are planned.</span>
+              <span style={hintStyle}>Each agent can have one identity per provider. GitHub is fully available; Slack setup can be completed now, but Slack agent tools ship separately.</span>
             </label>
 
             {duplicateIdentity && <div style={validationNoticeStyle}>This agent already has a {getProviderDisplayName(config.provider, data?.providers)} identity. Edit the existing row instead.</div>}
@@ -668,6 +755,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
             </label>
           </fieldset>
 
+          {config.provider !== SLACK_IDENTITY_PROVIDER_ID && (
           <fieldset style={fieldsetStyle}>
             <legend style={legendStyle}>Provider account</legend>
 
@@ -683,6 +771,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               <span style={hintStyle}>Public GitHub App login for this agent. GitHub appends [bot] to app account logins. Repository access is controlled by the GitHub App installation and provider permissions.</span>
             </label>
           </fieldset>
+          )}
           </>
           )}
 
@@ -874,6 +963,149 @@ export function SettingsPage(props: PluginSettingsPageProps) {
           </fieldset>
           )}
 
+          {activeFormSection === "slack" && (
+          <fieldset style={fieldsetStyle}>
+            <legend style={legendStyle}>Slack App setup</legend>
+            {formValidation && !formValidation.credentialComplete && <div style={validationNoticeStyle}>{formValidation.credentialMessage}</div>}
+
+            <div style={inlineNoticeStyle}>
+              <strong>Create a Slack App from a manifest.</strong> Slack does not support a prefilled deep link for manifests, so Paperclip generates the manifest JSON below for you to copy, then opens the plain Slack "create app" page where you paste it in via "From an app manifest".
+            </div>
+
+            <div style={formActionsStyle}>
+              <button
+                type="button"
+                onClick={() => void handleCreateSlackAppManifest()}
+                disabled={slackManifestBusy || !config.agentId || !config.label}
+                style={secondaryButtonStyle}
+              >
+                {slackManifestBusy ? "Working..." : "Create Slack App manifest"}
+              </button>
+            </div>
+
+            {slackManifestFlow && (
+              <div style={manifestPanelStyle}>
+                <label style={fieldStyle}>
+                  <span>Manifest JSON</span>
+                  <textarea readOnly value={slackManifestFlow.manifest} style={{ ...textareaStyle, minHeight: 140 }} />
+                </label>
+                <div style={formActionsStyle}>
+                  <button
+                    type="button"
+                    onClick={() => void copyTextToClipboard(slackManifestFlow.manifest).then(() => setSlackManifestCopied(true))}
+                    style={secondaryButtonStyle}
+                  >
+                    {slackManifestCopied ? "Copied!" : "Copy manifest JSON"}
+                  </button>
+                  <a href={slackManifestFlow.createAppUrl} target="_blank" rel="noreferrer" style={linkStyle}>Open Slack "Create an app" page</a>
+                </div>
+                <span style={hintStyle}>
+                  On the Slack page, choose "From an app manifest," select the workspace, then paste the copied JSON. After Slack creates and you install the app, come back and paste the resulting IDs below.
+                </span>
+              </div>
+            )}
+
+            {slackManifestError && <span style={errorStyle}>{slackManifestError}</span>}
+
+            <label style={fieldStyle}>
+              <span>Team ID <span style={requiredStyle}>*</span></span>
+              <input
+                type="text"
+                value={config.slackTeamId}
+                onChange={(e) => updateField("slackTeamId", e.target.value)}
+                placeholder="e.g. T0123456789"
+                style={inputStyle}
+              />
+            </label>
+
+            <label style={fieldStyle}>
+              <span>App ID <span style={requiredStyle}>*</span></span>
+              <input
+                type="text"
+                value={config.slackAppId}
+                onChange={(e) => updateField("slackAppId", e.target.value)}
+                placeholder="e.g. A0123456789"
+                style={inputStyle}
+              />
+            </label>
+
+            <label style={fieldStyle}>
+              <span>Bot User ID <span style={requiredStyle}>*</span></span>
+              <input
+                type="text"
+                value={config.slackBotUserId}
+                onChange={(e) => updateField("slackBotUserId", e.target.value)}
+                placeholder="e.g. U0123456789"
+                style={inputStyle}
+              />
+            </label>
+
+            <label style={fieldStyle}>
+              <span>Bot token Paperclip secret UUID <span style={requiredStyle}>*</span></span>
+              {hasSecretOptions ? (
+                <select
+                  value={config.slackBotTokenSecretId}
+                  onChange={(e) => updateField("slackBotTokenSecretId", e.target.value)}
+                  style={inputStyle}
+                >
+                  <option value="">No bot token secret reference</option>
+                  {config.slackBotTokenSecretId && !secretOptions.some((secret) => secret.id === config.slackBotTokenSecretId) && (
+                    <option value={config.slackBotTokenSecretId}>{config.slackBotTokenSecretId} (saved)</option>
+                  )}
+                  {secretOptions.map((secret) => (
+                    <option key={secret.id} value={secret.id}>{formatSecretOption(secret)}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={config.slackBotTokenSecretId}
+                  onChange={(e) => updateField("slackBotTokenSecretId", e.target.value)}
+                  placeholder="Company secret UUID containing the Slack bot token"
+                  style={inputStyle}
+                />
+              )}
+              <span style={hintStyle}>{getSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })} The bot token itself is never stored in this config; only the secret reference is.</span>
+            </label>
+
+            <label style={fieldStyle}>
+              <span>Default channel</span>
+              <input
+                type="text"
+                value={config.slackDefaultChannel}
+                onChange={(e) => updateField("slackDefaultChannel", e.target.value)}
+                placeholder="e.g. C0123456789"
+                style={inputStyle}
+              />
+              <span style={hintStyle}>Optional. Must match the Slack channel ID pattern (starts with C or G).</span>
+            </label>
+
+            <div style={formActionsStyle}>
+              <button
+                type="button"
+                onClick={() => void handleSaveSlackInstallMetadata()}
+                disabled={
+                  slackManifestBusy ||
+                  !slackManifestFlow ||
+                  !config.slackTeamId.trim() ||
+                  !config.slackAppId.trim() ||
+                  !config.slackBotUserId.trim() ||
+                  !config.slackBotTokenSecretId.trim()
+                }
+                style={secondaryButtonStyle}
+              >
+                {slackManifestBusy ? "Working..." : "Save Slack install metadata"}
+              </button>
+            </div>
+
+            {!slackManifestFlow && (
+              <span style={hintStyle}>Create the manifest above first; saving install metadata requires an active manifest flow state.</span>
+            )}
+
+            {slackSaveResult && <span style={successStyle}>Slack install metadata saved for team {slackSaveResult.teamId}.</span>}
+          </fieldset>
+          )}
+
           {activeFormSection === "commit" && (
           <fieldset style={fieldsetStyle}>
             <legend style={legendStyle}>Commit identity (optional)</legend>
@@ -909,21 +1141,21 @@ export function SettingsPage(props: PluginSettingsPageProps) {
             <div style={saveStatusStyle}>
               {saveSuccess && <span style={successStyle}>Saved successfully.</span>}
               {saveError && <span style={errorStyle}>{saveError}</span>}
-              {!saveSuccess && !saveError && formValidation && activeFormSection !== "commit" && <span style={hintStyle}>{formValidation.saveMessage}</span>}
-              {!saveSuccess && !saveError && formValidation && activeFormSection === "commit" && !formValidation.isComplete && <span style={hintStyle}>{formValidation.saveMessage}</span>}
+              {!saveSuccess && !saveError && formValidation && !isLastFormStep && <span style={hintStyle}>{formValidation.saveMessage}</span>}
+              {!saveSuccess && !saveError && formValidation && isLastFormStep && !formValidation.isComplete && <span style={hintStyle}>{formValidation.saveMessage}</span>}
             </div>
             <button
               type="button"
-              onClick={() => setActiveFormSection(getPreviousFormStep(activeFormSection))}
+              onClick={() => setActiveFormSection(getPreviousFormStep(activeFormSection, config.provider))}
               disabled={saving || activeFormStepIndex === 0}
               style={buttonStyle(secondaryButtonStyle, saving || activeFormStepIndex === 0)}
             >
               Previous
             </button>
-            {activeFormSection !== "commit" ? (
+            {!isLastFormStep ? (
               <button
                 type="button"
-                onClick={() => setActiveFormSection(getNextFormStep(activeFormSection))}
+                onClick={() => setActiveFormSection(getNextFormStep(activeFormSection, config.provider))}
                 disabled={saving || !canGoNext}
                 style={buttonStyle(primaryButtonStyle, saving || !canGoNext)}
               >
@@ -1087,6 +1319,29 @@ function extractManifestCode(value: string): string {
   }
 }
 
+async function copyTextToClipboard(value: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+  } catch {
+    // Fall through to the legacy textarea-copy fallback below.
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+  } finally {
+    textarea.remove();
+  }
+}
+
 function getAgentIdentityDefaults(
   agent: PaperclipAgentOption,
   companyDisplayName: string,
@@ -1171,6 +1426,11 @@ function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState {
     previousGithubInstallationId: entry?.credential?.githubApp?.installationId ?? "",
     previousPrivateKeySecretId: entry?.credential?.githubApp?.privateKeySecretId ?? "",
     previousPrivateKeyFile: entry?.credential?.githubApp?.privateKeyFile ?? "",
+    slackTeamId: entry?.provider === "slack" ? entry.slack.teamId : "",
+    slackAppId: entry?.provider === "slack" ? entry.slack.appId : "",
+    slackBotUserId: entry?.provider === "slack" ? entry.slack.botUserId : "",
+    slackDefaultChannel: entry?.provider === "slack" ? entry.slack.defaultChannel ?? "" : "",
+    slackBotTokenSecretId: "",
   };
 }
 
@@ -1226,16 +1486,62 @@ function normalizeManifestDraftForm(raw: unknown): IdentityFormState | null {
     previousGithubInstallationId: readString(raw.previousGithubInstallationId),
     previousPrivateKeySecretId: readString(raw.previousPrivateKeySecretId),
     previousPrivateKeyFile: readString(raw.previousPrivateKeyFile),
+    slackTeamId: readString(raw.slackTeamId),
+    slackAppId: readString(raw.slackAppId),
+    slackBotUserId: readString(raw.slackBotUserId),
+    slackDefaultChannel: readString(raw.slackDefaultChannel),
+    slackBotTokenSecretId: readString(raw.slackBotTokenSecretId),
   };
 }
 
-const FORM_STEPS: Array<{ id: IdentityFormSection; label: string }> = [
+const GITHUB_FORM_STEPS: Array<{ id: IdentityFormSection; label: string }> = [
   { id: "identity", label: "Identity" },
   { id: "github", label: "GitHub App" },
   { id: "commit", label: "Commit" },
 ];
 
+const SLACK_FORM_STEPS: Array<{ id: IdentityFormSection; label: string }> = [
+  { id: "identity", label: "Identity" },
+  { id: "slack", label: "Slack App" },
+];
+
+function getFormSteps(provider: string): Array<{ id: IdentityFormSection; label: string }> {
+  return provider === SLACK_IDENTITY_PROVIDER_ID ? SLACK_FORM_STEPS : GITHUB_FORM_STEPS;
+}
+
 function getIdentityFormValidation(config: IdentityFormState, hasDuplicate = false): IdentityFormValidation {
+  if (config.provider === SLACK_IDENTITY_PROVIDER_ID) {
+    const hasIdentity = Boolean(config.agentId.trim() && config.provider.trim() && config.label.trim()) && !hasDuplicate;
+    const hasSlackInstall = Boolean(
+      config.slackTeamId.trim() &&
+      config.slackAppId.trim() &&
+      config.slackBotUserId.trim() &&
+      config.slackBotTokenSecretId.trim()
+    );
+    const identityComplete = hasIdentity;
+    const credentialComplete = hasSlackInstall;
+    const identityMessage = hasDuplicate
+      ? "This agent already has an identity for the selected provider. Edit the existing identity instead."
+      : !hasIdentity
+        ? "Choose an agent, provider, and label before continuing."
+      : "Identity details are complete.";
+    const credentialMessage = credentialComplete
+      ? "Slack install metadata is complete."
+      : "Create the Slack App manifest, install it, and paste back the team/app/bot IDs and bot token secret before this identity can be saved.";
+    const saveMessage = !identityComplete
+      ? identityMessage
+      : !credentialComplete
+        ? credentialMessage
+        : "Required setup is complete.";
+    return {
+      identityComplete,
+      credentialComplete,
+      isComplete: identityComplete && credentialComplete,
+      identityMessage,
+      credentialMessage,
+      saveMessage,
+    };
+  }
   const hasIdentity = Boolean(config.agentId.trim() && config.provider.trim() && config.label.trim() && config.githubUsername.trim()) && !hasDuplicate;
   const hasGitHubAppCredential = Boolean(
     config.githubAppId.trim() &&
@@ -1268,27 +1574,29 @@ function getIdentityFormValidation(config: IdentityFormState, hasDuplicate = fal
   };
 }
 
-function getFormStepIndex(step: IdentityFormSection): number {
-  return FORM_STEPS.findIndex((entry) => entry.id === step);
+function getFormStepIndex(step: IdentityFormSection, provider: string): number {
+  return getFormSteps(provider).findIndex((entry) => entry.id === step);
 }
 
-function getNextFormStep(step: IdentityFormSection): IdentityFormSection {
-  return FORM_STEPS[Math.min(getFormStepIndex(step) + 1, FORM_STEPS.length - 1)]?.id ?? step;
+function getNextFormStep(step: IdentityFormSection, provider: string): IdentityFormSection {
+  const steps = getFormSteps(provider);
+  return steps[Math.min(getFormStepIndex(step, provider) + 1, steps.length - 1)]?.id ?? step;
 }
 
-function getPreviousFormStep(step: IdentityFormSection): IdentityFormSection {
-  return FORM_STEPS[Math.max(getFormStepIndex(step) - 1, 0)]?.id ?? step;
+function getPreviousFormStep(step: IdentityFormSection, provider: string): IdentityFormSection {
+  const steps = getFormSteps(provider);
+  return steps[Math.max(getFormStepIndex(step, provider) - 1, 0)]?.id ?? step;
 }
 
 function canAdvanceFromStep(step: IdentityFormSection, validation: IdentityFormValidation): boolean {
   if (step === "identity") return validation.identityComplete;
-  if (step === "github") return validation.credentialComplete;
+  if (step === "github" || step === "slack") return validation.credentialComplete;
   return validation.isComplete;
 }
 
 function isWizardStepComplete(step: IdentityFormSection, validation: IdentityFormValidation): boolean {
   if (step === "identity") return validation.identityComplete;
-  if (step === "github") return validation.credentialComplete;
+  if (step === "github" || step === "slack") return validation.credentialComplete;
   return validation.isComplete;
 }
 

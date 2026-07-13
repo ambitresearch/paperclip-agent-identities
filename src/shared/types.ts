@@ -12,6 +12,7 @@ export type IdentityProviderDefinition = {
 };
 
 export const GITHUB_IDENTITY_PROVIDER_ID = "github" satisfies IdentityProviderId;
+export const SLACK_IDENTITY_PROVIDER_ID = "slack" satisfies IdentityProviderId;
 
 export const SUPPORTED_IDENTITY_PROVIDERS: readonly IdentityProviderDefinition[] = [
   {

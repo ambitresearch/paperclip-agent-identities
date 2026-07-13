@@ -22,11 +22,6 @@ export interface ProviderSettingsUIFormConfig {
   readonly provider: string;
   readonly label: string;
   readonly previousAgentId: string;
-  readonly slackTeamId: string;
-  readonly slackAppId: string;
-  readonly slackBotUserId: string;
-  readonly slackDefaultChannel: string;
-  readonly slackBotTokenSecretId: string;
 }
 
 export interface ProviderSettingsUIHookInput<TConfig extends ProviderSettingsUIFormConfig> {

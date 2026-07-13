@@ -6,12 +6,11 @@
 // credential resolution touching the filesystem).
 //
 // Adding a settings-capable provider's UI = add its `settings-adapter-ui.tsx`
-// module and append it to ALL_SETTINGS_UI_ADAPTERS here. GitHub does not yet
-// have one (its manifest wizard still lives inline in SettingsPage.tsx); see
-// the comment near its usage in SettingsPage.tsx for the migration shape.
+// module and append it to ALL_SETTINGS_UI_ADAPTERS here.
 import { buildProviderSettingsUIRegistry } from "../core/provider-settings-ui-contract.js";
 import { slackSettingsUIAdapter } from "./slack/settings-adapter-ui.js";
+import { githubSettingsUIAdapter } from "./github/settings-adapter-ui.js";
 
-export const ALL_SETTINGS_UI_ADAPTERS = [slackSettingsUIAdapter] as const;
+export const ALL_SETTINGS_UI_ADAPTERS = [githubSettingsUIAdapter, slackSettingsUIAdapter] as const;
 
 export const providerSettingsUIRegistry = buildProviderSettingsUIRegistry([...ALL_SETTINGS_UI_ADAPTERS]);

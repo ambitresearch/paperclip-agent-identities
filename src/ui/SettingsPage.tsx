@@ -235,7 +235,9 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     config?.previousPrivateKeySecretId ||
     config?.previousPrivateKeyFile
   );
-  const formValidation = config ? getIdentityFormValidation(config, Boolean(duplicateIdentity)) : null;
+  const formValidation = config
+    ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackSaveResult, slackManifestBusy)
+    : null;
   const activeFormSteps = getFormSteps(config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
   const activeFormStepIndex = getFormStepIndex(activeFormSection, config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
   const isLastFormStep = activeFormStepIndex === activeFormSteps.length - 1;
@@ -277,6 +279,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     if ((field === "agentId" || field === "label") && config?.[field] !== value) {
       resetManifestFlow();
       resetSlackManifestFlow();
+    } else if (field.startsWith("slack") && config?.[field] !== value) {
+      // Any edit to the Slack install fields invalidates a prior successful
+      // save-slack-install-metadata result -- it was only valid for the
+      // exact field values it was saved with.
+      setSlackSaveResult(null);
     }
   }
 
@@ -357,6 +364,12 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         ...(config.slackDefaultChannel.trim() ? { defaultChannel: config.slackDefaultChannel.trim() } : {}),
       }) as SaveSlackInstallMetadataResult;
       setSlackSaveResult(result);
+      // Record the just-saved identity as the form's "previous" identity before
+      // refreshing. Otherwise refresh() adds this identity to `identities`, and
+      // duplicateIdentity (which compares against previousAgentId) would then
+      // treat the freshly-saved identity as a duplicate of itself and disable
+      // the footer's "Save agent" button.
+      setFormState((prev) => (prev ? { ...prev, previousAgentId: result.agentId } : prev));
       await refresh();
     } catch (err) {
       setSlackManifestError(err instanceof Error ? err.message : "Failed to save Slack install metadata");
@@ -422,7 +435,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   async function handleSave() {
     if (!config) return;
-    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity));
+    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity), slackSaveResult, slackManifestBusy);
     if (!validation.isComplete) {
       setSaveSuccess(false);
       setSaveError(validation.saveMessage);
@@ -992,7 +1005,17 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 <div style={formActionsStyle}>
                   <button
                     type="button"
-                    onClick={() => void copyTextToClipboard(slackManifestFlow.manifest).then(() => setSlackManifestCopied(true))}
+                    onClick={() =>
+                      void copyTextToClipboard(slackManifestFlow.manifest)
+                        .then(() => {
+                          setSlackManifestCopied(true);
+                          setSlackManifestError(null);
+                        })
+                        .catch(() => {
+                          setSlackManifestCopied(false);
+                          setSlackManifestError("Could not copy the manifest JSON to the clipboard. Select the text above and copy it manually.");
+                        })
+                    }
                     style={secondaryButtonStyle}
                   >
                     {slackManifestCopied ? "Copied!" : "Copy manifest JSON"}
@@ -1336,7 +1359,10 @@ async function copyTextToClipboard(value: string): Promise<void> {
   document.body.appendChild(textarea);
   textarea.select();
   try {
-    document.execCommand("copy");
+    const copied = document.execCommand("copy");
+    if (!copied) {
+      throw new Error("execCommand('copy') was rejected");
+    }
   } finally {
     textarea.remove();
   }
@@ -1509,15 +1535,32 @@ function getFormSteps(provider: string): Array<{ id: IdentityFormSection; label:
   return provider === SLACK_IDENTITY_PROVIDER_ID ? SLACK_FORM_STEPS : GITHUB_FORM_STEPS;
 }
 
-function getIdentityFormValidation(config: IdentityFormState, hasDuplicate = false): IdentityFormValidation {
+function getIdentityFormValidation(
+  config: IdentityFormState,
+  hasDuplicate = false,
+  slackSaveResult: SaveSlackInstallMetadataResult | null = null,
+  slackManifestBusy = false,
+): IdentityFormValidation {
   if (config.provider === SLACK_IDENTITY_PROVIDER_ID) {
     const hasIdentity = Boolean(config.agentId.trim() && config.provider.trim() && config.label.trim()) && !hasDuplicate;
-    const hasSlackInstall = Boolean(
+    const hasSlackInstallFields = Boolean(
       config.slackTeamId.trim() &&
       config.slackAppId.trim() &&
       config.slackBotUserId.trim() &&
       config.slackBotTokenSecretId.trim()
     );
+    // The install metadata is only considered saved when save-slack-install-metadata
+    // has actually completed for the CURRENT field values -- editing any Slack field
+    // after a successful save invalidates that prior result (see updateField), and a
+    // save still in flight must not let the footer report completion early.
+    const slackSaveMatchesCurrentFields = Boolean(
+      slackSaveResult &&
+      slackSaveResult.teamId === config.slackTeamId.trim() &&
+      slackSaveResult.appId === config.slackAppId.trim() &&
+      slackSaveResult.botUserId === config.slackBotUserId.trim() &&
+      (slackSaveResult.defaultChannel ?? "") === config.slackDefaultChannel.trim()
+    );
+    const hasSlackInstall = hasSlackInstallFields && slackSaveMatchesCurrentFields && !slackManifestBusy;
     const identityComplete = hasIdentity;
     const credentialComplete = hasSlackInstall;
     const identityMessage = hasDuplicate
@@ -1527,7 +1570,9 @@ function getIdentityFormValidation(config: IdentityFormState, hasDuplicate = fal
       : "Identity details are complete.";
     const credentialMessage = credentialComplete
       ? "Slack install metadata is complete."
-      : "Create the Slack App manifest, install it, and paste back the team/app/bot IDs and bot token secret before this identity can be saved.";
+      : slackManifestBusy
+        ? "Saving Slack install metadata..."
+        : "Create the Slack App manifest, install it, and paste back the team/app/bot IDs and bot token secret, then save install metadata before this identity can be saved.";
     const saveMessage = !identityComplete
       ? identityMessage
       : !credentialComplete

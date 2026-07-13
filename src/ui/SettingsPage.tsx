@@ -122,6 +122,13 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [slackResumeBusy, setSlackResumeBusy] = useState(false);
   const [slackResumeError, setSlackResumeError] = useState<string | null>(null);
   const slackSaveGenerationRef = useRef(0);
+  // Guards the Slack manifest-flow lifecycle (automatic restore-on-mount,
+  // manual "Restore flow", and "Create Slack App manifest") the same way
+  // slackSaveGenerationRef guards save-slack-install-metadata: any reset
+  // (edit invalidation, dialog close/reopen, provider/agent switch) bumps
+  // this so a stale create/restore response that arrives afterward is
+  // discarded instead of being applied to a form it no longer matches.
+  const slackManifestFlowGenerationRef = useRef(0);
   const [activeSection, setActiveSection] = useState<SettingsSection>("identities");
   const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
@@ -242,11 +249,22 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     if (!storedState) return;
 
     let cancelled = false;
+    const generation = slackManifestFlowGenerationRef.current;
     void getSlackAppManifestFlow({ state: storedState })
       .then((result) => {
-        if (cancelled) return;
+        if (cancelled || slackManifestFlowGenerationRef.current !== generation) return;
         const flow = result as GetSlackAppManifestFlowResult;
         if (flow.agentId !== agentId) {
+          deleteSlackManifestFlowState(agentId);
+          return;
+        }
+        // The worker persists flow.label alongside flow.agentId (see
+        // app-manifest.ts). If the label was edited (or the flow belongs to
+        // a differently-labeled setup) since the flow was created, restoring
+        // it silently would let the UI show one label while
+        // save-slack-install-metadata records another. Reject a
+        // label-mismatched flow rather than restoring it.
+        if (config.label.trim() && flow.label && flow.label !== config.label.trim()) {
           deleteSlackManifestFlowState(agentId);
           return;
         }
@@ -383,27 +401,52 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setSlackManifestCopied(false);
     setSlackResumeStateInput("");
     setSlackResumeError(null);
+    // Bump the create/restore generation so any in-flight
+    // create-slack-app-manifest / get-slack-app-manifest-flow response
+    // started before this reset is discarded when it arrives (finding #4/#8).
+    slackManifestFlowGenerationRef.current += 1;
+    // Also invalidate an in-flight save-slack-install-metadata request: a
+    // reset (e.g. starting a new/different identity, or closing the dialog)
+    // means a stale response should never attach to whatever form comes
+    // next. Mirrors the same generation-guard pattern used on field edits.
+    slackSaveGenerationRef.current += 1;
+    setSlackSaveBusy(false);
   }
 
   async function handleResumeSlackAppManifestFlow() {
     if (!config) return;
     const state = slackResumeStateInput.trim();
     if (!state) return;
+    const generation = slackManifestFlowGenerationRef.current;
     setSlackResumeBusy(true);
     setSlackResumeError(null);
     try {
       const flow = await getSlackAppManifestFlow({ state }) as GetSlackAppManifestFlowResult;
+      // Discard this response if the dialog/form is no longer the one that
+      // initiated the request (e.g. reset via a field edit, closing the
+      // dialog, or starting a different identity while this was in flight).
+      if (slackManifestFlowGenerationRef.current !== generation) return;
       if (flow.agentId !== config.agentId.trim()) {
         throw new Error("This state token belongs to a different agent than the one currently selected.");
+      }
+      // Reconcile the flow's persisted label against the current form the
+      // same way as the automatic-restore path: a mismatched label means
+      // this flow was created for a different setup, so reject it rather
+      // than silently binding a save to the wrong label.
+      if (config.label.trim() && flow.label && flow.label !== config.label.trim()) {
+        throw new Error("This state token belongs to a different label than the one currently entered.");
       }
       setSlackManifestFlow(flow);
       setSlackManifestCopied(false);
       setSlackManifestError(null);
       writeSlackManifestFlowState(config.agentId.trim(), flow.state);
     } catch (err) {
+      if (slackManifestFlowGenerationRef.current !== generation) return;
       setSlackResumeError(err instanceof Error ? err.message : "Could not restore the Slack App manifest flow for that state token.");
     } finally {
-      setSlackResumeBusy(false);
+      if (slackManifestFlowGenerationRef.current === generation) {
+        setSlackResumeBusy(false);
+      }
     }
   }
 
@@ -413,6 +456,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
       setSlackManifestError("Slack App setup is only available for the Slack provider.");
       return;
     }
+    const generation = slackManifestFlowGenerationRef.current;
     setSlackManifestBusy(true);
     setSlackManifestError(null);
     setSlackSaveResult(null);
@@ -422,13 +466,21 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         provider: config.provider,
         label: config.label.trim(),
       }) as CreateSlackAppManifestResult;
+      // Discard this response if the dialog/form that initiated the request
+      // is no longer current (finding #4): a reset in between (edit, close,
+      // switching identity) must not let a late create response attach to a
+      // different form.
+      if (slackManifestFlowGenerationRef.current !== generation) return;
       setSlackManifestFlow(result);
       setSlackManifestCopied(false);
       writeSlackManifestFlowState(config.agentId.trim(), result.state);
     } catch (err) {
+      if (slackManifestFlowGenerationRef.current !== generation) return;
       setSlackManifestError(err instanceof Error ? err.message : "Failed to create Slack App manifest");
     } finally {
-      setSlackManifestBusy(false);
+      if (slackManifestFlowGenerationRef.current === generation) {
+        setSlackManifestBusy(false);
+      }
     }
   }
 
@@ -468,9 +520,17 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         try {
           await deleteConfig({ agentId: previousAgentId, provider: SLACK_IDENTITY_PROVIDER_ID });
         } catch (err) {
+          // Do not mark this rebind complete: both the old and new
+          // identities now exist server-side, so "Save agent" closing the
+          // dialog here would silently leave the stale previousAgentId
+          // identity behind with no obvious retry path. Surface the error
+          // and leave slackSaveResult unset (credentialComplete stays
+          // false) so the operator can retry, keeping the dialog open.
           setSlackManifestError(
-            `Slack install metadata saved, but could not remove the previous identity for ${previousAgentId}: ${err instanceof Error ? err.message : "unknown error"}`
+            `Slack install metadata saved, but could not remove the previous identity for ${previousAgentId}: ${err instanceof Error ? err.message : "unknown error"}. Please retry.`
           );
+          await refresh();
+          return;
         }
       }
       setSlackSaveResult(result);

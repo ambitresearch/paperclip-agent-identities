@@ -275,6 +275,141 @@ describe("SettingsPage interactions: reinstall (resume a Slack manifest flow)", 
   });
 });
 
+function fieldByPlaceholder(placeholder: string): HTMLInputElement | undefined {
+  return Array.from(container.querySelectorAll("input")).find(
+    (i) => i.placeholder?.includes(placeholder),
+  ) as HTMLInputElement | undefined;
+}
+
+async function openSlackWizardOnCredentialStep() {
+  renderSettingsPage();
+  openNewIdentityDialog();
+
+  const agentSelect = Array.from(container.querySelectorAll("select")).find((s) =>
+    Array.from(s.options).some((o) => o.value === "agent-1"),
+  );
+  setValue(agentSelect ?? null, "agent-1");
+  const providerSelect = Array.from(container.querySelectorAll("select")).find((s) =>
+    Array.from(s.options).some((o) => o.value === SLACK_IDENTITY_PROVIDER_ID),
+  );
+  setValue(providerSelect ?? null, SLACK_IDENTITY_PROVIDER_ID);
+  const labelInput = fieldByPlaceholder("Cade Riven");
+  setValue(labelInput ?? null, "Release Bot");
+
+  const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+  click(nextButton ?? null);
+
+  actionFor("create-slack-app-manifest").mockResolvedValue({
+    agentId: "agent-1",
+    provider: SLACK_IDENTITY_PROVIDER_ID,
+    state: "state-1",
+    manifest: '{"name":"slack-demo"}',
+    createAppUrl: "https://api.slack.com/apps?new_app=1",
+    label: "Release Bot",
+  });
+  const createButton = Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Create Slack App manifest",
+  );
+  await act(async () => {
+    click(createButton ?? null);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  setValue(fieldByPlaceholder("T0123456789") ?? null, "T0123456789");
+  setValue(fieldByPlaceholder("A0123456789") ?? null, "A0123456789");
+  setValue(fieldByPlaceholder("U0123456789") ?? null, "U0123456789");
+  const secretInput = fieldByPlaceholder("Company secret UUID containing the Slack bot token");
+  setValue(secretInput ?? null, "11111111-1111-4111-8111-111111111111");
+}
+
+function slackSaveButton() {
+  return Array.from(container.querySelectorAll("button")).find(
+    (b) => b.textContent === "Save Slack install metadata" || b.textContent === "Saving...",
+  );
+}
+
+describe("SettingsPage interactions: save-slack-install-metadata", () => {
+  it("shows the saved confirmation after a successful save", async () => {
+    await openSlackWizardOnCredentialStep();
+    actionFor("save-slack-install-metadata").mockResolvedValue({
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      teamId: "T0123456789",
+      appId: "A0123456789",
+      botUserId: "U0123456789",
+      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      status: "saved",
+    });
+
+    await act(async () => {
+      click(slackSaveButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("save-slack-install-metadata")).toHaveBeenCalled();
+    expect(text()).toContain("Slack install metadata saved for team T0123456789");
+  });
+
+  it("shows an error when save-slack-install-metadata fails", async () => {
+    await openSlackWizardOnCredentialStep();
+    actionFor("save-slack-install-metadata").mockRejectedValue(new Error("boom"));
+
+    await act(async () => {
+      click(slackSaveButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).toContain("boom");
+    expect(text()).not.toContain("Slack install metadata saved for team");
+  });
+
+  it("does not falsely mark the flow complete when a field is edited while a save is in-flight", async () => {
+    await openSlackWizardOnCredentialStep();
+    let resolveSave!: (value: unknown) => void;
+    actionFor("save-slack-install-metadata").mockReturnValue(
+      new Promise((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+
+    act(() => {
+      click(slackSaveButton() ?? null);
+    });
+    expect(text()).toContain("Saving...");
+
+    // Edit a Slack field while the save is still in flight -- this must
+    // invalidate the pending save so its (still unresolved) response can
+    // never be applied against the now-different field value.
+    setValue(fieldByPlaceholder("T0123456789") ?? null, "T_DIFFERENT_TEAM");
+
+    await act(async () => {
+      resolveSave({
+        agentId: "agent-1",
+        provider: SLACK_IDENTITY_PROVIDER_ID,
+        teamId: "T0123456789",
+        appId: "A0123456789",
+        botUserId: "U0123456789",
+        botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+        status: "saved",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The edit already cleared slackSaveBusy synchronously; the late
+    // response resolving afterward must not resurrect a "saved" state for
+    // the edited (now-different) team ID.
+    expect(text()).not.toContain("Slack install metadata saved for team T0123456789.");
+    expect(text()).not.toContain("Saving...");
+  });
+});
+
 describe("SettingsPage interactions: removal", () => {
   it("calls delete-bot-identity-config when confirming deletion of an existing identity", async () => {
     bridgeData["bot-identity-config"] = {

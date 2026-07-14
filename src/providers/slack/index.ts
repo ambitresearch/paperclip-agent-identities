@@ -7,6 +7,7 @@ import { validateSlackConfig, projectSlackPluginConfig, type SlackAgentIdentity 
 import { resolveSlackCredential } from "./credentials.js";
 import { contributeSlackAppManifestActions } from "./app-manifest.js";
 import { slackWhoamiToolSpec } from "./tools/whoami.js";
+import { slackBotPostMessageToolSpec } from "./tools/post-message.js";
 import { slackManifestTools } from "./manifest-tools.js";
 
 export const SLACK_PROVIDER_ID = "slack";
@@ -31,10 +32,13 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
   validateConfig: validateSlackConfig,
   projectPluginConfig: projectSlackPluginConfig,
   resolveCredential: resolveSlackCredential,
-  // `whoami` is credential-free (DRO-972); the remaining four Slack tools
-  // (message/reply/react/lookup-channel) are implemented by separate,
-  // dependency-blocked issues (DRO-973/974/975) and will be appended here.
-  tools: [slackWhoamiToolSpec],
+  // `whoami` is credential-free (DRO-972); `slack_bot_post_message` (DRO-973,
+  // covers both top-level posts and threaded replies via the optional
+  // `threadTs` param) is credentialed and opts into the live surface via its
+  // own `live: true`. The remaining two tools (react/lookup-channel) are
+  // implemented by separate, dependency-blocked issues (DRO-974/975) and
+  // will be appended here.
+  tools: [slackWhoamiToolSpec, slackBotPostMessageToolSpec],
   contributeActions: contributeSlackAppManifestActions,
   manifestTools: [...slackManifestTools]
 };

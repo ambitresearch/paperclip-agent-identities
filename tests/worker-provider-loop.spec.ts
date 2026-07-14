@@ -10,15 +10,17 @@ describe("worker provider registration", () => {
     await plugin.definition.setup(harness.ctx);
 
     // github (enabled) contributes all three of its tools. slack is still
-    // "coming-soon" as a PROVIDER, but its whoami tool spec sets `live: true`
-    // (DRO-972), so it registers too -- through the generic `liveTools()`
-    // seam, not a provider-id branch. example is coming-soon with no `live`
-    // tools, so it stays fully dormant.
+    // "coming-soon" as a PROVIDER, but its whoami (DRO-972) and
+    // post_message (DRO-973) tool specs both set `live: true`, so they
+    // register too -- through the generic `liveTools()` seam, not a
+    // provider-id branch. example is coming-soon with no `live` tools, so it
+    // stays fully dormant.
     expect(register.mock.calls.map(([name]) => name)).toEqual([
       "github_bot_whoami",
       "github_bot_create_pull_request",
       "github_bot_push_branch",
       "slack_bot_whoami",
+      "slack_bot_post_message",
     ]);
     expect(register.mock.calls.map(([name]) => name)).not.toContain("example_whoami");
   });

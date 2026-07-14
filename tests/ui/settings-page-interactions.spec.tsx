@@ -190,6 +190,38 @@ describe("SettingsPage interactions: setup launch", () => {
     expect(stepLabels.some((label) => label?.includes("Slack App"))).toBe(true);
     expect(stepLabels.some((label) => label?.includes("GitHub App"))).toBe(false);
   });
+
+  it("mounts the active provider's credential-step fieldset from the UI registry, not a provider-id branch (findings #5/#10/#19)", () => {
+    renderSettingsPage();
+    openNewIdentityDialog();
+
+    const agentSelect = Array.from(container.querySelectorAll("select")).find((s) =>
+      Array.from(s.options).some((o) => o.value === "agent-1"),
+    );
+    setValue(agentSelect ?? null, "agent-1");
+
+    // Default (GitHub) provider: advancing to the credential step renders the
+    // GitHub-owned fieldset.
+    const nextToGitHub = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+    click(nextToGitHub ?? null);
+    expect(text()).toContain("GitHub App");
+
+    // Return to the identity step to switch providers.
+    const prevButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Previous");
+    click(prevButton ?? null);
+
+    // Switch to Slack and advance: the Slack-owned credential fieldset legend
+    // ("Slack App setup") is mounted in its place -- proving the shared page
+    // selected the step component via the registry keyed off the active
+    // provider rather than an `=== SLACK_IDENTITY_PROVIDER_ID` branch.
+    const providerSelect = Array.from(container.querySelectorAll("select")).find((s) =>
+      Array.from(s.options).some((o) => o.value === SLACK_IDENTITY_PROVIDER_ID),
+    );
+    setValue(providerSelect ?? null, SLACK_IDENTITY_PROVIDER_ID);
+    const nextToSlack = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+    click(nextToSlack ?? null);
+    expect(text()).toContain("Slack App setup");
+  });
 });
 
 describe("SettingsPage interactions: outcomes (manifest create success)", () => {

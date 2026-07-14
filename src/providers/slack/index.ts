@@ -6,18 +6,20 @@ import type { ResourceReference } from "../../core/resource-reference.js";
 import { validateSlackConfig, projectSlackPluginConfig, type SlackAgentIdentity } from "./config.js";
 import { resolveSlackCredential } from "./credentials.js";
 import { contributeSlackAppManifestActions } from "./app-manifest.js";
+import { slackWhoamiToolSpec } from "./tools/whoami.js";
+import { slackManifestTools } from "./manifest-tools.js";
 
 export const SLACK_PROVIDER_ID = "slack";
 
 const slackProviderDefinition: IdentityProviderDefinition = {
   id: SLACK_PROVIDER_ID,
   name: "Slack",
-  // Credential storage/resolution lands here (DRO-969); the Slack tool
-  // surface (whoami/post-message/reply-thread/react/lookup-channel) is
-  // separate, still-backlog work (DRO-971/973/974/975). Keep this
-  // "coming-soon" until at least one tool exists to consume the credential,
-  // so settings UI/registry `.enabled()` consumers don't surface a Slack
-  // identity option with nothing it can do yet.
+  // Credential storage/resolution (DRO-969) and the credential-free
+  // `slack_bot_whoami` identity self-check tool (DRO-972) both exist now.
+  // Still "coming-soon" until the message/reply/react/lookup-channel tools
+  // (DRO-973/974/975) land — those are the actions an operator actually
+  // wants a Slack identity for, so settings UI/registry `.enabled()`
+  // consumers shouldn't surface Slack as ready until that surface exists.
   status: "coming-soon",
   description:
     "Workspace identity for Slack messages and app-mediated actions."
@@ -29,13 +31,10 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
   validateConfig: validateSlackConfig,
   projectPluginConfig: projectSlackPluginConfig,
   resolveCredential: resolveSlackCredential,
-  // No tools yet — the five Slack tools are implemented by separate,
-  // dependency-blocked issues. This provider slice adds manifest-assisted
-  // setup actions (DRO-971: create-slack-app-manifest,
-  // get-slack-app-manifest-flow, save-slack-install-metadata) on top of the
-  // credential storage/resolution slice (DRO-969); the tool surface itself
-  // stays empty until those blocked issues land.
-  tools: [],
+  // `whoami` is credential-free (DRO-972); the remaining four Slack tools
+  // (message/reply/react/lookup-channel) are implemented by separate,
+  // dependency-blocked issues (DRO-973/974/975) and will be appended here.
+  tools: [slackWhoamiToolSpec],
   contributeActions: contributeSlackAppManifestActions,
-  manifestTools: []
+  manifestTools: [...slackManifestTools]
 };

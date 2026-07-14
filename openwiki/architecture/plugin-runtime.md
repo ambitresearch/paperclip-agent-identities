@@ -34,13 +34,13 @@ Important capabilities include:
 - `activity.log.write` for PR/push audit events
 - `project.workspaces.read` for mediated git push workspace resolution
 
-`/src/manifest.ts` sources its tool list from the provider registry rather than importing provider-specific tool definitions directly: `registry.enabled().flatMap((provider) => provider.manifestTools)`. Today the only enabled provider is GitHub, contributing:
+`/src/manifest.ts` sources its tool list from the provider registry rather than importing provider-specific tool definitions directly: `registry.enabled().flatMap((provider) => provider.manifestTools)`. Today the only *enabled* provider is GitHub, contributing:
 
 - `github_bot_whoami`
 - `github_bot_create_pull_request`
 - `github_bot_push_branch`
 
-Adding a new enabled provider (or new tools on an existing provider) changes what the registry returns and does not require touching `/src/manifest.ts`.
+Adding a new enabled provider (or new tools on an existing provider) changes what the registry returns and does not require touching `/src/manifest.ts`. "Enabled" is a provider-level gate (`definition.status === "enabled"`), but it is not the only way a tool reaches the manifest/worker: `registry.liveTools()` also includes any individual tool a still-`"coming-soon"` provider opts in via `ProviderToolSpec.live: true`. Slack's credential-free `slack_bot_whoami` (DRO-972, `src/providers/slack/tools/whoami.ts`) is marked `live: true` and is composed this way — it registers and appears in the manifest today even though the rest of the Slack provider's tool surface stays gated behind `enabled()`.
 
 It also declares two UI slots:
 
@@ -78,7 +78,7 @@ This is scaffold-like behavior but is covered by `/tests/plugin.spec.ts`.
 
 `/src/worker.ts` does not register provider tools one-by-one. It builds a provider registry (`createProviderRegistry()` from `/src/providers/index.ts`) and:
 
-- for every **enabled** `IdentityProvider`, wraps each of the provider's `tools` (its `ProviderToolSpec[]`) through `createProviderTool()` in `/src/core/tool-pipeline.ts`, which enforces the common deny-before-secret pipeline (validate params -> resolve identity -> resolve/deny resource ref -> resolve credential -> perform -> redact secrets), and registers the resulting handler with `ctx.tools.register`;
+- via `registry.liveTools()` (all tools from `enabled()` providers, plus any individual `live: true`-flagged tool from a still-`"coming-soon"` provider), wraps each composed tool through `createProviderTool()` in `/src/core/tool-pipeline.ts`, which enforces the common deny-before-secret pipeline (validate params -> resolve identity -> resolve/deny resource ref -> resolve credential -> perform -> redact secrets), and registers the resulting handler with `ctx.tools.register`. Slack's credential-free `slack_bot_whoami` (DRO-972) opts in this way and reaches `ctx.tools.register`/the manifest today, ahead of the rest of the (still `"coming-soon"`) Slack provider's tool surface;
 - for **every registered provider, enabled or not** (`registry.all()`), calls the provider's optional `contributeActions(ctx)` hook. This is how the GitHub provider registers its GitHub App manifest actions (`create-github-app-manifest`, `get-github-app-manifest-flow`, `convert-github-app-manifest`) without `/src/worker.ts` importing GitHub-specific action code directly, and it's also why a "coming-soon" provider with no tool surface yet (e.g. Slack) can still ship setup/bootstrap actions ahead of `tools` landing — `contributeActions` is intentionally not gated on `enabled()`.
 
 Concretely, GitHub's tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`) live in `/src/providers/github/tools/*.ts` and are exposed through `githubProvider.tools` in `/src/providers/github/index.ts` — the worker loop is provider-agnostic and would pick up a new provider's tools/actions the same way once it's added to the registry.

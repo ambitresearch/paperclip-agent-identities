@@ -47,7 +47,19 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.read-ref",
     "activity.log.write"
   ],
-  tools: registry.enabled().flatMap((provider) => provider.manifestTools) as PaperclipPluginManifestV1["tools"],
+  // Advertise a manifest fragment for exactly the tools that are actually
+  // live (see `liveTools()` on the registry): every tool from an "enabled"
+  // provider, plus any individual tool a "coming-soon" provider marks
+  // `live: true` (e.g. Slack's credential-free whoami self-check, DRO-972).
+  // Matched to `manifestTools` fragments generically by name -- no
+  // provider-specific branch here.
+  tools: (() => {
+    const liveNames = new Set(registry.liveTools().map(({ tool }) => tool.name));
+    return registry
+      .all()
+      .flatMap((provider) => provider.manifestTools as ReadonlyArray<{ name: string }>)
+      .filter((manifestTool) => liveNames.has(manifestTool.name));
+  })() as PaperclipPluginManifestV1["tools"],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"

@@ -67,20 +67,24 @@ const plugin = definePlugin({
     });
 
     const registry = createProviderRegistry();
-    for (const provider of registry.enabled()) {
+    // `liveTools()` composes every tool that should actually register right
+    // now: all tools from "enabled" providers, PLUS any individual tool a
+    // "coming-soon" provider marks `live: true` (e.g. Slack's credential-free
+    // `slack_bot_whoami` self-check, DRO-972, ahead of the rest of that
+    // provider's surface). This loop stays provider-agnostic -- no
+    // provider-specific branch is added here.
+    for (const { provider, tool: toolSpec } of registry.liveTools()) {
       const deps: ProviderToolPipelineDeps<unknown> = {
         resolveIdentity: async (toolCtx, runCtx) =>
           await resolveIdentityForProvider(provider, toolCtx, runCtx),
         redactSecrets,
       };
-      for (const toolSpec of provider.tools) {
-        const registered = createProviderTool(provider, toolSpec, ctx, deps);
-        ctx.tools.register(
-          registered.name,
-          registered.metadata as Parameters<typeof ctx.tools.register>[1],
-          registered.handler as Parameters<typeof ctx.tools.register>[2],
-        );
-      }
+      const registered = createProviderTool(provider, toolSpec, ctx, deps);
+      ctx.tools.register(
+        registered.name,
+        registered.metadata as Parameters<typeof ctx.tools.register>[1],
+        registered.handler as Parameters<typeof ctx.tools.register>[2],
+      );
     }
     // contributeActions is composed for EVERY registered provider, not just
     // "enabled" ones: a "coming-soon" provider (no tools yet) can still ship

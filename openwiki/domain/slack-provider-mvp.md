@@ -103,7 +103,7 @@ authorization boundary (see §9, "Confused-deputy posting" mitigation).
 
 | Tool | `requiresCredential` | Scope | Resource ref |
 | --- | --- | --- | --- |
-| `slack-whoami` | `true` (must resolve the bot token to call the authenticated `auth.test`) | none (`auth.test`) | none |
+| `slack-whoami` (shipped as `slack_bot_whoami`, DRO-972) | `false` (echoes configured identity fields; no `auth.test` call) | none | none |
 | `slack-post-message` | `true` | `chat:write` | `SlackChannelRef` |
 | `slack-reply-thread` | `true` | `chat:write` (thread_ts param, no separate scope) | `SlackChannelRef` |
 | `slack-react` | `true` | `reactions:write` | `SlackChannelRef` |
@@ -113,11 +113,12 @@ No `slack-join-channel` tool in MVP — `channels:join` is listed as optional/de
 decision record; omit until a concrete need surfaces (least-privilege: don't request or wire a
 scope with no consuming tool).
 
-`slack-whoami` is credentialed unlike GitHub's local `github-whoami`: GitHub's whoami echoes
-configured metadata with no API call, but Slack's `auth.test` is itself an authenticated call that
-verifies the live installation (team/user/bot identity) and requires the resolved bot token. A
-missing or unresolvable secret therefore fails in the shared credential-resolution step, before the
-tool body runs, rather than the tool silently returning stale configured values.
+`slack-whoami` shipped credential-free, matching GitHub's local `github-whoami` rather than
+diverging from it as an earlier revision of this doc specified: `requiresCredential: false`, no
+`auth.test` call, no bot-token resolution. `perform` only echoes the already-validated,
+configured `SlackAgentIdentity` fields (`label`, `teamId`, `appId`, `botUserId`,
+`hasDefaultChannel`); a stale or misconfigured identity is not caught by this tool — only the
+credentialed tools' `auth.test` resolution step catches that.
 
 ## 5. Manifest fragments
 

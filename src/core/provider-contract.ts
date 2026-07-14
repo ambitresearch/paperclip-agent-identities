@@ -61,6 +61,15 @@ export interface ProviderToolSpec<TIdentity, TRef extends ResourceReference> {
   // credentials are still resolved just-before-`perform` for every tool that
   // needs them, and never for tools that don't.
   readonly requiresCredential?: boolean;
+  // When `true`, this individual tool is composed into the live worker/manifest
+  // surface even while its owning provider's `definition.status` is
+  // "coming-soon" (e.g. Slack's credential-free `slack_bot_whoami` self-check,
+  // DRO-972, shipping ahead of the message/reply/react tools that gate the
+  // provider itself to "enabled"). Defaults to `false`/omitted -- a coming-soon
+  // provider's tools stay dormant by default; each tool opts in individually.
+  // This keeps `src/worker.ts`/`src/manifest.ts` provider-agnostic: they ask
+  // the registry for "live tools", never for a named provider's status.
+  readonly live?: boolean;
   validateParams(raw: unknown): ParamsValidation;
   resolveResourceRef?(
     input: ResourceRefResolverInput<TIdentity>,

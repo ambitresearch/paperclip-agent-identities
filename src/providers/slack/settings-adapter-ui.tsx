@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import type { ProviderSettingsUIAdapter, ProviderSettingsUIHookInput, ProviderSettingsUIHookResult } from "../../core/provider-settings-ui-contract.js";
-import { slackBotWhoamiToolName } from "../../shared/slack-bot-whoami-tool.js";
 import {
   SLACK_IDENTITY_PROVIDER_ID,
   type CreateSlackAppManifestResult,

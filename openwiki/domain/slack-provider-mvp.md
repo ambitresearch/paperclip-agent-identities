@@ -306,13 +306,54 @@ source and its resolver (§2), and the `slackProvider` composition (§14) — wi
   task lands the full refresh lifecycle as one unit.
 - **The five Slack tools** (`slack-whoami`, `slack-post-message`, `slack-reply-thread`,
   `slack-react`, `slack-lookup-channel`, §4) are out of scope for this issue — they are separate,
-  blocked issues DRO-973/974/975. `slackProvider.definition.status` therefore stays
-  `"coming-soon"` and `tools`/`manifestTools` stay empty until those issues land.
+  blocked issues DRO-972/973/974/975. `slackProvider.definition.status` therefore stays
+  `"coming-soon"` and `tools`/`manifestTools` stay empty until those issues land. (As those issues
+  have landed — DRO-972's `slack_bot_whoami` and DRO-973's `slack_bot_post_message` — they opt into
+  the live tool surface independently via `toolsStatus: "enabled"`, described in the DRO-973
+  implementation-status section below; `status` itself still stays `"coming-soon"` until the
+  remaining react/lookup-channel tools land.)
 
 ## Implementation status (DRO-971: manifest-assisted app setup actions)
 
 *(This section supersedes DRO-969's note above regarding DRO-971's own status — that note is
 scoped to the five Slack tools, not the setup actions this section documents.)*
+
+## Implementation status (DRO-973: slack_bot_post_message message/threaded-reply tool)
+
+Adds `slackBotPostMessageToolSpec` (`src/providers/slack/tools/post-message.ts`), the first entry
+in `slackProvider.tools`. A single tool covers both posting a new top-level message and posting a
+threaded reply — the optional `threadTs` param (validated and carried on `SlackChannelRef` by the
+existing `resolveSlackChannelRef`, §3) selects reply-vs-post; there is no separate
+`slack-reply-thread` tool, since Slack's own `chat.postMessage` API takes the same `thread_ts`
+parameter for both cases and a second tool spec would duplicate all of the validation/error/redaction
+logic for no behavioral gain.
+
+Follows the mandatory pipeline order (validate params -> resolve identity -> resolve resource ref ->
+resolve credentials -> perform -> redact): `validateParams` rejects unknown keys, non-string/missing
+`channel`/`text`, oversized `text` (over `SLACK_MESSAGE_TEXT_MAX_LENGTH`, a conservative bound under
+Slack's ~40,000-char `chat.postMessage` limit), and oversized/malformed `blocks`; `resolveResourceRef`
+delegates to `resolveSlackChannelRef` (§3) so a wrong-workspace `teamId` or malformed channel is
+denied before any credential is resolved; `perform` reads the pipeline-resolved token defensively
+(returns a stable internal error if it is ever `null`) and never interpolates the token into a log or
+returned error string (`redact()` is defense-in-depth on top of that).
+
+Required OAuth scope is `chat:write` (also covers threaded replies via `thread_ts` — no extra scope
+needed); `chat:write.public` is optional/gated and this tool does not special-case it — a missing
+grant simply surfaces as Slack's own `not_in_channel`/`missing_scope` error codes, translated into an
+actionable message by `describeSlackError`. A `429` response is translated into a `rate_limited`
+error carrying the `Retry-After` header value rather than throwing. On success, the tool fetches a
+best-effort `chat.getPermalink` (a permalink lookup failure never fails the post itself) and returns
+`{ team, conversation, messageTs, threadTs, permalink }`.
+
+`slackProvider.definition.status` stays `"coming-soon"` purely because the *full* Slack tool
+surface isn't finished yet — the manifest-assisted Slack settings UI (DRO-1025/#73) is already live
+in Settings and already surfaces Slack in the provider picker. `toolsStatus` is set to `"enabled"`
+independently, which is what actually gates live tool registration
+(`registry.toolsEnabled()`/`liveTools()`, consumed by `worker.ts`/`manifest.ts`), so
+`slack_bot_post_message` (this issue) and `slack_bot_whoami` (DRO-972) are both reachable now even
+though `status` hasn't flipped. The remaining tools (`slack-react`, `slack-lookup-channel`) are
+separate, still-backlog issues (DRO-974/975); once they land, `status` flips to `"enabled"` too and
+`toolsStatus` becomes redundant (but harmless) to keep.
 
 This slice implements §6's `contributeActions` for Slack, wired through `slackProvider` in
 `src/providers/slack/index.ts` exactly like `contributeGitHubAppManifestActions` is wired for

@@ -22,15 +22,27 @@ export interface ProviderRegistry {
   all(): readonly IdentityProvider[];
   /** Only providers whose `definition.status` is `"enabled"`. */
   enabled(): readonly IdentityProvider[];
+  /**
+   * Only providers whose tool surface is live: `definition.toolsStatus` if
+   * set, else falls back to `definition.status`. This — NOT `enabled()` — is
+   * what gates live tool registration (src/worker.ts) and manifest tool
+   * composition (src/manifest.ts). `enabled()` continues to gate
+   * settings/config UI surfaces. A provider's tool surface can go live ahead
+   * of (or behind) its settings UI by setting `toolsStatus` independently of
+   * `status`.
+   */
+  toolsEnabled(): readonly IdentityProvider[];
   /** Look up a provider by id, including "coming-soon" ones. */
   get(id: string): IdentityProvider | undefined;
   /**
    * Every tool that should actually be composed into the live worker/manifest
-   * surface right now: all tools from `enabled()` providers, PLUS any
-   * individual tool from a "coming-soon" provider that opts in via
-   * `toolSpec.live: true` (e.g. a credential-free self-check tool shipping
-   * ahead of the rest of that provider's surface). This is the ONE generic
-   * seam worker.ts/manifest.ts should use instead of branching on provider id.
+   * surface right now: all tools from `toolsEnabled()` providers (tool
+   * surface is live, independent of the provider's settings-UI `status`),
+   * PLUS any individual tool from a provider whose tool surface isn't
+   * (yet) enabled that opts in via `toolSpec.live: true` (e.g. a
+   * credential-free self-check tool shipping ahead of the rest of that
+   * provider's surface). This is the ONE generic seam worker.ts/manifest.ts
+   * should use instead of branching on provider id.
    */
   liveTools(): readonly LiveProviderTool[];
 }
@@ -46,15 +58,21 @@ export function buildProviderRegistry(providers: readonly IdentityProvider[]): P
     enabled(): readonly IdentityProvider[] {
       return ordered.filter((provider) => provider.definition.status === "enabled");
     },
+    toolsEnabled(): readonly IdentityProvider[] {
+      return ordered.filter(
+        (provider) => (provider.definition.toolsStatus ?? provider.definition.status) === "enabled"
+      );
+    },
     get(id: string): IdentityProvider | undefined {
       return byId.get(id);
     },
     liveTools(): readonly LiveProviderTool[] {
       const live: LiveProviderTool[] = [];
       for (const provider of ordered) {
-        const providerIsEnabled = provider.definition.status === "enabled";
+        const toolsAreEnabled =
+          (provider.definition.toolsStatus ?? provider.definition.status) === "enabled";
         for (const tool of provider.tools) {
-          if (providerIsEnabled || tool.live === true) {
+          if (toolsAreEnabled || tool.live === true) {
             live.push({
               provider: provider as IdentityProvider,
               tool: tool as ProviderToolSpec<unknown, ResourceReference>,

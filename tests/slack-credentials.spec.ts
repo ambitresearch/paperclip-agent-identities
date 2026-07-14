@@ -27,8 +27,14 @@ function fakeIdentity(agentId = "agent-1"): ResolvedAgentIdentity<SlackAgentIden
 // Stub for the injectable verification step: a fake `auth.test` that reports
 // the resolved token really does belong to the expected team, without any
 // live network call.
-const verifyMatchingWorkspace = async (_token: string) => ({ teamId: "T123" });
-const verifyWrongWorkspace = async (_token: string) => ({ teamId: "T999" });
+const verifyMatchingWorkspace = async (_token: string) => ({ teamId: "T123", userId: "U123", botId: "B123" });
+const verifyWrongWorkspace = async (_token: string) => ({ teamId: "T999", userId: "U123", botId: "B123" });
+// Same-workspace user token: team_id matches but this is a human OAuth token
+// (no bot_id) whose user_id also happens to differ from the bot identity.
+const verifyUserTokenNoBotId = async (_token: string) => ({ teamId: "T123", userId: "U999", botId: undefined });
+// Another bot's token: correct workspace and has a bot_id, but the user_id
+// belongs to a different bot than the configured identity's botUserId.
+const verifyWrongBotUser = async (_token: string) => ({ teamId: "T123", userId: "U999", botId: "B999" });
 
 describe("resolveSlackBotToken", () => {
   const originalPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
@@ -172,6 +178,28 @@ describe("resolveSlackBotToken", () => {
     expect(message).toMatch(/workspace mismatch/i);
   });
 
+  it("rejects a same-workspace user OAuth token that lacks bot_id, even if user_id happened to match (T2)", async () => {
+    await upsertCredentialSidecarIdentity("agent-1", "slack", {
+      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000021" },
+    });
+
+    const resolveSecret = async (ref: string) => `resolved:${ref}`;
+    await expect(
+      resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyUserTokenNoBotId)
+    ).rejects.toThrow(/bot_id/);
+  });
+
+  it("rejects another bot's token whose user_id does not match this identity's botUserId (T2)", async () => {
+    await upsertCredentialSidecarIdentity("agent-1", "slack", {
+      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000022" },
+    });
+
+    const resolveSecret = async (ref: string) => `resolved:${ref}`;
+    await expect(
+      resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyWrongBotUser)
+    ).rejects.toThrow(/botUserId/);
+  });
+
   it("does not leak the resolved token value when the verification call itself throws", async () => {
     await upsertCredentialSidecarIdentity("agent-1", "slack", {
       slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000020" },
@@ -179,7 +207,7 @@ describe("resolveSlackBotToken", () => {
 
     const fakeResolvedToken = "resolved:another-fake-token-zzz";
     const resolveSecret = async () => fakeResolvedToken;
-    const verifyThrows = async (_token: string): Promise<{ readonly teamId: string }> => {
+    const verifyThrows = async (_token: string): ReturnType<typeof verifyMatchingWorkspace> => {
       throw new Error("network error while verifying");
     };
 

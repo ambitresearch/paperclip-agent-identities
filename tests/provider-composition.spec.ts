@@ -42,11 +42,13 @@ describe("provider composition root", () => {
     expect(liveToolNames).toContain("github_bot_create_pull_request");
     expect(liveToolNames).toContain("github_bot_push_branch");
 
-    // ...Slack is still coming-soon as a PROVIDER, but its whoami tool spec
-    // opts in via `live: true` (DRO-972), so it is live too. Its
-    // post-message tool spec (DRO-973) opts in the same way.
+    // ...Slack is still coming-soon as a PROVIDER, but its `toolsStatus` is
+    // "enabled", so its whoami (DRO-972), post-message (DRO-973), and
+    // reaction (DRO-974) tools are all live too.
     expect(liveToolNames).toContain("slack_bot_whoami");
     expect(liveToolNames).toContain("slack_bot_post_message");
+    expect(liveToolNames).toContain("slack_bot_add_reaction");
+    expect(liveToolNames).toContain("slack_bot_remove_reaction");
 
     // ...the example is coming-soon and has no `live` tool, so its tool is
     // absent from the live set EVEN THOUGH it ships a manifest fragment. The

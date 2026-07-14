@@ -568,8 +568,20 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     setSlackStatusLoading(true);
     setSlackStatusError(null);
     try {
-      const result = (await slackBotWhoami({ agentId, companyId })) as { data?: SlackBotWhoamiData } | SlackBotWhoamiData;
+      const result = (await slackBotWhoami({ agentId, companyId })) as
+        | { data?: SlackBotWhoamiData; error?: string }
+        | SlackBotWhoamiData;
       if (slackStatusGenerationRef.current !== generation) return;
+      // The action can *resolve* (not reject) with a `{ error }` shape when
+      // the tool itself reports a handled failure (e.g. no bound identity,
+      // revoked token). Treat that the same as a thrown error -- never let a
+      // resolved `{ error }` fall through to the "Connected" status render.
+      const resultError = (result as { error?: unknown })?.error;
+      if (resultError) {
+        setSlackStatus(null);
+        setSlackStatusError(typeof resultError === "string" ? resultError : "Not connected");
+        return;
+      }
       const data = (result as { data?: SlackBotWhoamiData })?.data ?? (result as SlackBotWhoamiData);
       setSlackStatus(data ?? null);
     } catch (err) {

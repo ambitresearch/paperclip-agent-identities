@@ -195,6 +195,27 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     expect(text()).toMatch(/Not connected/i);
     expect(text()).not.toMatch(/xox[bpa]-/);
   });
+
+  it("renders a secret-free not-connected message when slack_bot_whoami resolves with { error } instead of rejecting", async () => {
+    // The plugin action pipeline can resolve a handled tool failure as
+    // `{ error }` rather than throwing (e.g. no bound identity, revoked
+    // token). This must not be treated as a successful status payload.
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      error: "No Slack identity bound for this agent.",
+    });
+
+    await openSlackEditDialog();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).not.toMatch(/Connected\./i);
+    expect(text()).toMatch(/Not connected|No Slack identity bound/i);
+    expect(text()).not.toMatch(/xox[bpa]-/);
+  });
 });
 
 describe("Slack reinstall action", () => {

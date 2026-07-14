@@ -89,7 +89,11 @@ function validateReactionParams(raw: unknown): ParamsValidation {
     };
   }
 
-  if (typeof reaction !== "string" || !REACTION_PATTERN.test(reaction.trim())) {
+  if (
+    typeof reaction !== "string" ||
+    reaction.trim().length > 100 ||
+    !REACTION_PATTERN.test(reaction.trim())
+  ) {
     return {
       ok: false,
       error:
@@ -128,7 +132,16 @@ type SlackReactionAction = "added" | "removed";
 
 interface SlackReactionApiCallSpec {
   readonly method: string;
-  readonly idempotentErrorCode: string;
+  // `null` means no Slack error code is treated as an idempotent no-op for
+  // this call — every non-`ok` response fails closed. Only `reactions.add`'s
+  // `already_reacted` is a genuine caller-idempotent duplicate. `no_reaction`
+  // (reactions.remove) is deliberately NOT treated as idempotent success: it
+  // is also returned when the reaction belongs to a different user/bot than
+  // the caller (Slack's `reactions.remove` can only remove reactions the
+  // calling bot itself added), so reporting `action: "removed"` in that case
+  // would falsely claim a removal that never happened. Per
+  // openwiki/domain/slack-provider-design.md §6, this must fail closed.
+  readonly idempotentErrorCode: string | null;
   readonly action: SlackReactionAction;
 }
 
@@ -140,7 +153,7 @@ const ADD_REACTION_SPEC: SlackReactionApiCallSpec = {
 
 const REMOVE_REACTION_SPEC: SlackReactionApiCallSpec = {
   method: "reactions.remove",
-  idempotentErrorCode: "no_reaction",
+  idempotentErrorCode: null,
   action: "removed"
 };
 
@@ -176,17 +189,23 @@ async function performReaction(
       })
     });
   } catch (error) {
-    const reason = error instanceof Error ? error.message : "Unknown network error";
-    ctx.logger.error(`${spec.method} network failure: ${reason}`);
+    // Log only a non-secret classification, never the raw thrown message: an
+    // HTTP adapter error can embed request details (headers/body), and the
+    // bot token is already in the Authorization header by this point. See
+    // Copilot finding on PR #79 — no-token-in-logs is a hard constraint.
+    ctx.logger.error(`${spec.method} network failure: request could not complete`);
     return { error: "Slack API request failed before a response was received." };
   }
 
   const body = (await response.json().catch(() => ({}))) as { ok?: unknown; error?: unknown };
 
-  // Caller-idempotent: a duplicate add (`already_reacted`) or a redundant
-  // remove (`no_reaction`) is reported as success rather than an error, per
-  // the "duplicate reactions are caller-idempotent" acceptance criterion.
-  const isIdempotentNoOp = body.ok !== true && body.error === spec.idempotentErrorCode;
+  // Caller-idempotent ONLY for `spec.idempotentErrorCode` (currently just
+  // `reactions.add`'s `already_reacted`). `reactions.remove` has no
+  // idempotent code — see the comment on `SlackReactionApiCallSpec` above —
+  // so `no_reaction` falls through to the generic error path and fails
+  // closed rather than reporting a false "removed".
+  const isIdempotentNoOp =
+    spec.idempotentErrorCode !== null && body.ok !== true && body.error === spec.idempotentErrorCode;
 
   if (body.ok !== true && !isIdempotentNoOp) {
     const reason = typeof body.error === "string" ? body.error : `HTTP ${response.status}`;

@@ -29,6 +29,16 @@ export interface IdentityProviderDefinition {
   // Slack settings UI, which is already live, see src/ui/SettingsPage.tsx).
   readonly toolsStatus?: IdentityProviderStatus;
   readonly description: string;
+  // Provider-neutral escape hatch for a "coming-soon" provider whose `tools`
+  // array already contains real, safe-to-run implementations (e.g. Slack's
+  // reaction tools landing ahead of whoami/post-message). When `true`, the
+  // registry's `liveTools()` view includes this provider's tools in the
+  // worker registration loop and the live manifest even though `status`
+  // stays "coming-soon" (which continues to gate the settings UI identity
+  // picker — see SettingsPage.tsx). Omit/false for providers whose `tools`
+  // are template/demo code that must never run live (see the `example`
+  // provider, which intentionally never sets this).
+  readonly toolsLive?: boolean;
 }
 
 export interface ResolvedCredential {

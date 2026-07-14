@@ -20,7 +20,7 @@ function buildCtx(fetchImpl: ReturnType<typeof vi.fn>) {
     http: { fetch: fetchImpl },
     activity: { log: vi.fn(async () => {}) },
     logger: { error: vi.fn(), info: vi.fn() },
-    secrets: { resolve: vi.fn(async () => "xoxb-secret") }
+    secrets: { resolve: vi.fn(async () => "test-bot-token") }
   } as never;
 }
 
@@ -89,6 +89,14 @@ describe("slackAddReactionToolSpec / slackRemoveReactionToolSpec — validatePar
     });
     expect(result.ok).toBe(false);
   });
+
+  it("rejects a reaction name over 100 characters, matching the manifest schema's maxLength", () => {
+    const result = slackAddReactionToolSpec.validateParams({
+      messageTs: "1719000000.123456",
+      reaction: "a".repeat(101)
+    });
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe("resolveResourceRef — wrong-team references fail before credentials", () => {
@@ -139,7 +147,7 @@ function buildExecution(fetchImpl: ReturnType<typeof vi.fn>) {
   const ctx = buildCtx(fetchImpl);
   const ref: SlackChannelRef = { kind: "slack-channel", teamId: "T0123456789", channel: "C0123456789" };
   return {
-    token: "xoxb-secret",
+    token: "test-bot-token",
     identity: { agentId: "agent-1", identity },
     resourceRef: ref,
     params: { messageTs: "1719000000.123456", reaction: "thumbsup" },
@@ -185,7 +193,7 @@ describe("slackAddReactionToolSpec.perform", () => {
       throw new Error("network down");
     });
     const result = (await slackAddReactionToolSpec.perform(buildExecution(fetchImpl))) as { error: string };
-    expect(result.error).not.toContain("xoxb-secret");
+    expect(result.error).not.toContain("test-bot-token");
   });
 });
 
@@ -201,12 +209,10 @@ describe("slackRemoveReactionToolSpec.perform", () => {
     expect(result.data.action).toBe("removed");
   });
 
-  it("treats no_reaction as a caller-idempotent success, not an error", async () => {
+  it("fails closed on no_reaction — Slack returns this both for a redundant remove and for someone else's reaction, so it must not be reported as a successful removal", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(false, { ok: false, error: "no_reaction" }));
-    const result = (await slackRemoveReactionToolSpec.perform(buildExecution(fetchImpl))) as {
-      data: { action: string };
-    };
-    expect(result.data.action).toBe("removed");
+    const result = (await slackRemoveReactionToolSpec.perform(buildExecution(fetchImpl))) as { error: string };
+    expect(result.error).toContain("no_reaction");
   });
 
   it("fails closed on a permission error removing someone else's reaction", async () => {
@@ -230,7 +236,7 @@ describe("end-to-end through the shared pipeline", () => {
       definition: { id: "slack", name: "Slack", status: "coming-soon", description: "" },
       validateConfig: () => ({}),
       projectPluginConfig: () => ({}),
-      resolveCredential: async () => ({ token: "xoxb-secret", secrets: ["xoxb-secret"] }),
+      resolveCredential: async () => ({ token: "test-bot-token", secrets: ["test-bot-token"] }),
       tools: [],
       manifestTools: []
     } as unknown as IdentityProvider<SlackAgentIdentity, SlackChannelRef>;
@@ -251,13 +257,13 @@ describe("end-to-end through the shared pipeline", () => {
       runCtx
     )) as { data: { action: string } };
     expect(result.data.action).toBe("added");
-    expect(JSON.stringify(result)).not.toContain("xoxb-secret");
+    expect(JSON.stringify(result)).not.toContain("test-bot-token");
   });
 
   it("full pipeline denies a wrong-team reference before any credential resolution", async () => {
     const fetchImpl = vi.fn();
     const ctx = buildCtx(fetchImpl);
-    const resolveCredential = vi.fn(async () => ({ token: "xoxb-secret", secrets: ["xoxb-secret"] }));
+    const resolveCredential = vi.fn(async () => ({ token: "test-bot-token", secrets: ["test-bot-token"] }));
     const provider = {
       id: "slack",
       definition: { id: "slack", name: "Slack", status: "coming-soon", description: "" },

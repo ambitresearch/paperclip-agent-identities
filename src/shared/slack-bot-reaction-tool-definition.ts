@@ -65,8 +65,10 @@ export const slackBotRemoveReactionToolMetadata = {
     "Removes an emoji reaction previously added by the configured agent identity from a " +
     "Slack message. Requires only reactions:write. Slack's reactions.remove can only " +
     "remove a reaction the calling bot itself added — it cannot remove a reaction added " +
-    "by a different user or bot. Removing a reaction that is already absent is " +
-    "caller-idempotent (Slack's no_reaction is treated as success).",
+    "by a different user or bot. This call fails closed (returns an error, does not " +
+    "report success) both when the reaction is already absent and when it belongs to a " +
+    "different user/bot, since Slack's API cannot distinguish the two cases from the " +
+    "single 'no_reaction' response.",
   parametersSchema: slackReactionParametersSchema
 } as const;
 

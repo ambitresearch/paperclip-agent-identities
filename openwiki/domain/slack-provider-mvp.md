@@ -444,22 +444,36 @@ branch was added to `src/worker.ts` or `src/manifest.ts`.
 - `perform` calls Slack's `reactions.add`/`reactions.remove` via
   `ctx.http.fetch`, scoped to the `reactions:write` bot scope only (already
   present in `SLACK_MVP_BOT_SCOPES`, `src/providers/slack/app-manifest.ts`).
-  Both tools treat a `not-ok` response as success when Slack's error code is
-  the corresponding idempotent no-op (`already_reacted` for add, `no_reaction`
-  for remove) — reporting `action: "added"`/`"removed"` either way — so
-  repeated calls from a caller are idempotent, per the "duplicate reactions
-  are caller-idempotent and tested" acceptance criterion. Any other Slack API
-  error (e.g. `channel_not_found`, or `no_permission` when
-  `slack_bot_remove_reaction` is asked to remove a reaction it did not add —
-  see §6 above's documented Slack API limitation) fails closed with a
-  `{ error }` result. The result never includes the token or a raw Slack
+  Only `reactions.add`'s `already_reacted` is treated as a caller-idempotent
+  no-op (reports `action: "added"`), per the "duplicate reactions are
+  caller-idempotent and tested" acceptance criterion. `reactions.remove`'s
+  `no_reaction` is deliberately NOT treated as idempotent success: Slack
+  returns that same code both when the reaction is already absent AND when
+  the reaction belongs to a different user/bot, and `reactions.remove` can
+  only remove a reaction the calling bot itself added (see §6 above). Since
+  the tool cannot distinguish those two cases from the response alone,
+  reporting success either way would falsely claim a removal that may never
+  have happened — so `no_reaction` falls through to the generic error path
+  and fails closed with a `{ error }` result, per §6's documented Slack API
+  limitation. `channel_not_found` and other real Slack API errors also fail
+  closed the same way. The result never includes the token or a raw Slack
   response body; the shared pipeline's redact step also strips the resolved
-  token/secrets from whatever `perform` returns.
+  token/secrets from whatever `perform` returns. Network-level failures
+  (thrown before a response is received) are logged with a non-secret
+  classification only — the raw thrown error message is never logged, since
+  an HTTP adapter error can embed request details and the bot token is
+  already in the outgoing `Authorization` header by that point.
 - `slackProvider.definition.status` stays `"coming-soon"`: with
   `slack_bot_whoami` (DRO-972/#59) and `slack_bot_post_message`/
   `slack_bot_post_reply` (DRO-973/#60) now also landed alongside this
   slice's two reaction tools, only `slack-lookup-channel` (DRO-975) remains
   still-backlog, so the identity isn't surfaced as fully ready yet.
+  `slackProvider.definition.toolsStatus` is set to `"enabled"` independently
+  of `status`: this is the provider-neutral gate
+  `registry.toolsEnabled()`/`registry.liveTools()` use (consumed by
+  `src/worker.ts`'s registration loop and `src/manifest.ts`'s tool list)
+  instead of `.enabled()`, so all four already-implemented tools are
+  reachable now even though `status` hasn't flipped to `"enabled"`.
 - Test coverage: `tests/providers/slack/react-tool.spec.ts` — local
   validation (valid/invalid messageTs, reaction, channelId, teamId, unknown
   fields), resource-ref resolution (default-channel fallback, missing default

@@ -276,11 +276,24 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
         setSlackManifestFlow(flow);
         setSlackManifestCopied(false);
       })
-      .catch(() => {
-        // Flow expired, was consumed, or no longer exists -- drop the
-        // stale pointer so we don't keep retrying every render.
-        if (!cancelled) {
+      .catch((err) => {
+        if (cancelled) return;
+        // Only drop the stored state pointer when the server has
+        // definitively told us the flow is gone (unknown/expired/consumed --
+        // see loadUnexpiredUnconsumedFlow in app-manifest.ts). A transient
+        // failure (network error, bridge hiccup, unexpected 5xx) is not
+        // proof the flow is invalid; deleting the pointer on those would
+        // destroy the operator's only automatic resume path and force them
+        // to create a whole new Slack App. Leave the pointer in place and
+        // just surface the error so the next mount/retry can try again.
+        const message = err instanceof Error ? err.message : String(err);
+        const isDefinitivelyGone = /unknown or expired|already been used|has expired/i.test(message);
+        if (isDefinitivelyGone) {
           deleteSlackManifestFlowState(companyId, agentId);
+        } else {
+          setSlackManifestError(
+            `Could not restore the in-progress Slack App manifest flow (${message}). It has not been discarded -- reload or try again.`,
+          );
         }
       });
 
@@ -415,11 +428,28 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
           setSlackCleanupPendingAgentId(previousAgentId);
           setSlackCleanupError(null);
           slackCleanupPendingResultRef.current = result;
+          // The manifest's one-time state was already consumed by the
+          // successful save above, even though the rebind cleanup failed.
+          // Clear the in-memory flow now (not just the sessionStorage
+          // pointer) so the credential step can no longer be re-submitted
+          // against this already-consumed state -- e.g. by editing a field,
+          // which would otherwise clear slackSaveResult and re-enable "Save
+          // Slack install metadata" pointed at a flow that is guaranteed to
+          // fail (finding: consumed-state resubmission).
+          setSlackManifestFlow(null);
+          deleteSlackManifestFlowState(companyId, targetAgentId);
           await refresh();
           return;
         }
       }
       setSlackSaveResult(result);
+      // Clear the in-memory manifest flow (not just the sessionStorage
+      // pointer) now that its one-time state has been consumed by this
+      // successful save. Otherwise editing any Slack field afterward clears
+      // slackSaveResult (via the signature effect) and re-enables "Save
+      // Slack install metadata" while slackManifestFlow still looks active,
+      // guaranteeing the retry fails against an already-consumed state.
+      setSlackManifestFlow(null);
       deleteSlackManifestFlowState(companyId, targetAgentId);
       // Record the just-saved identity as the form's "previous" identity before
       // refreshing. Otherwise refresh() adds this identity to `identities`, and
@@ -448,10 +478,18 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     const pendingAgentId = slackCleanupPendingAgentId;
     const pendingResult = slackCleanupPendingResultRef.current;
     if (!pendingAgentId || !pendingResult) return;
+    // Reuse the save generation counter as a stale-response guard: reset()
+    // (dialog close, agent/label/provider change, starting a different
+    // identity) bumps it and clears the cleanup-pending state. If that
+    // happens while this delete is in flight, the response below must not
+    // apply patchFormState/setSlackSaveResult to whatever form is now
+    // current (Copilot finding: cleanup retry has no stale-response guard).
+    const generation = slackSaveGenerationRef.current;
     setSlackCleanupBusy(true);
     setSlackCleanupError(null);
     try {
       await deleteConfig({ agentId: pendingAgentId, provider: SLACK_IDENTITY_PROVIDER_ID });
+      if (slackSaveGenerationRef.current !== generation) return;
       setSlackCleanupPendingAgentId(null);
       slackCleanupPendingResultRef.current = null;
       setSlackManifestError(null);
@@ -462,11 +500,14 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
       patchFormState((prev) => ({ ...prev, previousAgentId: pendingResult.agentId }));
       await refresh();
     } catch (err) {
+      if (slackSaveGenerationRef.current !== generation) return;
       setSlackCleanupError(
         err instanceof Error ? err.message : `Failed to remove the previous identity for ${pendingAgentId}`,
       );
     } finally {
-      setSlackCleanupBusy(false);
+      if (slackSaveGenerationRef.current === generation) {
+        setSlackCleanupBusy(false);
+      }
     }
   }
 
@@ -528,9 +569,9 @@ function getSecretFieldHint(input: {
     return `Could not load Paperclip secrets (${input.secretsError}); paste the secret UUID manually.`;
   }
   if (!input.hasSecretOptions) {
-    return "No Paperclip secrets were found; paste the private key secret UUID manually or use a private key file fallback.";
+    return "No Paperclip secrets were found; paste the bot token secret UUID manually.";
   }
-  return "Saved as a Paperclip secret reference for the GitHub App private key and optionally propagated to agent environments.";
+  return "Saved as a Paperclip secret reference for the Slack bot token. There is no private-key or file fallback for Slack.";
 }
 
 function formatSecretOption(secret: { id: string; name: string; key?: string; description?: string; provider?: string; status?: string }): string {

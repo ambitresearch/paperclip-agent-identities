@@ -243,7 +243,13 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   // saved (see slackFieldsSignature invalidation in
   // useSlackCredentialStep) with no way to recover the flow. Lock the whole
   // identity-step fields and dialog navigation for the duration of the save.
-  const slackSaveInFlight = activeProviderId === SLACK_IDENTITY_PROVIDER_ID && slackUIState.slackSaveBusy;
+  // Also lock during a pending cleanup-only retry (deleteConfig(previousAgentId)
+  // re-attempt after save-slack-install-metadata succeeded): the operator
+  // could otherwise click "Retry cleanup", then navigate/edit the identity
+  // before it resolves, letting that stale response's state updates land on
+  // a different form (Copilot finding on settings-adapter-ui.tsx:454).
+  const slackSaveInFlight =
+    activeProviderId === SLACK_IDENTITY_PROVIDER_ID && (slackUIState.slackSaveBusy || slackUIState.slackCleanupBusy);
 
   if (loading) return <div>Loading settings...</div>;
   if (error) return <div>Error loading settings: {error.message}</div>;

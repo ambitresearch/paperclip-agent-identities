@@ -702,6 +702,143 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
     expect(text()).toContain("Slack install metadata saved for team T0123456789.");
     expect(text()).not.toContain("Retry cleanup");
   });
+
+  it("locks dialog navigation while a cleanup-only retry is in flight (Copilot finding on settings-adapter-ui.tsx:454)", async () => {
+    bridgeData["bot-identity-config"] = {
+      identities: [
+        {
+          id: "id-1",
+          agentId: "agent-0",
+          provider: SLACK_IDENTITY_PROVIDER_ID,
+          label: "Release Bot",
+          slack: { teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789" },
+          credential: {},
+          credentialStatus: "ok",
+        },
+      ],
+      providers,
+      companyName: "Acme",
+      credentialSidecarPath: "",
+      credentialSidecarError: null,
+    };
+    bridgeData["paperclip-agents"] = {
+      agents: [
+        { id: "agent-0", role: "Engineer", status: "active" },
+        { id: "agent-1", role: "Engineer", status: "active" },
+      ],
+    };
+
+    renderSettingsPage();
+    const editButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Edit");
+    click(editButton ?? null);
+
+    const agentSelect = Array.from(container.querySelectorAll("select")).find((s) =>
+      Array.from(s.options).some((o) => o.value === "agent-1"),
+    );
+    setValue(agentSelect ?? null, "agent-1");
+
+    const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+    click(nextButton ?? null);
+
+    actionFor("create-slack-app-manifest").mockResolvedValue({
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      state: "state-1",
+      manifest: '{"name":"slack-demo"}',
+      createAppUrl: "https://api.slack.com/apps?new_app=1",
+      label: "Release Bot",
+    });
+    const createButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === "Create Slack App manifest",
+    );
+    await act(async () => {
+      click(createButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    setValue(fieldByPlaceholder("T0123456789") ?? null, "T0123456789");
+    setValue(fieldByPlaceholder("A0123456789") ?? null, "A0123456789");
+    setValue(fieldByPlaceholder("U0123456789") ?? null, "U0123456789");
+    setValue(
+      fieldByPlaceholder("Company secret UUID containing the Slack bot token") ?? null,
+      "11111111-1111-4111-8111-111111111111",
+    );
+
+    actionFor("save-slack-install-metadata").mockResolvedValue({
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      teamId: "T0123456789",
+      appId: "A0123456789",
+      botUserId: "U0123456789",
+      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      status: "saved",
+    });
+    actionFor("delete-bot-identity-config").mockRejectedValueOnce(new Error("network blip"));
+
+    await act(async () => {
+      click(slackSaveButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(text()).toContain("Retry cleanup");
+
+    // Start a never-resolving cleanup retry and assert that dialog
+    // navigation is locked for its duration, the same way it is locked
+    // during save-slack-install-metadata itself -- otherwise the operator
+    // could navigate/edit the identity mid-retry and have its eventual
+    // response land on a different form.
+    actionFor("delete-bot-identity-config").mockReturnValue(new Promise(() => {}));
+    const retryButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Retry cleanup");
+    act(() => {
+      click(retryButton ?? null);
+    });
+    expect(text()).toContain("Retrying...");
+
+    const previousButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Previous");
+    const cancelButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Cancel");
+    const closeButton = container.querySelector('[aria-label="Close identity editor"]') as HTMLButtonElement | null;
+    expect((previousButton as HTMLButtonElement | undefined)?.disabled).toBe(true);
+    expect((cancelButton as HTMLButtonElement | undefined)?.disabled).toBe(true);
+    expect(closeButton?.disabled).toBe(true);
+  });
+});
+
+describe("SettingsPage interactions: consumed manifest flow after a successful save (Copilot finding on settings-adapter-ui.tsx:423/439)", () => {
+  it("does not allow re-submitting a save against an already-consumed manifest flow after a field edit", async () => {
+    await openSlackWizardOnCredentialStep();
+    actionFor("save-slack-install-metadata").mockResolvedValue({
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      teamId: "T0123456789",
+      appId: "A0123456789",
+      botUserId: "U0123456789",
+      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      status: "saved",
+    });
+
+    await act(async () => {
+      click(slackSaveButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(text()).toContain("Slack install metadata saved for team T0123456789.");
+
+    // Editing a field after a successful save clears slackSaveResult (the
+    // signature-invalidation effect) and re-enables the save button, but the
+    // manifest flow's one-time `state` was already consumed by the save
+    // above. The credential step must not present a submittable save button
+    // pointed at that consumed flow -- it must require creating/restoring a
+    // new manifest flow first.
+    setValue(fieldByPlaceholder("T0123456789") ?? null, "T_DIFFERENT_TEAM");
+    expect(text()).not.toContain("Slack install metadata saved for team");
+
+    const saveButtonAfterEdit = slackSaveButton();
+    expect((saveButtonAfterEdit as HTMLButtonElement | undefined)?.disabled).toBe(true);
+    expect(text()).toContain("Create the manifest above first");
+  });
 });
 
 describe("SettingsPage interactions: removal", () => {

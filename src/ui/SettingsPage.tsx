@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
+import { slackBotWhoamiToolName } from "../shared/slack-bot-whoami-tool.js";
 import { buildProviderSettingsRegistry } from "../core/provider-settings-contract.js";
 import { ALL_SETTINGS_ADAPTERS } from "../providers/settings-index.js";
 import { providerSettingsUIRegistry } from "../providers/settings-ui-index.js";
@@ -98,7 +99,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   // as the plugin actions above -- `ctx.tools.register` handlers are called
   // through the same `usePluginAction`-style bridge as `ctx.actions.register`
   // handlers from the client's perspective, so no separate hook is needed.
-  const slackBotWhoami = usePluginAction("slack_bot_whoami");
+  const slackBotWhoami = usePluginAction(slackBotWhoamiToolName);
 
   const [formState, setFormState] = useState<IdentityFormState | null>(null);
   const [saving, setSaving] = useState(false);

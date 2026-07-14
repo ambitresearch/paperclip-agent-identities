@@ -4,7 +4,7 @@ import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
 
 describe("worker provider registration", () => {
-  it("registers every enabled-provider tool and no coming-soon provider tool", async () => {
+  it("registers every tools-enabled provider's tool and no coming-soon-only provider tool", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
     const register = vi.spyOn(harness.ctx.tools, "register");
     await plugin.definition.setup(harness.ctx);
@@ -13,8 +13,20 @@ describe("worker provider registration", () => {
       "github_bot_whoami",
       "github_bot_create_pull_request",
       "github_bot_push_branch",
+      "slack_bot_post_message",
     ]);
     expect(register.mock.calls.map(([name]) => name)).not.toContain("example_whoami");
+  });
+
+  it("makes slack_bot_post_message reachable in BOTH runtime registration and the composed manifest, even though the Slack settings UI is still coming-soon", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
+    const register = vi.spyOn(harness.ctx.tools, "register");
+    await plugin.definition.setup(harness.ctx);
+
+    expect(register.mock.calls.map(([name]) => name)).toContain("slack_bot_post_message");
+    expect((manifest.tools ?? []).map((tool) => (tool as { name: string }).name)).toContain(
+      "slack_bot_post_message",
+    );
   });
 
   it("fails closed through the generic pipeline when no identity is configured", async () => {

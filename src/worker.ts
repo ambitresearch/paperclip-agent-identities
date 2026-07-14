@@ -67,7 +67,7 @@ const plugin = definePlugin({
     });
 
     const registry = createProviderRegistry();
-    for (const provider of registry.enabled()) {
+    for (const provider of registry.toolsEnabled()) {
       const deps: ProviderToolPipelineDeps<unknown> = {
         resolveIdentity: async (toolCtx, runCtx) =>
           await resolveIdentityForProvider(provider, toolCtx, runCtx),

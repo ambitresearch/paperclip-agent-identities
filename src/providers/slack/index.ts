@@ -17,10 +17,17 @@ const slackProviderDefinition: IdentityProviderDefinition = {
   // Credential storage/resolution lands here (DRO-969); slack_bot_post_message
   // (posting + threaded replies, DRO-973) is the first tool to land in the
   // Slack tool surface. The remaining tools (whoami/react/lookup-channel) are
-  // separate, still-backlog work (DRO-974/975). Keep this "coming-soon" until
-  // the settings UI wiring for Slack identities is finished (tracked
-  // separately) even though the tool surface itself is now functional.
+  // separate, still-backlog work (DRO-974/975). `status` stays "coming-soon"
+  // until the settings UI wiring for Slack identities is finished (tracked
+  // separately in DRO-976/1006) — that keeps Slack out of the provider picker
+  // and SUPPORTED_IDENTITY_PROVIDERS-driven UI surfaces. `toolsStatus` is set
+  // to "enabled" independently: it is what actually gates live tool
+  // registration (registry.toolsEnabled(), consumed by worker.ts/manifest.ts),
+  // so slack_bot_post_message is reachable now even though the settings UI
+  // isn't ready. Once the settings UI lands, flip `status` to "enabled" too
+  // and `toolsStatus` becomes redundant (but harmless) to keep.
   status: "coming-soon",
+  toolsStatus: "enabled",
   description:
     "Workspace identity for Slack messages and app-mediated actions."
 };

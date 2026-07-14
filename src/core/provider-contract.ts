@@ -9,7 +9,22 @@ export type IdentityProviderStatus = "enabled" | "coming-soon";
 export interface IdentityProviderDefinition {
   readonly id: string;
   readonly name: string;
+  // Gates the provider's presence in agent-facing surfaces: the settings UI
+  // provider picker (src/ui/SettingsPage.tsx) and the shared provider list
+  // (src/shared/types.ts's SUPPORTED_IDENTITY_PROVIDERS). A provider can be
+  // "coming-soon" here (its settings/config wiring isn't finished) while its
+  // tool surface is independently live — see `toolsStatus`.
   readonly status: IdentityProviderStatus;
+  // Gates whether the provider's `tools`/`manifestTools` are actually wired
+  // into the runtime tool registry (src/worker.ts) and the composed plugin
+  // manifest (src/manifest.ts). Defaults to `status` when omitted, so any
+  // provider that doesn't set this explicitly keeps the original
+  // status-gates-everything behavior. Set this independently of `status` when
+  // a provider's tool implementation is functionally complete and tested
+  // before its settings/config UI lands (e.g. Slack: DRO-973's
+  // slack_bot_post_message tool is live even though the Slack settings UI,
+  // DRO-976/1006, is still pending).
+  readonly toolsStatus?: IdentityProviderStatus;
   readonly description: string;
 }
 

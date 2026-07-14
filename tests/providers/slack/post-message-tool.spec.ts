@@ -305,10 +305,60 @@ describe("slackBotPostMessageToolSpec.perform", () => {
       text: "hello",
       blocks: [{ circular: undefined as unknown }]
     });
-    // undefined-bearing values are JSON-serializable (dropped), so this
-    // specific case passes; assert the actually-malformed non-array case
-    // instead to keep this test meaningful.
+    // Previously this passed (undefined-bearing values are JSON-serializable,
+    // so they were silently dropped/nulled downstream). Now the block-shape
+    // allowlist rejects any block whose `type` isn't a supported literal —
+    // `{ circular: undefined }` has no `type` at all, so it is malformed.
+    expect(res.ok).toBe(false);
+    expect((res as { error: string }).error).toContain("not a supported block shape");
+  });
+
+  it("rejects an interactive/actions block (no callback path exists for it)", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [{
+        type: "actions",
+        elements: [{ type: "button", text: { type: "plain_text", text: "Click" }, action_id: "a1" }]
+      }]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects a section block with an unsupported extra field", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [{
+        type: "section",
+        text: { type: "mrkdwn", text: "hi" },
+        accessory: { type: "button", text: { type: "plain_text", text: "Click" }, action_id: "a1" }
+      }]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("accepts each safe block type in the allowlist", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [
+        { type: "divider" },
+        { type: "section", text: { type: "mrkdwn", text: "hi" } },
+        { type: "header", text: { type: "plain_text", text: "Title" } },
+        { type: "context", elements: [{ type: "mrkdwn", text: "footer" }] },
+        { type: "image", image_url: "https://example.com/i.png", alt_text: "an image" }
+      ]
+    });
     expect(res.ok).toBe(true);
+  });
+
+  it("rejects whitespace-only text", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "   "
+    });
+    expect(res.ok).toBe(false);
   });
 
   it("never leaks the raw bot token in the returned success or error payloads", async () => {

@@ -21,6 +21,106 @@ export const SLACK_MESSAGE_BLOCKS_MAX_SERIALIZED_LENGTH = 40000;
 // its presence/absence — Slack itself will return `not_in_channel` if the
 // bot lacks membership and `chat:write.public` is not granted. See
 // openwiki/domain/slack-provider-mvp.md §4.
+// Manifest/JSON-schema mirror of the safe-block allowlist enforced by
+// `isSafeBlock` in src/providers/slack/tools/post-message.ts. Interactive
+// block types (actions/input/buttons/selects) are intentionally NOT
+// representable here — this is a one-way message-posting tool with no
+// callback path for block_actions payloads.
+const SLACK_TEXT_OBJECT_SCHEMA = {
+  type: "object",
+  properties: {
+    type: { type: "string", enum: ["mrkdwn", "plain_text"] },
+    text: { type: "string", minLength: 1 },
+    emoji: { type: "boolean" }
+  },
+  required: ["type", "text"],
+  additionalProperties: false
+} as const;
+
+const SLACK_PLAIN_TEXT_OBJECT_SCHEMA = {
+  type: "object",
+  properties: {
+    type: { type: "string", enum: ["plain_text"] },
+    text: { type: "string", minLength: 1 },
+    emoji: { type: "boolean" }
+  },
+  required: ["type", "text"],
+  additionalProperties: false
+} as const;
+
+const SLACK_IMAGE_ELEMENT_SCHEMA = {
+  type: "object",
+  properties: {
+    type: { type: "string", enum: ["image"] },
+    image_url: { type: "string", minLength: 1 },
+    alt_text: { type: "string", minLength: 1 }
+  },
+  required: ["type", "image_url", "alt_text"],
+  additionalProperties: false
+} as const;
+
+const SLACK_BLOCK_ITEM_SCHEMA = {
+  type: "object",
+  description:
+    "A single supported Block Kit block: divider, section, header, context, or image. " +
+    "No interactive (actions/input/button/select) block types are supported.",
+  oneOf: [
+    {
+      type: "object",
+      properties: { type: { const: "divider" }, block_id: { type: "string" } },
+      required: ["type"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      properties: {
+        type: { const: "section" },
+        block_id: { type: "string" },
+        text: SLACK_TEXT_OBJECT_SCHEMA,
+        fields: { type: "array", minItems: 1, items: SLACK_TEXT_OBJECT_SCHEMA }
+      },
+      required: ["type"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      properties: {
+        type: { const: "header" },
+        block_id: { type: "string" },
+        text: SLACK_PLAIN_TEXT_OBJECT_SCHEMA
+      },
+      required: ["type", "text"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      properties: {
+        type: { const: "context" },
+        block_id: { type: "string" },
+        elements: {
+          type: "array",
+          minItems: 1,
+          items: { oneOf: [SLACK_TEXT_OBJECT_SCHEMA, SLACK_IMAGE_ELEMENT_SCHEMA] }
+        }
+      },
+      required: ["type", "elements"],
+      additionalProperties: false
+    },
+    {
+      type: "object",
+      properties: {
+        type: { const: "image" },
+        block_id: { type: "string" },
+        image_url: { type: "string", minLength: 1 },
+        alt_text: { type: "string", minLength: 1 },
+        title: SLACK_PLAIN_TEXT_OBJECT_SCHEMA
+      },
+      required: ["type", "image_url", "alt_text"],
+      additionalProperties: false
+    }
+  ]
+} as const;
+
 export const slackBotPostMessageToolMetadata = {
   displayName: "Post Slack Message (Agent Identity)",
   description:
@@ -36,11 +136,16 @@ export const slackBotPostMessageToolMetadata = {
       },
       text: {
         type: "string",
-        description: "Message text to post."
+        minLength: 1,
+        description: "Message text to post. Must not be empty or whitespace-only."
       },
       blocks: {
         type: "array",
-        description: "Optional Slack Block Kit blocks array (advanced formatting)."
+        maxItems: SLACK_MESSAGE_BLOCKS_MAX_COUNT,
+        items: SLACK_BLOCK_ITEM_SCHEMA,
+        description:
+          "Optional Slack Block Kit blocks array, restricted to a safe, non-interactive allowlist " +
+          "(divider/section/header/context/image blocks only)."
       },
       threadTs: {
         type: "string",
@@ -52,7 +157,8 @@ export const slackBotPostMessageToolMetadata = {
         description: "Optional Slack team ID; must match the configured identity's workspace if provided."
       }
     },
-    required: ["channel", "text"]
+    required: ["channel", "text"],
+    additionalProperties: false
   }
 } as const;
 

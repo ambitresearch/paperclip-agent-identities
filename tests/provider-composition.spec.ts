@@ -15,6 +15,15 @@ describe("provider composition root", () => {
     expect(registry.enabled().map((p) => p.id)).toEqual(["github"]);
   });
 
+  it("composes the live tool surface from toolsEnabled(), independent of enabled()", () => {
+    const registry = createProviderRegistry();
+    // Slack's settings-UI status stays "coming-soon" (excluded from enabled())
+    // while its tool surface (slack_bot_post_message, DRO-973) is live
+    // (included in toolsEnabled()) — proving the two gates are independent.
+    expect(registry.enabled().map((p) => p.id)).not.toContain("slack");
+    expect(registry.toolsEnabled().map((p) => p.id)).toEqual(["github", "slack"]);
+  });
+
   it("resolves providers by id, including coming-soon ones", () => {
     const registry = createProviderRegistry();
     expect(registry.get("github")).toBe(githubProvider);
@@ -23,10 +32,10 @@ describe("provider composition root", () => {
     expect(registry.get("nope")).toBeUndefined();
   });
 
-  it("composes live manifest tools from enabled providers only", () => {
+  it("composes live manifest tools from toolsEnabled() providers", () => {
     const registry = createProviderRegistry();
     const manifestToolNames = registry
-      .enabled()
+      .toolsEnabled()
       .flatMap((provider) => provider.manifestTools as ReadonlyArray<{ name: string }>)
       .map((tool) => tool.name);
 
@@ -35,9 +44,13 @@ describe("provider composition root", () => {
     expect(manifestToolNames).toContain("github_bot_create_pull_request");
     expect(manifestToolNames).toContain("github_bot_push_branch");
 
-    // ...the example is coming-soon, so its tool is absent from the live
-    // manifest EVEN THOUGH it ships a manifest fragment. The `.enabled()`
-    // filter — not an empty array — is what gates it out.
+    // ...Slack's tool surface is independently live (toolsStatus: "enabled")
+    // even though its settings-UI status is still "coming-soon".
+    expect(manifestToolNames).toContain("slack_bot_post_message");
+
+    // ...the example is coming-soon on BOTH gates, so its tool is absent from
+    // the live manifest EVEN THOUGH it ships a manifest fragment. The
+    // `.toolsEnabled()` filter — not an empty array — is what gates it out.
     expect(manifestToolNames).not.toContain("example_whoami");
     expect(exampleProvider.manifestTools).toHaveLength(1);
   });

@@ -39,6 +39,117 @@ function isJsonSerializable(value: unknown): boolean {
   }
 }
 
+// Bounded allowlist of safe, non-interactive Block Kit block types. No
+// action/button/select/input elements are permitted anywhere in this tool —
+// this is a one-way message-posting tool, not an interactive-surfaces
+// builder, so there is no callback path to receive a block_actions payload
+// safely. Each entry maps a block `type` to the exact set of fields it may
+// carry; anything outside this allowlist (unknown block types, unknown
+// fields, or nested unsupported shapes) is rejected.
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+// A Slack "text object" (used by section/header/context): { type: "mrkdwn" |
+// "plain_text", text: string, emoji?: boolean } — no other fields.
+function isSafeTextObject(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  const allowedKeys = new Set(["type", "text", "emoji"]);
+  const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
+  if (unknownKeys.length > 0) return false;
+  if (value.type !== "mrkdwn" && value.type !== "plain_text") return false;
+  if (!isNonEmptyString(value.text)) return false;
+  if (value.emoji !== undefined && typeof value.emoji !== "boolean") return false;
+  return true;
+}
+
+// A Slack Block Kit `image` element (used inside `context` blocks' elements
+// array), NOT the top-level `image` block: { type: "image", image_url:
+// string, alt_text: string }.
+function isSafeImageElement(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  const allowedKeys = new Set(["type", "image_url", "alt_text"]);
+  const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
+  if (unknownKeys.length > 0) return false;
+  if (value.type !== "image") return false;
+  if (!isNonEmptyString(value.image_url)) return false;
+  if (!isNonEmptyString(value.alt_text)) return false;
+  return true;
+}
+
+function isSafeBlock(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  const type = value.type;
+
+  switch (type) {
+    case "divider": {
+      const allowedKeys = new Set(["type", "block_id"]);
+      const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
+      if (unknownKeys.length > 0) return false;
+      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
+      return true;
+    }
+    case "section": {
+      const allowedKeys = new Set(["type", "block_id", "text", "fields"]);
+      const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
+      if (unknownKeys.length > 0) return false;
+      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
+      const hasText = value.text !== undefined;
+      const hasFields = value.fields !== undefined;
+      if (!hasText && !hasFields) return false;
+      if (hasText && !isSafeTextObject(value.text)) return false;
+      if (hasFields) {
+        if (!Array.isArray(value.fields) || value.fields.length === 0) return false;
+        if (!value.fields.every((field) => isSafeTextObject(field))) return false;
+      }
+      return true;
+    }
+    case "header": {
+      const allowedKeys = new Set(["type", "block_id", "text"]);
+      const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
+      if (unknownKeys.length > 0) return false;
+      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
+      if (!isPlainObject(value.text)) return false;
+      // header text is always plain_text, per Slack's Block Kit spec.
+      const textObj = value.text as Record<string, unknown>;
+      const allowedTextKeys = new Set(["type", "text", "emoji"]);
+      const unknownTextKeys = Object.keys(textObj).filter((key) => !allowedTextKeys.has(key));
+      if (unknownTextKeys.length > 0) return false;
+      if (textObj.type !== "plain_text") return false;
+      if (!isNonEmptyString(textObj.text)) return false;
+      if (textObj.emoji !== undefined && typeof textObj.emoji !== "boolean") return false;
+      return true;
+    }
+    case "context": {
+      const allowedKeys = new Set(["type", "block_id", "elements"]);
+      const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
+      if (unknownKeys.length > 0) return false;
+      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
+      if (!Array.isArray(value.elements) || value.elements.length === 0) return false;
+      if (!value.elements.every((el) => isSafeTextObject(el) || isSafeImageElement(el))) return false;
+      return true;
+    }
+    case "image": {
+      const allowedKeys = new Set(["type", "block_id", "image_url", "alt_text", "title"]);
+      const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
+      if (unknownKeys.length > 0) return false;
+      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
+      if (!isNonEmptyString(value.image_url)) return false;
+      if (!isNonEmptyString(value.alt_text)) return false;
+      if (value.title !== undefined && !isSafeTextObject(value.title)) return false;
+      return true;
+    }
+    default:
+      // Explicitly rejects interactive/action block types (actions, input,
+      // section-with-accessory-buttons, etc.) and anything unrecognized.
+      return false;
+  }
+}
+
 const ALLOWED_PARAM_KEYS = new Set(["channel", "text", "blocks", "threadTs", "teamId"]);
 
 function validateParams(params: unknown): ParamsValidation {
@@ -55,10 +166,10 @@ function validateParams(params: unknown): ParamsValidation {
   if (!p.channel || typeof p.channel !== "string") {
     return { ok: false, error: "channel is required (a resolved Slack conversation ID)" };
   }
-  if (!p.text || typeof p.text !== "string") {
-    return { ok: false, error: "text is required" };
+  if (!isNonEmptyString(p.text)) {
+    return { ok: false, error: "text is required and must not be empty or whitespace-only" };
   }
-  if (p.text.length > SLACK_MESSAGE_TEXT_MAX_LENGTH) {
+  if ((p.text as string).length > SLACK_MESSAGE_TEXT_MAX_LENGTH) {
     return {
       ok: false,
       error: `text exceeds the maximum length of ${SLACK_MESSAGE_TEXT_MAX_LENGTH} characters`
@@ -78,6 +189,15 @@ function validateParams(params: unknown): ParamsValidation {
       return {
         ok: false,
         error: `blocks exceeds the maximum serialized size of ${SLACK_MESSAGE_BLOCKS_MAX_SERIALIZED_LENGTH} characters`
+      };
+    }
+    const unsafeIndex = p.blocks.findIndex((block) => !isSafeBlock(block));
+    if (unsafeIndex !== -1) {
+      return {
+        ok: false,
+        error:
+          `blocks[${unsafeIndex}] is not a supported block shape. Only divider, section, header, context, ` +
+          `and image blocks (with plain text/mrkdwn text objects and no interactive elements) are allowed.`
       };
     }
   }

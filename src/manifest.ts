@@ -47,7 +47,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.read-ref",
     "activity.log.write"
   ],
-  tools: registry.enabled().flatMap((provider) => provider.manifestTools) as PaperclipPluginManifestV1["tools"],
+  tools: registry.toolsEnabled().flatMap((provider) => provider.manifestTools) as PaperclipPluginManifestV1["tools"],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"

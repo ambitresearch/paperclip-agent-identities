@@ -16,6 +16,15 @@ describe("provider composition root", () => {
     expect(registry.enabled().map((p) => p.id)).toEqual(["github"]);
   });
 
+  it("composes the live tool surface from toolsEnabled(), independent of enabled()", () => {
+    const registry = createProviderRegistry();
+    // Slack's settings-UI status stays "coming-soon" (excluded from enabled())
+    // while its tool surface (slack_bot_post_message, DRO-973) is live
+    // (included in toolsEnabled()) — proving the two gates are independent.
+    expect(registry.enabled().map((p) => p.id)).not.toContain("slack");
+    expect(registry.toolsEnabled().map((p) => p.id)).toEqual(["github", "slack"]);
+  });
+
   it("resolves providers by id, including coming-soon ones", () => {
     const registry = createProviderRegistry();
     expect(registry.get("github")).toBe(githubProvider);
@@ -34,8 +43,10 @@ describe("provider composition root", () => {
     expect(liveToolNames).toContain("github_bot_push_branch");
 
     // ...Slack is still coming-soon as a PROVIDER, but its whoami tool spec
-    // opts in via `live: true` (DRO-972), so it is live too.
+    // opts in via `live: true` (DRO-972), so it is live too. Its
+    // post-message tool spec (DRO-973) opts in the same way.
     expect(liveToolNames).toContain("slack_bot_whoami");
+    expect(liveToolNames).toContain("slack_bot_post_message");
 
     // ...the example is coming-soon and has no `live` tool, so its tool is
     // absent from the live set EVEN THOUGH it ships a manifest fragment. The

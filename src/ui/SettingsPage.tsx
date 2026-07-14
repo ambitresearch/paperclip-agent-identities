@@ -635,11 +635,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                     value={provider.id}
                     disabled={provider.status !== "enabled" && provider.id !== SLACK_IDENTITY_PROVIDER_ID}
                   >
-                    {provider.name}{provider.status === "coming-soon" ? (provider.id === SLACK_IDENTITY_PROVIDER_ID ? " (setup only — tools coming soon)" : " (coming soon)") : ""}
+                    {provider.name}{provider.status === "coming-soon" ? (provider.id === SLACK_IDENTITY_PROVIDER_ID ? "" : " (coming soon)") : ""}
                   </option>
                 ))}
               </select>
-              <span style={hintStyle}>Each agent can have one identity per provider. GitHub is fully available; Slack setup can be completed now, but Slack agent tools ship separately.</span>
+              <span style={hintStyle}>Each agent can have one identity per provider. GitHub is fully available; Slack identities can be set up here and Slack agent tools (post message, whoami) are already live.</span>
             </label>
 
             {duplicateIdentity && <div style={validationNoticeStyle}>This agent already has a {getProviderDisplayName(config.provider, data?.providers)} identity. Edit the existing row instead.</div>}

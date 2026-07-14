@@ -75,11 +75,11 @@ const plugin = definePlugin({
 
     const registry = createProviderRegistry();
     // `liveTools()` composes every tool that should actually register right
-    // now: all tools from "enabled" providers, PLUS any individual tool a
-    // "coming-soon" provider marks `live: true` (e.g. Slack's credential-free
-    // `slack_bot_whoami` self-check, DRO-972, ahead of the rest of that
-    // provider's surface). This loop stays provider-agnostic -- no
-    // provider-specific branch is added here.
+    // now: all tools from `toolsEnabled()` providers, PLUS any individual
+    // tool a not-yet-enabled provider marks `live: true` (e.g. Slack's
+    // credential-free `slack_bot_whoami` self-check, DRO-972, ahead of the
+    // rest of that provider's surface). This loop stays provider-agnostic --
+    // no provider-specific branch is added here.
     for (const { provider, tool: toolSpec } of registry.liveTools()) {
       const deps: ProviderToolPipelineDeps<unknown> = {
         resolveIdentity: async (toolCtx, runCtx) =>

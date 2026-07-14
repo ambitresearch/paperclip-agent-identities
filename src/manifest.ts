@@ -61,8 +61,10 @@ const manifest: PaperclipPluginManifestV1 = {
     ...(declaration.description ? { description: declaration.description } : {})
   })) as PaperclipPluginManifestV1["webhooks"],
   // Advertise a manifest fragment for exactly the tools that are actually
-  // live (see `liveTools()` on the registry): every tool from an "enabled"
-  // provider, plus any individual tool a "coming-soon" provider marks
+  // live (see `liveTools()` on the registry): every tool from a
+  // `toolsEnabled()` provider (tool surface live, independent of the
+  // provider's settings-UI `status` -- e.g. Slack's slack_bot_post_message,
+  // DRO-973), plus any individual tool a not-yet-enabled provider marks
   // `live: true` (e.g. Slack's credential-free whoami self-check, DRO-972).
   // Matched to `manifestTools` fragments generically by name -- no
   // provider-specific branch here.

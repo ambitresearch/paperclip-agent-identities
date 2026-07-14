@@ -250,4 +250,100 @@ describe("handleSlackWebhook", () => {
 
     expect(JSON.stringify(result.body)).not.toContain(SIGNING_SECRET);
   });
+
+  it("authenticates the signature before any JSON.parse of the body — an unsigned request with a malicious/malformed body is rejected at 401, not 400", async () => {
+    // A body that is well-formed enough to parse but was never signed by any
+    // configured agent's secret must be rejected on authentication grounds
+    // (401) before the parse-dependent 400 path is ever reached — proving
+    // signature verification does not depend on (and is not ordered after)
+    // parsing.
+    const rawBody = JSON.stringify({ type: "event_callback", team_id: "T111", api_app_id: "A111" });
+    const deps = makeDeps({
+      rawBody,
+      headers: {}, // no signature at all
+      nowEpochSeconds: 1_800_000_000,
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(401);
+  });
+
+  it("fails closed (401) when the routed agent's own secret did not match this request's signature (cross-agent confused-deputy defense)", async () => {
+    // Two agents configured; the request is correctly signed with agent-2's
+    // secret, but routes (by team/app) to agent-1. Even though the request
+    // authenticated against *some* configured identity, it must not be
+    // trusted as agent-1's event unless agent-1's own secret is the one that
+    // matched.
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev999",
+      event: { type: "app_mention" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const OTHER_SECRET = "agent-2-secret";
+    const base = `v0:${timestamp}:${rawBody}`;
+    const signature = `v0=${createHmac("sha256", OTHER_SECRET).update(base, "utf8").digest("hex")}`;
+
+    const identities: Record<string, SlackAgentIdentity> = {
+      "agent-1": { label: "Agent 1", teamId: "T111", appId: "A111", botUserId: "U111" },
+      "agent-2": { label: "Agent 2", teamId: "T222", appId: "A222", botUserId: "U222" },
+    };
+    const deps = makeDeps({
+      rawBody,
+      headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature },
+      nowEpochSeconds: 1_800_000_000,
+      getProjectedIdentities: vi.fn(async () => identities),
+      resolveSigningSecret: vi.fn(async (agentId: string) => (agentId === "agent-2" ? OTHER_SECRET : SIGNING_SECRET)),
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(401);
+    expect(deps.onAgentEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleSlackWebhook rate limiting", () => {
+  it("returns 429 once a team exceeds the configured request rate, without dispatching", async () => {
+    const { resetSlackRateLimitState } = await import("../../../src/providers/slack/ingress/rate-limit.js");
+    resetSlackRateLimitState();
+
+    const teamId = "T-rate-limited";
+    const identities: Record<string, SlackAgentIdentity> = {
+      "agent-1": { label: "Agent 1", teamId, appId: "A111", botUserId: "U111" },
+    };
+
+    let callCount = 0;
+    const results = [];
+    for (let i = 0; i < 35; i++) {
+      const payload = {
+        type: "event_callback",
+        team_id: teamId,
+        api_app_id: "A111",
+        event_id: `Ev${i}`,
+        event: { type: "app_mention" },
+      };
+      const rawBody = JSON.stringify(payload);
+      const timestamp = "1800000000";
+      const deps = makeDeps({
+        rawBody,
+        headers: baseHeaders(timestamp, rawBody),
+        nowEpochSeconds: 1_800_000_000,
+        nowMs: 1_800_000_000_000,
+        getProjectedIdentities: vi.fn(async () => identities),
+      });
+      results.push(await handleSlackWebhook(deps as never));
+      callCount++;
+    }
+
+    expect(callCount).toBe(35);
+    expect(results.some((r) => r.status === 429)).toBe(true);
+    expect(results.filter((r) => r.status === 200).length).toBeLessThan(35);
+
+    resetSlackRateLimitState();
+  });
 });

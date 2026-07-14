@@ -56,6 +56,7 @@ export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx:
     rawBody: input.rawBody,
     headers: input.headers as SlackWebhookHeaders,
     nowEpochSeconds: Math.floor(Date.now() / 1000),
+    nowMs: Date.now(),
     async getProjectedIdentities() {
       const state = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
       return projectSlackPluginConfig(state.identities);

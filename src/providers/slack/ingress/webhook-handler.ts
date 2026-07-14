@@ -1,19 +1,16 @@
 import { verifySlackSignature } from "./signature.js";
 import { routeSlackEventToAgent } from "./routing.js";
+import { isWithinSlackRateLimit } from "./rate-limit.js";
 import type { SlackAgentIdentity } from "../config.js";
 
-// Minimal, pre-verification-safe shape extraction. Parsing JSON to read a
-// handful of top-level string fields does not execute any code and does not
-// trust the content semantically — it only recovers the (team_id, api_app_id)
-// pair needed to look up *which* per-agent Slack app signing secret to verify
-// the signature against, since each Paperclip agent has its own separate
-// Slack app/signing secret (openwiki/domain/slack-provider-design.md §1) and
-// this MVP exposes one shared ingress endpoint rather than a distinct URL per
-// agent. No field read here is acted upon, persisted, or dispatched until the
-// HMAC signature over the *raw, untouched* body has been verified below —
-// that is the "before parsing" boundary the acceptance criteria protect:
-// never trust event content, never resolve credentials, never dispatch to
-// agent business logic ahead of signature verification.
+// Body shape read AFTER signature verification has already succeeded (see
+// `handleSlackWebhook` below). `JSON.parse` of the raw body is never invoked
+// until the raw-body HMAC-SHA256 signature (constant-time compare, 5-minute
+// window) has matched at least one currently configured agent's Slack
+// signing secret — that is the "verify before parse/trust" boundary the
+// acceptance criteria protect. Only per-team/app routing (which of the
+// verified identities this specific event belongs to) happens after parsing;
+// authentication itself never depends on parsed content.
 interface RawSlackEnvelopeFields {
   readonly type?: string;
   readonly challenge?: string;
@@ -57,6 +54,12 @@ export interface HandleSlackWebhookDeps {
   // Injected for deterministic tests; production callers pass
   // `Math.floor(Date.now() / 1000)`.
   readonly nowEpochSeconds: number;
+  // Optional millisecond clock for the rate limiter (independent precision
+  // from `nowEpochSeconds`, which is seconds-granularity and used only for
+  // signature/timestamp verification). Falls back to
+  // `nowEpochSeconds * 1000` when omitted; production callers pass
+  // `Date.now()`.
+  readonly nowMs?: number;
   getProjectedIdentities(): Promise<Record<string, SlackAgentIdentity>>;
   resolveSigningSecret(agentId: string): Promise<string>;
   shouldProcessEvent(agentId: string, eventId: string): Promise<boolean>;
@@ -69,7 +72,7 @@ export interface HandleSlackWebhookDeps {
 }
 
 export interface SlackWebhookResponse {
-  readonly status: 200 | 400 | 401;
+  readonly status: 200 | 400 | 401 | 429;
   readonly body: unknown;
 }
 
@@ -78,7 +81,8 @@ export interface SlackWebhookResponse {
  * DRO-975's acceptance criteria:
  *  - route by (api_app_id, team_id) to exactly one agent; ambiguity fails closed
  *  - verify the HMAC-SHA256 request signature (constant-time compare) and the
- *    5-minute timestamp window before any event is dispatched
+ *    5-minute timestamp window before any event is dispatched — and before
+ *    any JSON.parse of the body happens at all, for every delivery kind
  *  - deduplicate retried event_ids so Paperclip work never runs twice for the
  *    same delivery
  *  - never log or return the signing secret / any token
@@ -88,7 +92,8 @@ export interface SlackWebhookResponse {
  * duplicate event_id) so Slack's own retry policy does not kick in for
  * conditions that are not transient failures. Genuine authentication
  * failures (bad/missing signature, stale timestamp) return 401. A body that
- * cannot be parsed as JSON at all returns 400.
+ * cannot be parsed as JSON at all returns 400. A per-team request-rate
+ * excess (see rate-limit.ts) returns 429.
  *
  * Non-goals / deliberately deferred for this MVP (not silent gaps — see
  * openwiki/domain/slack-provisioning-decision.md and
@@ -100,16 +105,70 @@ export interface SlackWebhookResponse {
  *    bot may act in) — MVP relies on Slack's own channel membership/scope
  *    boundary (bot can only see/act in channels it's invited to), same
  *    posture as the GitHub provider; see slack-provider-mvp.md §8.
- *  - A dedicated inbound rate limiter for this webhook path. TODO: no
- *    per-agent or per-team rate limiting is implemented on this ingress
- *    endpoint today; if abusive/duplicate traffic volume becomes a concern,
- *    add a lightweight in-memory (best-effort, non-distributed) limiter here.
- *    Flagged for a follow-up rather than added speculatively/untested in
- *    this pass.
+ *  - A distributed/cross-process inbound rate limiter. A best-effort,
+ *    in-memory, per-process, per-team fixed-window limiter is implemented
+ *    (see rate-limit.ts); a multi-instance deployment's effective per-team
+ *    ceiling is `limit * instanceCount` since counters are not shared across
+ *    processes. Flagged for a follow-up if a distributed limiter becomes
+ *    necessary, not left fully unimplemented.
  */
 export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<SlackWebhookResponse> {
   const { rawBody, headers, nowEpochSeconds, logger } = deps;
 
+  // Verify the raw-body HMAC-SHA256 signature (constant-time compare,
+  // 5-minute replay window) BEFORE any JSON.parse of the body happens, for
+  // every kind of delivery — not just the url_verification handshake. There
+  // is no per-request team_id/api_app_id to pick a single candidate secret
+  // ahead of parsing (that would itself require trusting parsed content), so
+  // every currently configured agent's signing secret is tried as a
+  // candidate; the request is authenticated the moment any one matches. This
+  // closes the gap where a routed agentId (previously read from the parsed
+  // body first) was used to pick "the" secret to check against — that order
+  // let an attacker's unparsed-but-well-formed JSON pick which secret
+  // authenticated it. Now authentication never depends on parsed content at
+  // all.
+  const identities = await deps.getProjectedIdentities();
+  const agentIds = Object.keys(identities);
+
+  if (agentIds.length === 0) {
+    logger.warn("Slack webhook: rejected — no configured identities to verify against");
+    return { status: 401, body: { error: "unauthorized" } };
+  }
+
+  const timestampHeader = readHeader(headers, "x-slack-request-timestamp");
+  const signatureHeader = readHeader(headers, "x-slack-signature");
+
+  const matchedAgentIds: string[] = [];
+  for (const agentId of agentIds) {
+    let candidateSecret: string;
+    try {
+      candidateSecret = await deps.resolveSigningSecret(agentId);
+    } catch {
+      // Resolution failure for one configured agent should not block
+      // checking the rest — just skip this candidate.
+      continue;
+    }
+
+    const candidateResult = verifySlackSignature({
+      signingSecret: candidateSecret,
+      rawBody,
+      timestampHeader,
+      signatureHeader,
+      nowEpochSeconds,
+    });
+
+    if (candidateResult.ok) {
+      matchedAgentIds.push(agentId);
+    }
+  }
+
+  if (matchedAgentIds.length === 0) {
+    logger.warn("Slack webhook: signature verification failed — no configured identity matched");
+    return { status: 401, body: { error: "unauthorized" } };
+  }
+
+  // Only now, with the request already authenticated against at least one
+  // configured agent's secret, is it safe to parse and act on the body.
   const envelope = parseEnvelope(rawBody);
   if (!envelope) {
     logger.warn("Slack webhook: unparseable request body");
@@ -117,61 +176,28 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
   }
 
   // Slack's one-time Events API "Request URL" verification handshake carries
-  // no team_id/api_app_id (only token/challenge/type), so the normal
-  // per-team/app routing cannot pick a single signing secret to check it
-  // against. That is NOT a license to skip verification: unsigned
-  // url_verification requests must still be rejected (401), never trusted.
-  // Instead, verify the raw-body HMAC (constant-time, 5-minute window)
-  // against *every currently configured agent's* Slack signing secret and
-  // accept if it matches any one of them — the handshake is legitimately
-  // asking "does some signing secret I hold match this request?" and any
-  // configured identity answering yes is sufficient proof this request
-  // originated from a Slack app whose secret this Paperclip instance holds.
-  // If no identities are configured yet, fail closed (401) rather than
-  // accept an unsigned/unverifiable handshake.
+  // no team_id/api_app_id (only token/challenge/type), so there is no
+  // per-team/app routing to further narrow down — the fact that the
+  // signature already matched one of the configured agents' secrets above is
+  // itself sufficient proof this request originated from a Slack app whose
+  // secret this Paperclip instance holds.
   if (envelope.type === "url_verification" && typeof envelope.challenge === "string") {
-    const identities = await deps.getProjectedIdentities();
-    const agentIds = Object.keys(identities);
-
-    if (agentIds.length === 0) {
-      logger.warn("Slack webhook: url_verification rejected — no configured identities to verify against");
-      return { status: 401, body: { error: "unauthorized" } };
-    }
-
-    const timestampHeader = readHeader(headers, "x-slack-request-timestamp");
-    const signatureHeader = readHeader(headers, "x-slack-signature");
-
-    for (const agentId of agentIds) {
-      let candidateSecret: string;
-      try {
-        candidateSecret = await deps.resolveSigningSecret(agentId);
-      } catch {
-        // Resolution failure for one configured agent should not block
-        // checking the rest — just skip this candidate.
-        continue;
-      }
-
-      const candidateResult = verifySlackSignature({
-        signingSecret: candidateSecret,
-        rawBody,
-        timestampHeader,
-        signatureHeader,
-        nowEpochSeconds,
-      });
-
-      if (candidateResult.ok) {
-        return { status: 200, body: { challenge: envelope.challenge } };
-      }
-    }
-
-    logger.warn("Slack webhook: url_verification rejected — signature did not match any configured identity");
-    return { status: 401, body: { error: "unauthorized" } };
+    return { status: 200, body: { challenge: envelope.challenge } };
   }
 
   const teamId = typeof envelope.team_id === "string" ? envelope.team_id : "";
   const appId = typeof envelope.api_app_id === "string" ? envelope.api_app_id : "";
 
-  const identities = await deps.getProjectedIdentities();
+  // Rate-limit per Slack team, after authentication but before routing/
+  // dispatch — bounds worst-case per-process work from a single
+  // flooding/misbehaving team. Best-effort/in-memory (see rate-limit.ts);
+  // not a substitute for a distributed limiter, but closes the "genuinely
+  // unimplemented" gap flagged in review rather than leaving it a TODO.
+  if (teamId && !isWithinSlackRateLimit(teamId, deps.nowMs ?? nowEpochSeconds * 1000)) {
+    logger.warn("Slack webhook: rate limit exceeded", { teamId });
+    return { status: 429, body: { error: "rate limited" } };
+  }
+
   const routeResult = routeSlackEventToAgent(identities, { appId, teamId });
   if (!routeResult.ok) {
     // Fail closed on ambiguity/no-match, but still ack — this is not a
@@ -184,30 +210,17 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
 
   const { agentId } = routeResult;
 
-  let signingSecret: string;
-  try {
-    signingSecret = await deps.resolveSigningSecret(agentId);
-  } catch (error) {
-    logger.error("Slack webhook: signing secret resolution failed", {
+  // Defense in depth: the request has already been authenticated against
+  // *some* configured agent's secret, but the event must also be routed to
+  // an agent whose own secret is the one that actually matched — otherwise
+  // agent A's valid signature could be replayed to trigger agent B's routed
+  // event (a cross-agent confused-deputy risk when more than one Slack
+  // identity is configured). Fail closed if the routed agent isn't among the
+  // agents whose secret verified this specific request.
+  if (!matchedAgentIds.includes(agentId)) {
+    logger.warn("Slack webhook: routed agent's signing secret did not match this request's signature", {
       agentId,
-      reason: error instanceof Error ? error.message : String(error),
     });
-    return { status: 401, body: { error: "unauthorized" } };
-  }
-
-  const signatureResult = verifySlackSignature({
-    signingSecret,
-    rawBody,
-    timestampHeader: readHeader(headers, "x-slack-request-timestamp"),
-    signatureHeader: readHeader(headers, "x-slack-signature"),
-    nowEpochSeconds,
-  });
-
-  if (!signatureResult.ok) {
-    // Never include the reason's underlying secret/token — verifySlackSignature
-    // never puts either in its error message, but assert the discipline here
-    // too via the response shape (a fixed, generic body, not the raw error).
-    logger.warn("Slack webhook: signature verification failed", { agentId });
     return { status: 401, body: { error: "unauthorized" } };
   }
 

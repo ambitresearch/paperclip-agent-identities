@@ -15,3 +15,10 @@ export const ALL_PROVIDERS: readonly IdentityProvider[] = [githubProvider, examp
 export function createProviderRegistry(): ProviderRegistry {
   return buildProviderRegistry([...ALL_PROVIDERS]);
 }
+
+// The Settings-UI adapter registry lives in a separate composition root
+// (./settings-index.js), NOT re-exported from here: this module imports the
+// concrete server-side IdentityProvider implementations above (which touch
+// `node:crypto`/filesystem via app-manifest/credentials modules), so anything
+// importing from here is unsafe for the client-side Settings UI bundle. See
+// settings-index.ts for the UI-safe equivalent SettingsPage.tsx consumes.

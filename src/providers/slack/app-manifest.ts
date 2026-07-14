@@ -393,6 +393,7 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       teamId,
       appId,
       botUserId,
+      botTokenSecretId,
       ...(defaultChannel ? { defaultChannel } : {}),
       status: "saved",
     };

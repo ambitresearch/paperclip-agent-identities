@@ -103,6 +103,7 @@ describe("Slack manifest-assisted app setup actions", () => {
       teamId: "T0123ABCD",
       appId: "A0123ABCD",
       botUserId: "U0123ABCD",
+      botTokenSecretId: FAKE_SECRET_ID,
       defaultChannel: "C0123ABCD",
       status: "saved",
     });

@@ -73,6 +73,18 @@ export interface ProviderSettingsUIAdapter<
   useCredentialStep(input: THookInput): THookResult;
   /** Renders this provider's credential-step fieldset JSX, given the hook's result. */
   readonly CredentialStep: ComponentType<{ state: THookResult; config: TConfig }>;
+  /**
+   * Optional per-provider recovery-guidance copy for the removal confirmation
+   * dialog (see SettingsPage.tsx's `handleDelete`). This lets each provider
+   * explain what deleting an identity does and does not do (e.g. Slack's
+   * install metadata is only unlinked, not the Slack App/bot token itself)
+   * without SettingsPage special-casing `provider === "slack"` -- it falls
+   * back to generic copy when a provider doesn't implement this. Deliberately
+   * takes only the minimal structural fields shared across every
+   * `BotIdentitySettingsEntry` variant, not a provider-specific config type,
+   * since removal is decided from the identities list row, not the wizard.
+   */
+  getRemovalConfirmation?(entry: { label: string; agentId: string; provider: string }): string;
 }
 
 // Each provider's UI adapter is generic over its own config/hook-result/

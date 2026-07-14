@@ -94,6 +94,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const createSlackAppManifest = usePluginAction("create-slack-app-manifest");
   const getSlackAppManifestFlow = usePluginAction("get-slack-app-manifest-flow");
   const saveSlackInstallMetadata = usePluginAction("save-slack-install-metadata");
+  // Credential-free identity self-check tool (DRO-972) invoked the same way
+  // as the plugin actions above -- `ctx.tools.register` handlers are called
+  // through the same `usePluginAction`-style bridge as `ctx.actions.register`
+  // handlers from the client's perspective, so no separate hook is needed.
+  const slackBotWhoami = usePluginAction("slack_bot_whoami");
 
   const [formState, setFormState] = useState<IdentityFormState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -168,6 +173,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     createSlackAppManifest,
     getSlackAppManifestFlow,
     saveSlackInstallMetadata,
+    slackBotWhoami,
   });
 
   const githubUIState = providerSettingsUIRegistry.get(GITHUB_IDENTITY_PROVIDER_ID)!.useCredentialStep({
@@ -392,7 +398,15 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   }
 
   async function handleDelete(entry: BotIdentitySettingsEntry) {
-    const confirmed = window.confirm(`Delete agent identity mapping for ${entry.label}?`);
+    // Per-provider recovery-guidance copy is composed through the UI
+    // registry's optional getRemovalConfirmation (see
+    // provider-settings-ui-contract.ts) rather than a `provider === "slack"`
+    // branch here; providers that don't implement it fall back to this
+    // generic message.
+    const confirmationMessage =
+      providerSettingsUIRegistry.get(entry.provider)?.getRemovalConfirmation?.(entry) ??
+      `Delete agent identity mapping for ${entry.label}?`;
+    const confirmed = window.confirm(confirmationMessage);
     if (!confirmed) return;
     setDeletingAgentId(entry.agentId);
     setSaveError(null);

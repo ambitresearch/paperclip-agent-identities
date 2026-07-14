@@ -644,4 +644,7 @@ export const githubSettingsUIAdapter: ProviderSettingsUIAdapter<GitHubSettingsUI
   providerId: GITHUB_IDENTITY_PROVIDER_ID,
   useCredentialStep: useGitHubCredentialStep,
   CredentialStep: GitHubCredentialStep,
+  getRemovalConfirmation(entry) {
+    return `Delete agent identity mapping for ${entry.label}? This clears the saved GitHub App binding for this agent; the GitHub App itself and its installation are not deleted, only unlinked from this agent. You can reconnect it (or install a different GitHub App) by editing this identity again.`;
+  },
 };

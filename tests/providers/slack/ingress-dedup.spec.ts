@@ -47,4 +47,24 @@ describe("shouldProcessSlackEvent", () => {
     await shouldProcessSlackEvent(state, "agent-1", "Ev0123ABC");
     expect(state.set).toHaveBeenCalledTimes(1);
   });
+
+  // Documents the residual concurrency caveat called out in dedup.ts: the SDK
+  // (`@paperclipai/plugin-sdk` PluginStateClient) exposes only get/set/delete,
+  // no compare-and-set. This test asserts the *intended*, achievable
+  // behavior — sequential calls are fully deduplicated — while making
+  // explicit (via this comment, mirroring the one in dedup.ts) that two
+  // truly concurrent deliveries of the same event_id that both call get()
+  // before either set() lands could both observe "not seen" and both
+  // proceed. That race is a known SDK limitation, not something this
+  // function can close on its own, and is not exercised here because doing
+  // so would require faking a race in the state client rather than testing
+  // this module's real behavior.
+  it("fully deduplicates sequential (non-concurrent) calls, which is the guarantee this SDK allows", async () => {
+    const state = makeState();
+    const results: boolean[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      results.push(await shouldProcessSlackEvent(state, "agent-1", "Ev-seq"));
+    }
+    expect(results).toEqual([true, false, false, false, false]);
+  });
 });

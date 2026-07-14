@@ -44,22 +44,89 @@ function makeDeps(overrides: Partial<Parameters<typeof handleSlackWebhook>[0]> =
 }
 
 describe("handleSlackWebhook", () => {
-  it("responds to Slack's URL verification handshake without checking routing/dedup", async () => {
+  it("responds to Slack's correctly-signed URL verification handshake, checked against a configured identity's secret", async () => {
     const rawBody = JSON.stringify({ type: "url_verification", challenge: "abc123", token: "x" });
     const timestamp = "1800000000";
     const deps = makeDeps({
       rawBody,
       headers: baseHeaders(timestamp, rawBody),
       nowEpochSeconds: 1_800_000_000,
-      resolveSigningSecret: vi.fn(async () => {
-        throw new Error("should not be called for url_verification before routing");
-      }),
     });
 
     const result = await handleSlackWebhook(deps as never);
 
     expect(result.status).toBe(200);
     expect(result.body).toEqual({ challenge: "abc123" });
+  });
+
+  it("rejects an unsigned URL verification handshake (401), never echoing the challenge unverified", async () => {
+    const rawBody = JSON.stringify({ type: "url_verification", challenge: "abc123", token: "x" });
+    const deps = makeDeps({
+      rawBody,
+      headers: {},
+      nowEpochSeconds: 1_800_000_000,
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(401);
+    expect(JSON.stringify(result.body)).not.toContain("abc123");
+  });
+
+  it("rejects a URL verification handshake signed with a secret that matches none of the configured identities", async () => {
+    const rawBody = JSON.stringify({ type: "url_verification", challenge: "abc123", token: "x" });
+    const timestamp = "1800000000";
+    const base = `v0:${timestamp}:${rawBody}`;
+    const wrongSignature = `v0=${createHmac("sha256", "some-other-secret").update(base, "utf8").digest("hex")}`;
+    const deps = makeDeps({
+      rawBody,
+      headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": wrongSignature },
+      nowEpochSeconds: 1_800_000_000,
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(401);
+  });
+
+  it("accepts a correctly-signed URL verification handshake when it matches the second of several configured identities", async () => {
+    const rawBody = JSON.stringify({ type: "url_verification", challenge: "xyz789", token: "x" });
+    const timestamp = "1800000000";
+    const OTHER_SECRET = "another-agents-signing-secret";
+    const base = `v0:${timestamp}:${rawBody}`;
+    const signature = `v0=${createHmac("sha256", OTHER_SECRET).update(base, "utf8").digest("hex")}`;
+
+    const identities: Record<string, SlackAgentIdentity> = {
+      "agent-1": { label: "Agent 1", teamId: "T111", appId: "A111", botUserId: "U111" },
+      "agent-2": { label: "Agent 2", teamId: "T222", appId: "A222", botUserId: "U222" },
+    };
+    const deps = makeDeps({
+      rawBody,
+      headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature },
+      nowEpochSeconds: 1_800_000_000,
+      getProjectedIdentities: vi.fn(async () => identities),
+      resolveSigningSecret: vi.fn(async (agentId: string) => (agentId === "agent-2" ? OTHER_SECRET : SIGNING_SECRET)),
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ challenge: "xyz789" });
+  });
+
+  it("fails closed (401) on a URL verification handshake when no identities are configured yet", async () => {
+    const rawBody = JSON.stringify({ type: "url_verification", challenge: "abc123", token: "x" });
+    const timestamp = "1800000000";
+    const deps = makeDeps({
+      rawBody,
+      headers: baseHeaders(timestamp, rawBody),
+      nowEpochSeconds: 1_800_000_000,
+      getProjectedIdentities: vi.fn(async () => ({})),
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(401);
   });
 
   it("rejects a request with an invalid signature before parsing routes anything further", async () => {

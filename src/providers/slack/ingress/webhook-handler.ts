@@ -89,6 +89,23 @@ export interface SlackWebhookResponse {
  * conditions that are not transient failures. Genuine authentication
  * failures (bad/missing signature, stale timestamp) return 401. A body that
  * cannot be parsed as JSON at all returns 400.
+ *
+ * Non-goals / deliberately deferred for this MVP (not silent gaps — see
+ * openwiki/domain/slack-provisioning-decision.md and
+ * openwiki/domain/slack-provider-mvp.md §8/§10 for the accepted rationale):
+ *  - Socket Mode as an inbound transport. HTTP Events API (this handler) is
+ *    the only/default transport for the MVP; Socket Mode is documented as an
+ *    operator opt-in-only future option, not required here.
+ *  - Channel-level authorization policy (e.g. an allow-list of channels a
+ *    bot may act in) — MVP relies on Slack's own channel membership/scope
+ *    boundary (bot can only see/act in channels it's invited to), same
+ *    posture as the GitHub provider; see slack-provider-mvp.md §8.
+ *  - A dedicated inbound rate limiter for this webhook path. TODO: no
+ *    per-agent or per-team rate limiting is implemented on this ingress
+ *    endpoint today; if abusive/duplicate traffic volume becomes a concern,
+ *    add a lightweight in-memory (best-effort, non-distributed) limiter here.
+ *    Flagged for a follow-up rather than added speculatively/untested in
+ *    this pass.
  */
 export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<SlackWebhookResponse> {
   const { rawBody, headers, nowEpochSeconds, logger } = deps;
@@ -99,14 +116,56 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
     return { status: 400, body: { error: "invalid request body" } };
   }
 
-  // Slack's one-time Events API "Request URL" verification handshake: no
-  // team/app-scoped credential exists to check yet during initial setup, and
-  // echoing the challenge mutates no state and dispatches nothing. Exempting
-  // this exact envelope shape from signature verification is a deliberate,
-  // narrow allowance (documented here, not silent) — every other envelope
-  // type is verified below before anything is trusted.
+  // Slack's one-time Events API "Request URL" verification handshake carries
+  // no team_id/api_app_id (only token/challenge/type), so the normal
+  // per-team/app routing cannot pick a single signing secret to check it
+  // against. That is NOT a license to skip verification: unsigned
+  // url_verification requests must still be rejected (401), never trusted.
+  // Instead, verify the raw-body HMAC (constant-time, 5-minute window)
+  // against *every currently configured agent's* Slack signing secret and
+  // accept if it matches any one of them — the handshake is legitimately
+  // asking "does some signing secret I hold match this request?" and any
+  // configured identity answering yes is sufficient proof this request
+  // originated from a Slack app whose secret this Paperclip instance holds.
+  // If no identities are configured yet, fail closed (401) rather than
+  // accept an unsigned/unverifiable handshake.
   if (envelope.type === "url_verification" && typeof envelope.challenge === "string") {
-    return { status: 200, body: { challenge: envelope.challenge } };
+    const identities = await deps.getProjectedIdentities();
+    const agentIds = Object.keys(identities);
+
+    if (agentIds.length === 0) {
+      logger.warn("Slack webhook: url_verification rejected — no configured identities to verify against");
+      return { status: 401, body: { error: "unauthorized" } };
+    }
+
+    const timestampHeader = readHeader(headers, "x-slack-request-timestamp");
+    const signatureHeader = readHeader(headers, "x-slack-signature");
+
+    for (const agentId of agentIds) {
+      let candidateSecret: string;
+      try {
+        candidateSecret = await deps.resolveSigningSecret(agentId);
+      } catch {
+        // Resolution failure for one configured agent should not block
+        // checking the rest — just skip this candidate.
+        continue;
+      }
+
+      const candidateResult = verifySlackSignature({
+        signingSecret: candidateSecret,
+        rawBody,
+        timestampHeader,
+        signatureHeader,
+        nowEpochSeconds,
+      });
+
+      if (candidateResult.ok) {
+        return { status: 200, body: { challenge: envelope.challenge } };
+      }
+    }
+
+    logger.warn("Slack webhook: url_verification rejected — signature did not match any configured identity");
+    return { status: 401, body: { error: "unauthorized" } };
   }
 
   const teamId = typeof envelope.team_id === "string" ? envelope.team_id : "";

@@ -16,6 +16,9 @@ import {
   SLACK_MESSAGE_BLOCKS_MAX_SERIALIZED_LENGTH
 } from "../../../shared/slack-bot-post-message-tool.js";
 
+// threadTs is optional: when present, the message is posted as a threaded
+// reply to that parent message timestamp (Slack's `thread_ts`). When absent,
+// the message is posted as a top-level message.
 export interface SlackPostMessageParams {
   channel: string;
   text: string;

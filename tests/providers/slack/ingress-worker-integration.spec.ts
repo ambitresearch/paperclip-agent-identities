@@ -161,4 +161,69 @@ describe("Slack Events API ingress — manifest + worker wiring", () => {
 
     expect(invokeSpy).not.toHaveBeenCalled();
   });
+
+  it("releases the dedup claim when agent invocation fails, so a Slack retry of the same event_id can succeed later", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
+    harness.seed({
+      companies: [{ id: "company-1", name: "Acme" } as never],
+      agents: [{ id: "agent-1", companyId: "company-1", name: "Agent One", status: "idle" } as never],
+    });
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: BOT_IDENTITY_SETTINGS_VERSION,
+      identities: {
+        "agent-1:slack": {
+          provider: "slack",
+          id: "agent-1:slack",
+          agentId: "agent-1",
+          label: "Agent One",
+          slack: { teamId: "T111", appId: "A111", botUserId: "U111" },
+        },
+      },
+    });
+    await upsertCredentialSidecarIdentity("agent-1", "slack", {
+      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000010", signingSecretId: SIGNING_SECRET_ID },
+    });
+
+    await plugin.definition.setup(harness.ctx);
+
+    const signingSecret = `resolved:${SIGNING_SECRET_ID}`;
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-retry-after-failure",
+      event: { type: "app_mention", text: "hello" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = sign(signingSecret, timestamp, rawBody);
+
+    // First delivery: agent invocation fails.
+    const invokeSpy = vi
+      .spyOn(harness.ctx.agents, "invoke")
+      .mockRejectedValueOnce(new Error("agent runtime unavailable"));
+
+    await plugin.definition.onWebhook?.({
+      endpointKey: "slack-events",
+      headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature },
+      rawBody,
+      requestId: "req-fail-1",
+    });
+
+    expect(invokeSpy).toHaveBeenCalledTimes(1);
+
+    // Slack redelivers the identical event_id (its own retry policy for a
+    // failed/slow ack). Because the failed first attempt released its dedup
+    // claim, this second delivery must be allowed to actually invoke the
+    // agent again -- not be silently dropped as a duplicate.
+    invokeSpy.mockResolvedValueOnce(undefined as never);
+    await plugin.definition.onWebhook?.({
+      endpointKey: "slack-events",
+      headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature },
+      rawBody,
+      requestId: "req-fail-2",
+    });
+
+    expect(invokeSpy).toHaveBeenCalledTimes(2);
+  });
 });

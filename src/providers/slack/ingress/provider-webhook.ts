@@ -6,7 +6,7 @@ import { resolveAgentIdentity } from "../../../core/agent-identity.js";
 import { resolveSlackSigningSecret } from "../credentials.js";
 import { projectSlackPluginConfig, type SlackAgentIdentity } from "../config.js";
 import { handleSlackWebhook, type SlackWebhookHeaders } from "./webhook-handler.js";
-import { shouldProcessSlackEvent } from "./dedup.js";
+import { shouldProcessSlackEvent, releaseSlackEventClaim } from "./dedup.js";
 
 // Stable endpoint key this Slack ingress route registers under. Referenced
 // by `slackWebhookDeclarations` (manifest composition) and
@@ -78,6 +78,14 @@ export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx:
       // inside handleSlackWebhook) by invoking/waking it with the event
       // payload. No secret/token is included in this prompt payload -- only
       // the already-public team/app/event-type shape.
+      //
+      // `shouldProcessEvent` above already recorded this (agentId, eventId)
+      // pair as "seen" so a fast Slack retry landing before this dispatch
+      // finishes doesn't double up. But that means a failure here -- unable
+      // to resolve the routed agent's company, or the invoke call itself
+      // failing -- must release that claim; otherwise the failure is
+      // permanent (a genuine Slack retry of the same event_id would be
+      // silently deduplicated forever and this work would never run).
       const eventType =
         typeof dispatch.event === "object" && dispatch.event !== null && "type" in dispatch.event
           ? String((dispatch.event as { type?: unknown }).type)
@@ -87,6 +95,9 @@ export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx:
         ctx.logger.error("Slack webhook: could not resolve companyId for routed agent", {
           agentId: dispatch.agentId,
         });
+        if (dispatch.eventId) {
+          await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId);
+        }
         return;
       }
       await ctx.agents
@@ -94,11 +105,14 @@ export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx:
           prompt: `Slack event received (type: ${eventType}, team: ${dispatch.teamId}, app: ${dispatch.appId}).`,
           reason: "slack-inbound-event",
         })
-        .catch((error) => {
+        .catch(async (error) => {
           ctx.logger.error("Slack webhook: failed to invoke routed agent", {
             agentId: dispatch.agentId,
             reason: error instanceof Error ? error.message : String(error),
           });
+          if (dispatch.eventId) {
+            await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId);
+          }
         });
     },
     logger: ctx.logger,

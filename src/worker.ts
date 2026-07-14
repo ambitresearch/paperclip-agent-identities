@@ -30,11 +30,18 @@ import {
   type CredentialSidecarIdentity,
   type GitHubBotIdentityCredentialSidecar
 } from "./credential-sidecar.js";
-
 export type { BotIdentityConfig } from "./shared/types.js";
+
+// `onWebhook` (a sibling PluginDefinition hook, not nested inside `setup`) needs
+// the same `PluginContext` `setup` received to read state/secrets/agents. The
+// SDK does not pass `ctx` to `onWebhook` directly, so it is captured here —
+// safe because the host guarantees `setup` completes (and thus this is
+// assigned) before any webhook can be routed to this worker process.
+let capturedCtx: PluginContext | undefined;
 
 const plugin = definePlugin({
   async setup(ctx) {
+    capturedCtx = ctx;
     ctx.events.on("issue.created", async (event) => {
       const issueId = event.entityId ?? "unknown";
       await ctx.state.set({ scopeKind: "issue", scopeId: issueId, stateKey: "seen" }, true);
@@ -151,6 +158,27 @@ const plugin = definePlugin({
 
   async onHealth() {
     return { status: "ok", message: "Plugin worker is running" };
+  },
+
+  async onWebhook(input) {
+    if (!capturedCtx) {
+      // Should be unreachable in practice (see the `capturedCtx` comment
+      // above) — fail loud rather than silently drop a webhook delivery.
+      throw new Error("Webhook received before plugin setup completed");
+    }
+    const ctx = capturedCtx;
+
+    // Dispatch generically by matching `endpointKey` against every provider's
+    // declared webhook endpoints -- no provider-specific branch here. See
+    // `ProviderRegistry.webhooks()` / `IdentityProvider.handleWebhook`.
+    const registry = createProviderRegistry();
+    const matched = registry.webhooks().find(({ declaration }) => declaration.endpointKey === input.endpointKey);
+    if (!matched) {
+      ctx.logger.warn("Webhook received for unknown endpointKey", { endpointKey: input.endpointKey });
+      return;
+    }
+
+    await matched.provider.handleWebhook?.(input, ctx);
   }
 });
 

@@ -8,6 +8,7 @@ import { resolveSlackCredential } from "./credentials.js";
 import { contributeSlackAppManifestActions } from "./app-manifest.js";
 import { slackWhoamiToolSpec } from "./tools/whoami.js";
 import { slackManifestTools } from "./manifest-tools.js";
+import { slackWebhookDeclarations, handleSlackProviderWebhook } from "./ingress/provider-webhook.js";
 
 export const SLACK_PROVIDER_ID = "slack";
 
@@ -36,5 +37,12 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
   // dependency-blocked issues (DRO-973/974/975) and will be appended here.
   tools: [slackWhoamiToolSpec],
   contributeActions: contributeSlackAppManifestActions,
-  manifestTools: [...slackManifestTools]
+  manifestTools: [...slackManifestTools],
+  // HTTP Events API ingress (DRO-975): the design decision record
+  // (openwiki/domain/slack-provisioning-decision.md) selects HTTP Events API
+  // over Socket Mode as the default/only transport implemented here. Composed
+  // through the generic `webhooks`/`handleWebhook` provider-contract seam --
+  // no provider-specific branch in src/worker.ts or src/manifest.ts.
+  webhooks: slackWebhookDeclarations,
+  handleWebhook: handleSlackProviderWebhook
 };

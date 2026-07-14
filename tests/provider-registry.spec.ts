@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import { buildProviderRegistry } from "../src/core/provider-registry.js";
 import type { IdentityProvider } from "../src/core/provider-contract.js";
 
-function makeProvider(id: string, status: "enabled" | "coming-soon"): IdentityProvider {
+function makeProvider(
+  id: string,
+  status: "enabled" | "coming-soon",
+  extra: Partial<IdentityProvider> = {}
+): IdentityProvider {
   return {
     id,
     definition: { id, name: id, status, description: `${id} provider` },
@@ -11,7 +15,8 @@ function makeProvider(id: string, status: "enabled" | "coming-soon"): IdentityPr
     projectPluginConfig: (identities) => identities,
     resolveCredential: async () => ({ token: "x", secrets: [] }),
     tools: [],
-    manifestTools: []
+    manifestTools: [],
+    ...extra
   };
 }
 
@@ -37,5 +42,37 @@ describe("buildProviderRegistry", () => {
     expect(registry.get("github")).toBe(github);
     expect(registry.get("example")).toBe(example);
     expect(registry.get("nope")).toBeUndefined();
+  });
+
+  it("webhooks() returns an empty array when no provider declares any", () => {
+    const github = makeProvider("github", "enabled");
+    const registry = buildProviderRegistry([github]);
+    expect(registry.webhooks()).toEqual([]);
+  });
+
+  it("webhooks() collects declarations from any registered provider regardless of status", () => {
+    const github = makeProvider("github", "enabled");
+    const slack = makeProvider("slack", "coming-soon", {
+      webhooks: [{ endpointKey: "slack-events", displayName: "Slack Events API" }]
+    });
+    const registry = buildProviderRegistry([github, slack]);
+    const webhooks = registry.webhooks();
+    expect(webhooks).toHaveLength(1);
+    expect(webhooks[0].declaration.endpointKey).toBe("slack-events");
+    expect(webhooks[0].provider).toBe(slack);
+  });
+
+  it("webhooks() supports a provider declaring multiple endpoints", () => {
+    const slack = makeProvider("slack", "coming-soon", {
+      webhooks: [
+        { endpointKey: "slack-events", displayName: "Slack Events API" },
+        { endpointKey: "slack-interactivity", displayName: "Slack Interactivity" }
+      ]
+    });
+    const registry = buildProviderRegistry([slack]);
+    expect(registry.webhooks().map(({ declaration }) => declaration.endpointKey)).toEqual([
+      "slack-events",
+      "slack-interactivity"
+    ]);
   });
 });

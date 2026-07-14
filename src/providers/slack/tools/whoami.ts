@@ -19,11 +19,19 @@ import {
  * secret, or any other credential is touched. See
  * openwiki/domain/slack-provider-mvp.md for why the bot token/signing secret
  * never leave the credential sidecar.
+ *
+ * `live: true` composes this tool into the worker/manifest surface even
+ * though the Slack PROVIDER is still `status: "coming-soon"` (the
+ * message/reply/react tools that gate the provider to "enabled" haven't
+ * landed yet). See `ProviderRegistry.liveTools()` -- the generic seam that
+ * lets an individual tool opt in ahead of its provider, with no
+ * provider-specific branch in `src/worker.ts`/`src/manifest.ts`.
  */
 export const slackWhoamiToolSpec: ProviderToolSpec<SlackAgentIdentity, ResourceReference> = {
   name: slackBotWhoamiToolName,
   metadata: slackBotWhoamiToolMetadata,
   requiresCredential: false,
+  live: true,
   validateParams(_raw: unknown): ParamsValidation {
     return { ok: true, params: {} };
   },

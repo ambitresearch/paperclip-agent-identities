@@ -37,8 +37,14 @@ current save path can accept Slack unchanged.
 - Bot-token-based posting: send a message, reply in a thread, add/remove a
   reaction — the Slack analogues of GitHub's whoami / create-PR / push-branch
   trio.
-- An identity self-check tool (`slack_bot_whoami`) that calls `auth.test` and
-  returns team/user/bot identity metadata without ever returning the token.
+- A credential-free identity self-check tool (`slack_bot_whoami`, DRO-972)
+  that mirrors GitHub's local `github_bot_whoami`: it never resolves the bot
+  token and only echoes the already-validated, configured `SlackAgentIdentity`
+  fields (`label`, `teamId`, `appId`, `botUserId`, `hasDefaultChannel`) — no
+  `auth.test` call, no live-installation verification. (An earlier revision
+  of this design specified a credentialed, `auth.test`-backed whoami; the
+  implementation shipped credential-free instead, and this doc has been
+  corrected to match.)
 - Settings-UI-assisted app creation via Slack's documented [app
   manifest](https://api.slack.com/reference/manifests) flow: copy the generated
   JSON, choose **From an app manifest** in Slack, and paste it for review.
@@ -256,7 +262,7 @@ in §9.
 
 | Tool | `requiresCredential` | Resource ref | Slack API calls |
 | --- | --- | --- | --- |
-| `slack_bot_whoami` | `true` | none | resolver: `auth.test`; result reused |
+| `slack_bot_whoami` | `false` | none | none (echoes configured identity fields) |
 | `slack_bot_post_message` | `true` | `SlackChannelRef` | resolver: `auth.test`; perform: `chat.postMessage` |
 | `slack_bot_post_reply` | `true` | `SlackMessageRef` | resolver: `auth.test`; perform: `chat.postMessage` with `thread_ts` |
 | `slack_bot_add_reaction` | `true` | `SlackMessageRef` | resolver: `auth.test`; perform: `reactions.add` |
@@ -272,15 +278,18 @@ reaction removal; a request to remove another identity's reaction fails
 closed with Slack's `no_reaction`/permission error rather than silently
 succeeding or removing the wrong reaction.
 
-`slack_bot_whoami` is intentionally credentialed even though GitHub's local
-whoami is not: Slack `auth.test` requires the bot token and verifies the live
-installation rather than merely echoing configured metadata. A missing or
-unresolvable secret therefore fails in the shared credential step before the
-tool result. The resolver's required `auth.test` binding check is the whoami
-tool's live verification; after it succeeds, `perform` returns the verified
-`teamId`/`botUserId` plus configured `label`/`appId` without making a duplicate
-API call. Slack's `auth.test` does not return `appId`, so the tool must not claim
-that field was independently verified.
+`slack_bot_whoami` is credential-free, matching GitHub's local whoami rather
+than diverging from it as an earlier revision of this doc claimed: it has
+`requiresCredential: false`, never resolves the bot token, and never calls
+`auth.test`. `perform` only reads the already-validated, public
+`SlackAgentIdentity` fields (`label`, `teamId`, `appId`, `botUserId`,
+`hasDefaultChannel`) that were set at save-config time — there is no live
+Slack API call and no independent verification of `teamId`/`botUserId`
+against the actual installation. A stale or misconfigured identity is
+therefore not caught by this tool; only the four credentialed tools
+(`slack_bot_post_message`/`slack_bot_post_reply`/`slack_bot_add_reaction`/
+`slack_bot_remove_reaction`), whose credential-resolution step requires
+`auth.test` to succeed, catch a broken token/installation.
 
 `manifestTools` (the manifest-facing fragments consumed by the composed
 manifest, see `src/providers/github/manifest-tools.ts` for the pattern)

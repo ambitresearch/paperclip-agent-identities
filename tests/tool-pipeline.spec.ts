@@ -118,6 +118,32 @@ describe("tool pipeline security ordering", () => {
     expect(calls).not.toContain("perform");
   });
 
+  it("denies a wrong-team resource ref before credentials are ever resolved (fails closed at the pipeline level, not just per-provider)", async () => {
+    const { calls, tool } = buildFixture({
+      spec: {
+        resolveResourceRef: async ({ params }) => {
+          calls.push("resolveResourceRef");
+          const repo = (params as { repo?: unknown }).repo;
+          // Simulate a cross-team/cross-tenant resource ref: the ref itself
+          // resolves syntactically, but belongs to a different team than the
+          // agent's identity, so it must be denied before any credential work.
+          if (repo === "other-team/repo") {
+            return { ok: false, error: "denied: team mismatch" };
+          }
+          return repo === "ok/repo"
+            ? { ok: true, ref: { kind: "repo", fullName: "ok/repo" } }
+            : { ok: false, error: `Invalid repo: ${String(repo)}` };
+        },
+      },
+    });
+    const result = await tool.handler({ repo: "other-team/repo" }, { agentId: "agent-1" } as never);
+    expect(result).toEqual({ error: "denied: team mismatch" });
+    expect(calls).toEqual(["validateParams", "resolveIdentity", "resolveResourceRef"]);
+    expect(calls).not.toContain("resolveCredential");
+    expect(calls).not.toContain("perform");
+    expect(calls).not.toContain("redactSecrets");
+  });
+
   it("does not copy credential-resolution errors into activity metadata", async () => {
     const { activityLog, tool } = buildFixture({
       resolveCredential: async () => { throw new Error("SECRET-TOKEN"); },

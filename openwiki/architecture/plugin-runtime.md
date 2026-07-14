@@ -34,13 +34,14 @@ Important capabilities include:
 - `activity.log.write` for PR/push audit events
 - `project.workspaces.read` for mediated git push workspace resolution
 
-`/src/manifest.ts` sources its tool list from the provider registry rather than importing provider-specific tool definitions directly: `registry.enabled().flatMap((provider) => provider.manifestTools)`. Today the only *enabled* provider is GitHub, contributing:
+`/src/manifest.ts` sources its tool list from the provider registry rather than importing provider-specific tool definitions directly: it filters every provider's `manifestTools` down to the names present in `registry.liveTools()`. `liveTools()` is a provider-neutral gate distinct from `enabled()`: it returns every tool from a `toolsEnabled()` provider (`definition.toolsStatus ?? definition.status === "enabled"`), PLUS any individual tool a not-yet-`toolsEnabled()` provider marks `live: true` on its `ProviderToolSpec`. This lets a provider ship real, live tools before its full identity/settings-UI surface (`enabled()`) is ready, without adding a provider-specific branch to `/src/manifest.ts` or `/src/worker.ts` — `/src/worker.ts`'s tool-registration loop iterates the same `registry.liveTools()` list. Today `registry.liveTools()` contributes:
 
 - `github_bot_whoami`
 - `github_bot_create_pull_request`
 - `github_bot_push_branch`
+- `slack_bot_whoami` (DRO-972), `slack_bot_post_message` (DRO-973), and `slack_bot_add_reaction`/`slack_bot_remove_reaction` (DRO-974) — Slack is still `status: "coming-soon"` (hidden from the settings-page identity picker) but sets `toolsStatus: "enabled"`, so its whole current tool surface registers in the live worker/manifest now
 
-Adding a new enabled provider (or new tools on an existing provider) changes what the registry returns and does not require touching `/src/manifest.ts`. "Enabled" is a provider-level gate (`definition.status === "enabled"`), but it is not the only way a tool reaches the manifest/worker: `registry.liveTools()` also includes any individual tool a still-`"coming-soon"` provider opts in via `ProviderToolSpec.live: true`. Slack's credential-free `slack_bot_whoami` (DRO-972, `src/providers/slack/tools/whoami.ts`) is marked `live: true` and is composed this way — it registers and appears in the manifest today even though the rest of the Slack provider's tool surface stays gated behind `enabled()`.
+Adding a new enabled provider, a new `toolsStatus: "enabled"` provider, or new tools on an existing provider changes what the registry returns and does not require touching `/src/manifest.ts` or `/src/worker.ts`. "Enabled" is a provider-level gate (`definition.status === "enabled"`), but it is not the only way a tool reaches the manifest/worker: `registry.liveTools()` also includes any individual tool a still-`"coming-soon"` provider opts in via `ProviderToolSpec.live: true`, independent of a provider-wide `toolsStatus` flip.
 
 It also declares two UI slots:
 

@@ -12,19 +12,31 @@ export interface ResolvedSlackBotToken {
 
 export interface VerifiedSlackTokenIdentity {
   readonly teamId: string;
+  /** The Slack user ID the token authenticates as (bot or human user). */
+  readonly userId: string;
+  /**
+   * Present only for bot tokens. A human/user OAuth token whose team_id and
+   * user_id happen to match a bot identity still omits `bot_id` — that gap
+   * is exactly what lets `resolveSlackBotToken` reject it below (see T2 in
+   * openwiki/domain/slack-provider-design.md).
+   */
+  readonly botId: string | undefined;
 }
 
 export type VerifySlackToken = (token: string) => Promise<VerifiedSlackTokenIdentity>;
 
 /**
  * Verifies a resolved Slack bot token against Slack's own `auth.test`
- * endpoint, returning the *real* workspace (team) that token authenticates
- * as. Defaults to a live network call — callers resolving credentials in
- * tests should inject a fake/mock implementation instead (see
- * `resolveSlackBotToken`'s `verifyToken` parameter).
+ * endpoint, returning the *real* workspace (team), user, and bot identity
+ * that token authenticates as. Defaults to a live network call — callers
+ * resolving credentials in tests should inject a fake/mock implementation
+ * instead (see `resolveSlackBotToken`'s `verifyToken` parameter).
  *
  * Fails closed: any non-2xx response, a `{ ok: false }` body, or a missing
- * `team_id` throws rather than returning a fallback identity.
+ * `team_id`/`user_id` throws rather than returning a fallback identity. Does
+ * NOT itself require `bot_id` — that check is threat-model-specific (reject
+ * user tokens) and lives in `resolveSlackBotToken`, so this function stays a
+ * faithful, unopinionated mirror of `auth.test`.
  */
 export async function verifySlackToken(
   token: string,
@@ -35,13 +47,30 @@ export async function verifySlackToken(
     headers: { Authorization: `Bearer ${token}` },
   });
 
-  const body = await response.json().catch(() => ({})) as { ok?: unknown; team_id?: unknown; error?: unknown };
-  if (!response.ok || body.ok !== true || typeof body.team_id !== "string" || !body.team_id.trim()) {
+  const body = await response.json().catch(() => ({})) as {
+    ok?: unknown;
+    team_id?: unknown;
+    user_id?: unknown;
+    bot_id?: unknown;
+    error?: unknown;
+  };
+  if (
+    !response.ok ||
+    body.ok !== true ||
+    typeof body.team_id !== "string" ||
+    !body.team_id.trim() ||
+    typeof body.user_id !== "string" ||
+    !body.user_id.trim()
+  ) {
     const reason = typeof body.error === "string" ? body.error : `HTTP ${response.status}`;
     throw new Error(`Slack token verification failed: ${reason}`);
   }
 
-  return { teamId: body.team_id };
+  return {
+    teamId: body.team_id,
+    userId: body.user_id,
+    botId: typeof body.bot_id === "string" && body.bot_id.trim() ? body.bot_id : undefined,
+  };
 }
 
 /**
@@ -62,8 +91,11 @@ export async function verifySlackToken(
  * outbound/tool credential resolution). See `resolveSlackSigningSecret`.
  *
  * Fails closed (throws) on: missing sidecar entry, malformed sidecar entry,
- * a rejected secret resolution (e.g. a revoked token), or a resolved token
- * whose real workspace does not match the configured identity — there is no
+ * a rejected secret resolution (e.g. a revoked token), a resolved token
+ * whose real workspace does not match the configured identity, a resolved
+ * token whose real user does not match the identity's configured
+ * `botUserId`, or a resolved token missing `bot_id` (i.e. a human/user OAuth
+ * token, even one whose team_id/user_id happen to match) — there is no
  * operator-identity or other fallback path. Error messages never include the
  * resolved token value.
  */
@@ -92,11 +124,25 @@ export async function resolveSlackBotToken(
   // propagate untouched, with no fallback.
   const token = await resolveSecret(botTokenSecretId);
 
-  // Verify the resolved token's real workspace before ever returning it. No
-  // operator-identity fallback on mismatch, matching this file's other
-  // fail-closed paths.
+  // Verify the resolved token's real workspace, user, and bot-ness before
+  // ever returning it. No operator-identity fallback on any mismatch,
+  // matching this file's other fail-closed paths. This is the T2 mitigation
+  // from openwiki/domain/slack-provider-design.md: a same-workspace user
+  // token, or another bot's token, must never satisfy this check.
   const verifiedIdentity = await verifyToken(token);
   assertSlackWorkspaceMatch(resolvedIdentity.identity, verifiedIdentity.teamId);
+
+  if (!verifiedIdentity.botId) {
+    throw new Error(
+      `Slack credential rejected: resolved token has no bot_id (not a bot token) for agent '${resolvedIdentity.agentId}'.`
+    );
+  }
+
+  if (verifiedIdentity.userId !== resolvedIdentity.identity.botUserId) {
+    throw new Error(
+      `Slack credential rejected: resolved token's user does not match the configured botUserId for agent '${resolvedIdentity.agentId}'.`
+    );
+  }
 
   return { token, secrets: [token] };
 }

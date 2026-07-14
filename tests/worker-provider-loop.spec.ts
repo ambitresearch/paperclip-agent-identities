@@ -23,10 +23,12 @@ describe("worker provider registration", () => {
       "slack_bot_add_reaction",
       "slack_bot_remove_reaction",
     ]);
-    // `example` is coming-soon and does NOT set `toolsLive`, so its tool
-    // stays out of the live registration loop even though its `tools` array
-    // is non-empty — the same invariant `.enabled()` used to guarantee for
-    // every coming-soon provider, now scoped by `toolsLive` instead.
+    // `example` is coming-soon (`toolsStatus` falls back to `status`) and
+    // none of its tool specs set `live: true`, so its tool stays out of the
+    // live registration loop even though its `tools` array is non-empty —
+    // the same invariant `.enabled()` used to guarantee for every
+    // coming-soon provider, now scoped by `toolsEnabled()`/`liveTools()`
+    // (provider-contract.ts's `toolsStatus` + per-tool `live`) instead.
     expect(register.mock.calls.map(([name]) => name)).not.toContain("example_whoami");
   });
 

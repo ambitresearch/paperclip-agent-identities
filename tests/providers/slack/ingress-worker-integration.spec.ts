@@ -152,12 +152,14 @@ describe("Slack Events API ingress — manifest + worker wiring", () => {
     const rawBody = JSON.stringify(payload);
     const timestamp = String(Math.floor(Date.now() / 1000));
 
-    await plugin.definition.onWebhook?.({
-      endpointKey: "slack-events",
-      headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": "v0=deadbeef" },
-      rawBody,
-      requestId: "req-3",
-    });
+    await expect(
+      plugin.definition.onWebhook?.({
+        endpointKey: "slack-events",
+        headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": "v0=deadbeef" },
+        rawBody,
+        requestId: "req-3",
+      })
+    ).rejects.toThrow(/rejected with status/i);
 
     expect(invokeSpy).not.toHaveBeenCalled();
   });
@@ -203,12 +205,14 @@ describe("Slack Events API ingress — manifest + worker wiring", () => {
       .spyOn(harness.ctx.agents, "invoke")
       .mockRejectedValueOnce(new Error("agent runtime unavailable"));
 
-    await plugin.definition.onWebhook?.({
-      endpointKey: "slack-events",
-      headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature },
-      rawBody,
-      requestId: "req-fail-1",
-    });
+    await expect(
+      plugin.definition.onWebhook?.({
+        endpointKey: "slack-events",
+        headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature },
+        rawBody,
+        requestId: "req-fail-1",
+      })
+    ).rejects.toThrow("agent runtime unavailable");
 
     expect(invokeSpy).toHaveBeenCalledTimes(1);
 

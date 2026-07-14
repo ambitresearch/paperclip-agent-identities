@@ -99,7 +99,13 @@ export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx:
         if (dispatch.eventId) {
           await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId);
         }
-        return;
+        // Re-throw (rather than swallow) so the caller -- and ultimately the
+        // host's `handleWebhook` RPC caller -- observes this as a failed
+        // delivery instead of a silent 200. See the module-level note below:
+        // until the SDK/host webhook response contract exists (DRO-1074),
+        // rejecting here is the only signal this plugin can give the host
+        // that the delivery should not be acknowledged as a success.
+        throw new Error(`Slack webhook: unable to resolve companyId for agent ${dispatch.agentId}`);
       }
       await ctx.agents
         .invoke(dispatch.agentId, companyId, {
@@ -114,10 +120,34 @@ export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx:
           if (dispatch.eventId) {
             await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId);
           }
+          // Propagate the failure -- see comment above. Swallowing this
+          // previously meant a failed agent invocation was acknowledged to
+          // Slack as a successful delivery, so a real outage/bug never got
+          // Slack's own retry(s), only whatever this plugin's own dedup
+          // claim release allowed on the next *organic* delivery.
+          throw error instanceof Error ? error : new Error(String(error));
         });
     },
     logger: ctx.logger,
   });
 
   ctx.logger.info("Slack webhook processed", { status: result.status });
+
+  // NOTE (tracked as DRO-1074, filed against the platform host/SDK, not this
+  // plugin): `PluginWebhookInput`'s `onWebhook` RPC is typed `Promise<void>`
+  // and the host's `/api/plugins/:pluginId/webhooks/:endpointKey` route
+  // always responds `200 { deliveryId, status: "success" }` to the external
+  // caller once this RPC resolves -- it does not forward `result.status`/
+  // `result.body` computed above. That means Slack's `url_verification`
+  // challenge, 401 (bad signature), and 429 (rate limited) responses
+  // computed by `handleSlackWebhook` cannot reach Slack over HTTP today.
+  // This function still computes and logs the correct `{status, body}` (and,
+  // per the onAgentEvent failure paths above, throws instead of resolving on
+  // handoff failure, so the host's RPC-call try/catch at least surfaces a 502
+  // instead of a fabricated success) so that once DRO-1074 lands an extended
+  // `handleWebhook` result contract, wiring the real HTTP status/body through
+  // is a mechanical change confined to this function's return value.
+  if (result.status >= 400) {
+    throw new Error(`Slack webhook: rejected with status ${result.status}`);
+  }
 }

@@ -118,25 +118,27 @@ describe("handleSlackProviderWebhook", () => {
     );
   });
 
-  it("does not invoke any agent when the signature is invalid", async () => {
+  it("does not invoke any agent when the signature is invalid, and rejects instead of acking success", async () => {
     const payload = { type: "event_callback", team_id: "T111", api_app_id: "A111", event: {} };
     const rawBody = JSON.stringify(payload);
     const ctx = makeCtx();
 
-    await handleSlackProviderWebhook(
-      {
-        endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
-        headers: { "x-slack-request-timestamp": "1800000000", "x-slack-signature": "v0=deadbeef" },
-        rawBody,
-        requestId: "req-2",
-      },
-      ctx as never
-    );
+    await expect(
+      handleSlackProviderWebhook(
+        {
+          endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+          headers: { "x-slack-request-timestamp": "1800000000", "x-slack-signature": "v0=deadbeef" },
+          rawBody,
+          requestId: "req-2",
+        },
+        ctx as never
+      )
+    ).rejects.toThrow(/rejected with status/i);
 
     expect(ctx.agents.invoke).not.toHaveBeenCalled();
   });
 
-  it("logs an error and does not invoke the agent when its companyId cannot be resolved", async () => {
+  it("logs an error, does not invoke the agent, and rejects (so the host does not ack success) when companyId cannot be resolved", async () => {
     const payload = {
       type: "event_callback",
       team_id: "T111",
@@ -154,15 +156,17 @@ describe("handleSlackProviderWebhook", () => {
       },
     });
 
-    await handleSlackProviderWebhook(
-      {
-        endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
-        headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": sign(timestamp, rawBody) },
-        rawBody,
-        requestId: "req-3",
-      },
-      ctx as never
-    );
+    await expect(
+      handleSlackProviderWebhook(
+        {
+          endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+          headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": sign(timestamp, rawBody) },
+          rawBody,
+          requestId: "req-3",
+        },
+        ctx as never
+      )
+    ).rejects.toThrow(/companyId/i);
 
     expect(ctx.agents.invoke).not.toHaveBeenCalled();
     expect(ctx.logger.error).toHaveBeenCalledWith(
@@ -171,14 +175,56 @@ describe("handleSlackProviderWebhook", () => {
     );
   });
 
+  it("rejects (so the host does not ack success) when the routed agent invocation itself fails", async () => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev003",
+      event: { type: "app_mention" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const invokeError = new Error("agent runtime unavailable");
+    const ctx = makeCtx({
+      agents: {
+        list: vi.fn(async () => []),
+        get: vi.fn(async (agentId: string, companyId: string) =>
+          agentId === "agent-1" && companyId === "co-1" ? { id: agentId, companyId } : null
+        ),
+        invoke: vi.fn(async () => {
+          throw invokeError;
+        }),
+      },
+    });
+
+    await expect(
+      handleSlackProviderWebhook(
+        {
+          endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+          headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": sign(timestamp, rawBody) },
+          rawBody,
+          requestId: "req-5",
+        },
+        ctx as never
+      )
+    ).rejects.toThrow(invokeError);
+
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      "Slack webhook: failed to invoke routed agent",
+      expect.objectContaining({ agentId: "agent-1", reason: invokeError.message })
+    );
+  });
+
   it("responds to the url_verification handshake without touching agents/companies", async () => {
     const rawBody = JSON.stringify({ type: "url_verification", challenge: "chal-1" });
+    const timestamp = String(Math.floor(Date.now() / 1000));
     const ctx = makeCtx();
 
     await handleSlackProviderWebhook(
       {
         endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
-        headers: {},
+        headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": sign(timestamp, rawBody) },
         rawBody,
         requestId: "req-4",
       },

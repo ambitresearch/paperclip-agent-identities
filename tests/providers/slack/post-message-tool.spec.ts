@@ -107,6 +107,137 @@ describe("slackBotPostMessageToolSpec.validateParams", () => {
     });
     expect(res.ok).toBe(false);
   });
+
+  it("rejects a section block with text over Slack's 3000-character limit", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: "a".repeat(3001) } }]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects a section block with more than 10 fields", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [
+        {
+          type: "section",
+          fields: Array.from({ length: 11 }, () => ({ type: "mrkdwn", text: "x" }))
+        }
+      ]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects a section field over the 2000-character limit", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [{ type: "section", fields: [{ type: "mrkdwn", text: "a".repeat(2001) }] }]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects a header block with text over the 150-character limit", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [{ type: "header", text: { type: "plain_text", text: "a".repeat(151) } }]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects a context block with more than 10 elements", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [
+        {
+          type: "context",
+          elements: Array.from({ length: 11 }, () => ({ type: "mrkdwn", text: "x" }))
+        }
+      ]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects a context element text over the 2000-character limit", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [{ type: "context", elements: [{ type: "mrkdwn", text: "a".repeat(2001) }] }]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects an image block with image_url over Slack's 3000-character limit", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [
+        {
+          type: "image",
+          image_url: `https://example.com/${"a".repeat(3000)}`,
+          alt_text: "alt"
+        }
+      ]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects an image block with alt_text over the 2000-character limit", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [{ type: "image", image_url: "https://example.com/x.png", alt_text: "a".repeat(2001) }]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects an image title over the 150-character header limit", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [
+        {
+          type: "image",
+          image_url: "https://example.com/x.png",
+          alt_text: "alt",
+          title: { type: "plain_text", text: "a".repeat(151) }
+        }
+      ]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("rejects a block_id over the 255-character limit", () => {
+    const res = slackBotPostMessageToolSpec.validateParams({
+      channel: "C0123456789",
+      text: "hello",
+      blocks: [{ type: "divider", block_id: "a".repeat(256) }]
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it("accepts blocks at the exact boundary of each Slack limit", () => {
+    const boundaryBlocks = [
+      { type: "section", text: { type: "mrkdwn", text: "a".repeat(3000) } },
+      { type: "section", fields: Array.from({ length: 10 }, () => ({ type: "mrkdwn", text: "a".repeat(2000) })) },
+      { type: "header", text: { type: "plain_text", text: "a".repeat(150) } },
+      { type: "context", elements: Array.from({ length: 10 }, () => ({ type: "mrkdwn", text: "a".repeat(2000) })) },
+      { type: "image", image_url: "https://example.com/x.png", alt_text: "a".repeat(2000), block_id: "a".repeat(255) }
+    ];
+    for (const block of boundaryBlocks) {
+      const res = slackBotPostMessageToolSpec.validateParams({
+        channel: "C0123456789",
+        text: "hello",
+        blocks: [block]
+      });
+      expect(res.ok).toBe(true);
+    }
+  });
 });
 
 describe("slackBotPostMessageToolSpec.resolveResourceRef", () => {

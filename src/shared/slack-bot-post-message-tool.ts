@@ -26,11 +26,38 @@ export const SLACK_MESSAGE_BLOCKS_MAX_SERIALIZED_LENGTH = 40000;
 // block types (actions/input/buttons/selects) are intentionally NOT
 // representable here — this is a one-way message-posting tool with no
 // callback path for block_actions payloads.
+// Slack-documented per-field limits (see
+// https://api.slack.com/reference/block-kit/blocks and
+// https://api.slack.com/reference/block-kit/composition-objects#text),
+// mirrored 1:1 in the runtime allowlist (`isSafeBlock` et al. in
+// src/providers/slack/tools/post-message.ts).
+const SLACK_BLOCK_ID_MAX_LENGTH = 255;
+const SLACK_SECTION_TEXT_MAX_LENGTH = 3000;
+const SLACK_SECTION_FIELDS_MAX_COUNT = 10;
+const SLACK_FIELD_TEXT_MAX_LENGTH = 2000;
+const SLACK_HEADER_TEXT_MAX_LENGTH = 150;
+const SLACK_CONTEXT_ELEMENTS_MAX_COUNT = 10;
+const SLACK_IMAGE_URL_MAX_LENGTH = 3000;
+const SLACK_IMAGE_ALT_TEXT_MAX_LENGTH = 2000;
+
+const SLACK_BLOCK_ID_SCHEMA = { type: "string", maxLength: SLACK_BLOCK_ID_MAX_LENGTH } as const;
+
 const SLACK_TEXT_OBJECT_SCHEMA = {
   type: "object",
   properties: {
     type: { type: "string", enum: ["mrkdwn", "plain_text"] },
-    text: { type: "string", minLength: 1 },
+    text: { type: "string", minLength: 1, maxLength: SLACK_SECTION_TEXT_MAX_LENGTH },
+    emoji: { type: "boolean" }
+  },
+  required: ["type", "text"],
+  additionalProperties: false
+} as const;
+
+const SLACK_FIELD_TEXT_OBJECT_SCHEMA = {
+  type: "object",
+  properties: {
+    type: { type: "string", enum: ["mrkdwn", "plain_text"] },
+    text: { type: "string", minLength: 1, maxLength: SLACK_FIELD_TEXT_MAX_LENGTH },
     emoji: { type: "boolean" }
   },
   required: ["type", "text"],
@@ -41,7 +68,7 @@ const SLACK_PLAIN_TEXT_OBJECT_SCHEMA = {
   type: "object",
   properties: {
     type: { type: "string", enum: ["plain_text"] },
-    text: { type: "string", minLength: 1 },
+    text: { type: "string", minLength: 1, maxLength: SLACK_HEADER_TEXT_MAX_LENGTH },
     emoji: { type: "boolean" }
   },
   required: ["type", "text"],
@@ -52,8 +79,8 @@ const SLACK_IMAGE_ELEMENT_SCHEMA = {
   type: "object",
   properties: {
     type: { type: "string", enum: ["image"] },
-    image_url: { type: "string", minLength: 1 },
-    alt_text: { type: "string", minLength: 1 }
+    image_url: { type: "string", minLength: 1, maxLength: SLACK_IMAGE_URL_MAX_LENGTH },
+    alt_text: { type: "string", minLength: 1, maxLength: SLACK_IMAGE_ALT_TEXT_MAX_LENGTH }
   },
   required: ["type", "image_url", "alt_text"],
   additionalProperties: false
@@ -67,7 +94,7 @@ const SLACK_BLOCK_ITEM_SCHEMA = {
   oneOf: [
     {
       type: "object",
-      properties: { type: { const: "divider" }, block_id: { type: "string" } },
+      properties: { type: { const: "divider" }, block_id: SLACK_BLOCK_ID_SCHEMA },
       required: ["type"],
       additionalProperties: false
     },
@@ -75,9 +102,14 @@ const SLACK_BLOCK_ITEM_SCHEMA = {
       type: "object",
       properties: {
         type: { const: "section" },
-        block_id: { type: "string" },
+        block_id: SLACK_BLOCK_ID_SCHEMA,
         text: SLACK_TEXT_OBJECT_SCHEMA,
-        fields: { type: "array", minItems: 1, items: SLACK_TEXT_OBJECT_SCHEMA }
+        fields: {
+          type: "array",
+          minItems: 1,
+          maxItems: SLACK_SECTION_FIELDS_MAX_COUNT,
+          items: SLACK_FIELD_TEXT_OBJECT_SCHEMA
+        }
       },
       required: ["type"],
       additionalProperties: false
@@ -86,7 +118,7 @@ const SLACK_BLOCK_ITEM_SCHEMA = {
       type: "object",
       properties: {
         type: { const: "header" },
-        block_id: { type: "string" },
+        block_id: SLACK_BLOCK_ID_SCHEMA,
         text: SLACK_PLAIN_TEXT_OBJECT_SCHEMA
       },
       required: ["type", "text"],
@@ -96,11 +128,12 @@ const SLACK_BLOCK_ITEM_SCHEMA = {
       type: "object",
       properties: {
         type: { const: "context" },
-        block_id: { type: "string" },
+        block_id: SLACK_BLOCK_ID_SCHEMA,
         elements: {
           type: "array",
           minItems: 1,
-          items: { oneOf: [SLACK_TEXT_OBJECT_SCHEMA, SLACK_IMAGE_ELEMENT_SCHEMA] }
+          maxItems: SLACK_CONTEXT_ELEMENTS_MAX_COUNT,
+          items: { oneOf: [SLACK_FIELD_TEXT_OBJECT_SCHEMA, SLACK_IMAGE_ELEMENT_SCHEMA] }
         }
       },
       required: ["type", "elements"],
@@ -110,9 +143,9 @@ const SLACK_BLOCK_ITEM_SCHEMA = {
       type: "object",
       properties: {
         type: { const: "image" },
-        block_id: { type: "string" },
-        image_url: { type: "string", minLength: 1 },
-        alt_text: { type: "string", minLength: 1 },
+        block_id: SLACK_BLOCK_ID_SCHEMA,
+        image_url: { type: "string", minLength: 1, maxLength: SLACK_IMAGE_URL_MAX_LENGTH },
+        alt_text: { type: "string", minLength: 1, maxLength: SLACK_IMAGE_ALT_TEXT_MAX_LENGTH },
         title: SLACK_PLAIN_TEXT_OBJECT_SCHEMA
       },
       required: ["type", "image_url", "alt_text"],

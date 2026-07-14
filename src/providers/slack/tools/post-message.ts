@@ -54,15 +54,51 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-// A Slack "text object" (used by section/header/context): { type: "mrkdwn" |
-// "plain_text", text: string, emoji?: boolean } — no other fields.
-function isSafeTextObject(value: unknown): boolean {
+// Slack-documented per-field limits for the block types this tool allows.
+// See https://api.slack.com/reference/block-kit/blocks and
+// https://api.slack.com/reference/block-kit/composition-objects#text —
+// mirrored in src/shared/slack-bot-post-message-tool.ts's JSON schema.
+const SLACK_SECTION_TEXT_MAX_LENGTH = 3000;
+const SLACK_SECTION_FIELDS_MAX_COUNT = 10;
+const SLACK_FIELD_TEXT_MAX_LENGTH = 2000;
+const SLACK_HEADER_TEXT_MAX_LENGTH = 150;
+const SLACK_CONTEXT_ELEMENTS_MAX_COUNT = 10;
+const SLACK_IMAGE_URL_MAX_LENGTH = 3000;
+const SLACK_IMAGE_ALT_TEXT_MAX_LENGTH = 2000;
+const SLACK_BLOCK_ID_MAX_LENGTH = 255;
+
+function isSafeBlockId(value: unknown): boolean {
+  if (value === undefined) return true;
+  return typeof value === "string" && value.length <= SLACK_BLOCK_ID_MAX_LENGTH;
+}
+
+// A Slack "text object" (used by section/context): { type: "mrkdwn" |
+// "plain_text", text: string, emoji?: boolean } — no other fields. Slack
+// caps section/field text objects at 3000/2000 characters respectively; the
+// caller passes the appropriate max for the context it's validating.
+function isSafeTextObject(value: unknown, maxLength: number): boolean {
   if (!isPlainObject(value)) return false;
   const allowedKeys = new Set(["type", "text", "emoji"]);
   const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
   if (unknownKeys.length > 0) return false;
   if (value.type !== "mrkdwn" && value.type !== "plain_text") return false;
   if (!isNonEmptyString(value.text)) return false;
+  if ((value.text as string).length > maxLength) return false;
+  if (value.emoji !== undefined && typeof value.emoji !== "boolean") return false;
+  return true;
+}
+
+// A Slack "plain_text"-only text object, used by header text and image
+// title — Slack rejects "mrkdwn" in these positions even though the
+// composition object shape is otherwise identical to a general text object.
+function isSafePlainTextObject(value: unknown, maxLength: number): boolean {
+  if (!isPlainObject(value)) return false;
+  const allowedKeys = new Set(["type", "text", "emoji"]);
+  const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
+  if (unknownKeys.length > 0) return false;
+  if (value.type !== "plain_text") return false;
+  if (!isNonEmptyString(value.text)) return false;
+  if ((value.text as string).length > maxLength) return false;
   if (value.emoji !== undefined && typeof value.emoji !== "boolean") return false;
   return true;
 }
@@ -77,7 +113,9 @@ function isSafeImageElement(value: unknown): boolean {
   if (unknownKeys.length > 0) return false;
   if (value.type !== "image") return false;
   if (!isNonEmptyString(value.image_url)) return false;
+  if ((value.image_url as string).length > SLACK_IMAGE_URL_MAX_LENGTH) return false;
   if (!isNonEmptyString(value.alt_text)) return false;
+  if ((value.alt_text as string).length > SLACK_IMAGE_ALT_TEXT_MAX_LENGTH) return false;
   return true;
 }
 
@@ -90,21 +128,22 @@ function isSafeBlock(value: unknown): boolean {
       const allowedKeys = new Set(["type", "block_id"]);
       const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
       if (unknownKeys.length > 0) return false;
-      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
+      if (!isSafeBlockId(value.block_id)) return false;
       return true;
     }
     case "section": {
       const allowedKeys = new Set(["type", "block_id", "text", "fields"]);
       const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
       if (unknownKeys.length > 0) return false;
-      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
+      if (!isSafeBlockId(value.block_id)) return false;
       const hasText = value.text !== undefined;
       const hasFields = value.fields !== undefined;
       if (!hasText && !hasFields) return false;
-      if (hasText && !isSafeTextObject(value.text)) return false;
+      if (hasText && !isSafeTextObject(value.text, SLACK_SECTION_TEXT_MAX_LENGTH)) return false;
       if (hasFields) {
         if (!Array.isArray(value.fields) || value.fields.length === 0) return false;
-        if (!value.fields.every((field) => isSafeTextObject(field))) return false;
+        if (value.fields.length > SLACK_SECTION_FIELDS_MAX_COUNT) return false;
+        if (!value.fields.every((field) => isSafeTextObject(field, SLACK_FIELD_TEXT_MAX_LENGTH))) return false;
       }
       return true;
     }
@@ -112,35 +151,38 @@ function isSafeBlock(value: unknown): boolean {
       const allowedKeys = new Set(["type", "block_id", "text"]);
       const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
       if (unknownKeys.length > 0) return false;
-      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
-      if (!isPlainObject(value.text)) return false;
-      // header text is always plain_text, per Slack's Block Kit spec.
-      const textObj = value.text as Record<string, unknown>;
-      const allowedTextKeys = new Set(["type", "text", "emoji"]);
-      const unknownTextKeys = Object.keys(textObj).filter((key) => !allowedTextKeys.has(key));
-      if (unknownTextKeys.length > 0) return false;
-      if (textObj.type !== "plain_text") return false;
-      if (!isNonEmptyString(textObj.text)) return false;
-      if (textObj.emoji !== undefined && typeof textObj.emoji !== "boolean") return false;
+      if (!isSafeBlockId(value.block_id)) return false;
+      // header text is always plain_text, per Slack's Block Kit spec, and
+      // capped at 150 characters.
+      if (!isSafePlainTextObject(value.text, SLACK_HEADER_TEXT_MAX_LENGTH)) return false;
       return true;
     }
     case "context": {
       const allowedKeys = new Set(["type", "block_id", "elements"]);
       const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
       if (unknownKeys.length > 0) return false;
-      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
+      if (!isSafeBlockId(value.block_id)) return false;
       if (!Array.isArray(value.elements) || value.elements.length === 0) return false;
-      if (!value.elements.every((el) => isSafeTextObject(el) || isSafeImageElement(el))) return false;
+      if (value.elements.length > SLACK_CONTEXT_ELEMENTS_MAX_COUNT) return false;
+      if (
+        !value.elements.every(
+          (el) => isSafeTextObject(el, SLACK_FIELD_TEXT_MAX_LENGTH) || isSafeImageElement(el)
+        )
+      )
+        return false;
       return true;
     }
     case "image": {
       const allowedKeys = new Set(["type", "block_id", "image_url", "alt_text", "title"]);
       const unknownKeys = Object.keys(value).filter((key) => !allowedKeys.has(key));
       if (unknownKeys.length > 0) return false;
-      if (value.block_id !== undefined && typeof value.block_id !== "string") return false;
+      if (!isSafeBlockId(value.block_id)) return false;
       if (!isNonEmptyString(value.image_url)) return false;
+      if ((value.image_url as string).length > SLACK_IMAGE_URL_MAX_LENGTH) return false;
       if (!isNonEmptyString(value.alt_text)) return false;
-      if (value.title !== undefined && !isSafeTextObject(value.title)) return false;
+      if ((value.alt_text as string).length > SLACK_IMAGE_ALT_TEXT_MAX_LENGTH) return false;
+      if (value.title !== undefined && !isSafePlainTextObject(value.title, SLACK_HEADER_TEXT_MAX_LENGTH))
+        return false;
       return true;
     }
     default:

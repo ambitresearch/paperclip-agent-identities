@@ -191,6 +191,18 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     toFormState,
   });
 
+  // Provider-agnostic selection of the active provider's credential-step hook
+  // state, component, and step id -- keyed off `config.provider` via the
+  // registries rather than an `=== SLACK/GITHUB` branch in the render path
+  // (findings #5/#10/#19). Both provider hooks must still be *called*
+  // unconditionally above (Rules of Hooks), but only the active provider's
+  // result is mounted.
+  const activeProviderId = config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID;
+  const activeProviderUIState = activeProviderId === SLACK_IDENTITY_PROVIDER_ID ? slackUIState : githubUIState;
+  const activeProviderUIAdapter = providerSettingsUIRegistry.get(activeProviderId);
+  const ActiveCredentialStep = activeProviderUIAdapter?.CredentialStep;
+  const activeProviderCredentialStepId = providerSettingsRegistry.get(activeProviderId).credentialStepId;
+
   const hasSavedAgentOutsideOptions = Boolean(
     config?.agentId && !agentOptions.some((agent) => agent.id === config.agentId)
   );
@@ -628,25 +640,18 @@ export function SettingsPage(props: PluginSettingsPageProps) {
           </>
           )}
 
-          {activeFormSection === "github" && config.provider === GITHUB_IDENTITY_PROVIDER_ID && (() => {
-            const GitHubCredentialStep = providerSettingsUIRegistry.get(GITHUB_IDENTITY_PROVIDER_ID)!.CredentialStep;
-            return (
-              <GitHubCredentialStep
-                state={githubUIState}
-                config={config as unknown as import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig}
-              />
-            );
-          })()}
-
-          {activeFormSection === "slack" && config.provider === SLACK_IDENTITY_PROVIDER_ID && (() => {
-            const SlackCredentialStep = providerSettingsUIRegistry.get(SLACK_IDENTITY_PROVIDER_ID)!.CredentialStep;
-            return (
-              <SlackCredentialStep
-                state={slackUIState}
-                config={config as unknown as import("../providers/slack/settings-adapter-ui.js").SlackSettingsUIFormConfig}
-              />
-            );
-          })()}
+          {/* The active provider's credential step is mounted entirely from
+              the UI registry -- the shared page no longer branches on provider
+              id strings here (findings #5/#10/#19). The current provider's
+              adapter decides which step id holds its credential fieldset
+              (`credentialStepId`), and we thread in that same provider's hook
+              state (already selected as `activeProviderUIState` above). */}
+          {activeFormSection === activeProviderCredentialStepId && ActiveCredentialStep && (
+            <ActiveCredentialStep
+              state={activeProviderUIState}
+              config={config as unknown as Record<string, string>}
+            />
+          )}
           {activeFormSection === "commit" && (
           <fieldset style={fieldsetStyle}>
             <legend style={legendStyle}>Commit identity (optional)</legend>

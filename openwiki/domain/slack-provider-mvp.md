@@ -414,5 +414,71 @@ mirroring the GitHub pattern) is now implemented as a provider-owned adapter in
 `src/providers/slack/settings-adapter-ui.tsx` (see `ProviderSettingsUIAdapter` in
 `src/core/provider-settings-ui-contract.ts`), giving operators an end-to-end create/install path
 for a Slack app from the UI. `slackProvider.definition.status` intentionally still stays
-`"coming-soon"` — that flag now gates strictly on the five Slack tools (DRO-973/974/975) landing,
-not on setup-UI availability, since `tools`/`manifestTools` stay empty until those issues land.
+`"coming-soon"` — that flag now gates strictly on the five Slack tools (DRO-972/973/974/975)
+landing, not on setup-UI availability; with DRO-972/973/974 now landed, only the lookup-channel
+tool (DRO-975) remains before `status` flips to `"enabled"`.
+
+## Implementation status (DRO-974: reaction tools)
+
+This slice implements the first two of the five Slack tools described in §4:
+`slack_bot_add_reaction` and `slack_bot_remove_reaction`
+(`src/providers/slack/tools/react.ts`), wired through `slackProvider.tools` in
+`src/providers/slack/index.ts` and `slackProvider.manifestTools` via the new
+`src/providers/slack/manifest-tools.ts` — no `if (provider === "slack")`
+branch was added to `src/worker.ts` or `src/manifest.ts`.
+
+- Both tools share one parameter schema
+  (`src/shared/slack-bot-reaction-tool-definition.ts`): `messageTs` (required,
+  `^[0-9]{10,}\.[0-9]{6}$`), `reaction` (required, emoji name without colons,
+  `^[a-z0-9_+-]+$`, 1-100 chars), and optional `channelId`/`teamId`. Unknown
+  fields are rejected. All of this is validated in `validateParams` — entirely
+  locally, before identity/resource-ref/credential resolution — per the
+  "validate emoji and timestamp locally" acceptance criterion.
+- `resolveResourceRef` resolves a `SlackChannelRef` via the existing
+  `resolveSlackChannelRef` helper (`src/providers/slack/channel-ref.ts`,
+  DRO-967/§9's cross-workspace guard): an explicit `channelId` wins, otherwise
+  the identity's configured `defaultChannel` is used; if neither exists,
+  resolution fails closed. A `teamId` param that doesn't match the identity's
+  own `teamId` is denied here — strictly before any credential is
+  resolved — satisfying "wrong-team references fail before credentials."
+- `perform` calls Slack's `reactions.add`/`reactions.remove` via
+  `ctx.http.fetch`, scoped to the `reactions:write` bot scope only (already
+  present in `SLACK_MVP_BOT_SCOPES`, `src/providers/slack/app-manifest.ts`).
+  Only `reactions.add`'s `already_reacted` is treated as a caller-idempotent
+  no-op (reports `action: "added"`), per the "duplicate reactions are
+  caller-idempotent and tested" acceptance criterion. `reactions.remove`'s
+  `no_reaction` is deliberately NOT treated as idempotent success: Slack
+  returns that same code both when the reaction is already absent AND when
+  the reaction belongs to a different user/bot, and `reactions.remove` can
+  only remove a reaction the calling bot itself added (see §6 above). Since
+  the tool cannot distinguish those two cases from the response alone,
+  reporting success either way would falsely claim a removal that may never
+  have happened — so `no_reaction` falls through to the generic error path
+  and fails closed with a `{ error }` result, per §6's documented Slack API
+  limitation. `channel_not_found` and other real Slack API errors also fail
+  closed the same way. The result never includes the token or a raw Slack
+  response body; the shared pipeline's redact step also strips the resolved
+  token/secrets from whatever `perform` returns. Network-level failures
+  (thrown before a response is received) are logged with a non-secret
+  classification only — the raw thrown error message is never logged, since
+  an HTTP adapter error can embed request details and the bot token is
+  already in the outgoing `Authorization` header by that point.
+- `slackProvider.definition.status` stays `"coming-soon"`: with
+  `slack_bot_whoami` (DRO-972/#59) and `slack_bot_post_message`/
+  `slack_bot_post_reply` (DRO-973/#60) now also landed alongside this
+  slice's two reaction tools, only `slack-lookup-channel` (DRO-975) remains
+  still-backlog, so the identity isn't surfaced as fully ready yet.
+  `slackProvider.definition.toolsStatus` is set to `"enabled"` independently
+  of `status`: this is the provider-neutral gate
+  `registry.toolsEnabled()`/`registry.liveTools()` use (consumed by
+  `src/worker.ts`'s registration loop and `src/manifest.ts`'s tool list)
+  instead of `.enabled()`, so all four already-implemented tools are
+  reachable now even though `status` hasn't flipped to `"enabled"`.
+- Test coverage: `tests/providers/slack/react-tool.spec.ts` — local
+  validation (valid/invalid messageTs, reaction, channelId, teamId, unknown
+  fields), resource-ref resolution (default-channel fallback, missing default
+  channel, wrong-team denial with no credential/API call attempted),
+  `perform` for both tools (success, idempotent no-op, real API error,
+  token-redaction on a thrown network error), and two full pipeline
+  round-trips through `createProviderTool` covering both the happy path and
+  the wrong-team-denies-before-credential path end-to-end.

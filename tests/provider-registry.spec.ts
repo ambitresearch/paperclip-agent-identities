@@ -1,16 +1,38 @@
 import { describe, expect, it } from "vitest";
 
 import { buildProviderRegistry } from "../src/core/provider-registry.js";
-import type { IdentityProvider } from "../src/core/provider-contract.js";
+import type { IdentityProvider, ProviderToolSpec } from "../src/core/provider-contract.js";
+import type { ResourceReference } from "../src/core/resource-reference.js";
 
-function makeProvider(id: string, status: "enabled" | "coming-soon"): IdentityProvider {
+function makeTool(name: string, live?: boolean): ProviderToolSpec<unknown, ResourceReference> {
+  return {
+    name,
+    metadata: {},
+    ...(live !== undefined ? { live } : {}),
+    validateParams: (raw: unknown) => ({ ok: true, params: raw }),
+    perform: async () => ({})
+  };
+}
+
+function makeProvider(
+  id: string,
+  status: "enabled" | "coming-soon",
+  toolsStatus?: "enabled" | "coming-soon",
+  tools: ReadonlyArray<ProviderToolSpec<unknown, ResourceReference>> = []
+): IdentityProvider {
   return {
     id,
-    definition: { id, name: id, status, description: `${id} provider` },
+    definition: {
+      id,
+      name: id,
+      status,
+      description: `${id} provider`,
+      ...(toolsStatus !== undefined ? { toolsStatus } : {})
+    },
     validateConfig: (raw: unknown) => raw,
     projectPluginConfig: (identities) => identities,
     resolveCredential: async () => ({ token: "x", secrets: [] }),
-    tools: [],
+    tools,
     manifestTools: []
   };
 }
@@ -28,6 +50,38 @@ describe("buildProviderRegistry", () => {
     const example = makeProvider("example", "coming-soon");
     const registry = buildProviderRegistry([github, example]);
     expect(registry.enabled().map((p) => p.id)).toEqual(["github"]);
+  });
+
+  it("toolsEnabled() falls back to status when toolsStatus is unset, and honors toolsStatus when set", () => {
+    const github = makeProvider("github", "enabled");
+    const example = makeProvider("example", "coming-soon");
+    const slack = makeProvider("slack", "coming-soon", "enabled");
+    const registry = buildProviderRegistry([github, example, slack]);
+    expect(registry.toolsEnabled().map((p) => p.id)).toEqual(["github", "slack"]);
+  });
+
+  it("liveTools() includes every tool from a toolsEnabled() provider, plus any individual tool marked live:true on an otherwise-dormant provider", () => {
+    const github = makeProvider("github", "enabled", undefined, [makeTool("github_bot_whoami")]);
+    const example = makeProvider("example", "coming-soon", undefined, [makeTool("example_whoami")]);
+    const slack = makeProvider("slack", "coming-soon", "enabled", [
+      makeTool("slack_bot_add_reaction"),
+      makeTool("slack_bot_remove_reaction")
+    ]);
+    const registry = buildProviderRegistry([github, example, slack]);
+    const liveNames = registry.liveTools().map(({ tool }) => tool.name);
+    expect(liveNames).toContain("github_bot_whoami");
+    expect(liveNames).toContain("slack_bot_add_reaction");
+    expect(liveNames).toContain("slack_bot_remove_reaction");
+    expect(liveNames).not.toContain("example_whoami");
+  });
+
+  it("liveTools() includes a tool marked live:true even on a coming-soon/not-toolsEnabled provider", () => {
+    const example = makeProvider("example", "coming-soon", undefined, [
+      makeTool("example_whoami", true)
+    ]);
+    const registry = buildProviderRegistry([example]);
+    const liveNames = registry.liveTools().map(({ tool }) => tool.name);
+    expect(liveNames).toContain("example_whoami");
   });
 
   it("get() resolves a provider by id, including coming-soon ones", () => {

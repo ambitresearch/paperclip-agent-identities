@@ -53,12 +53,8 @@ describe("shouldProcessSlackEvent", () => {
   // no compare-and-set. This test asserts the *intended*, achievable
   // behavior — sequential calls are fully deduplicated — while making
   // explicit (via this comment, mirroring the one in dedup.ts) that two
-  // truly concurrent deliveries of the same event_id that both call get()
-  // before either set() lands could both observe "not seen" and both
-  // proceed. That race is a known SDK limitation, not something this
-  // function can close on its own, and is not exercised here because doing
-  // so would require faking a race in the state client rather than testing
-  // this module's real behavior.
+  // truly concurrent deliveries of the same event_id in *separate worker
+  // processes* remain an open SDK limitation this module cannot close alone.
   it("fully deduplicates sequential (non-concurrent) calls, which is the guarantee this SDK allows", async () => {
     const state = makeState();
     const results: boolean[] = [];
@@ -66,5 +62,28 @@ describe("shouldProcessSlackEvent", () => {
       results.push(await shouldProcessSlackEvent(state, "agent-1", "Ev-seq"));
     }
     expect(results).toEqual([true, false, false, false, false]);
+  });
+
+  it("serializes truly concurrent calls for the same (agentId, eventId) pair within one process — only one caller proceeds", async () => {
+    // Regression test for the get-then-set race within a single worker
+    // process: fire two calls for the identical pair without awaiting
+    // between them (simulating two in-flight deliveries racing inside the
+    // same running worker) and assert exactly one is allowed to proceed.
+    const state = makeState();
+    const [first, second] = await Promise.all([
+      shouldProcessSlackEvent(state, "agent-1", "Ev-race"),
+      shouldProcessSlackEvent(state, "agent-1", "Ev-race"),
+    ]);
+
+    const proceedCount = [first, second].filter(Boolean).length;
+    expect(proceedCount).toBe(1);
+    expect(state.set).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a resolved in-flight claim leak into a later, independent call for the same pair", async () => {
+    const state = makeState();
+    await shouldProcessSlackEvent(state, "agent-1", "Ev0123ABC");
+    const result = await shouldProcessSlackEvent(state, "agent-1", "Ev0123ABC");
+    expect(result).toBe(false);
   });
 });

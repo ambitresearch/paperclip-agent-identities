@@ -175,7 +175,17 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     updateField: (field: string, value: string) => updateField(field as keyof IdentityFormState, value),
     refresh,
     deleteConfig,
-    patchFormState: (patch: (prev: import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig) => import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig) => setFormState((prev) => (prev ? (patch(prev as unknown as import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig) as unknown as IdentityFormState) : prev)),
+    // Unlike Slack's patchFormState (which only ever patches an already-open
+    // dialog), the GitHub OAuth callback effect can fire with the dialog
+    // closed (formState === null) -- the operator left the page entirely to
+    // authorize the GitHub App and is now landing back on a fresh page load.
+    // Falling back to a no-op there (as a plain `prev ? patch(prev) : prev`
+    // would) silently drops the restored manifest flow and the wizard never
+    // reopens. Construct a fresh base via `toFormState()` -- the same
+    // construction `startCreate` uses to open the dialog -- so the patch
+    // always has a form to apply to and the wizard reopens with the restored
+    // state.
+    patchFormState: (patch: (prev: import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig) => import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig) => setFormState((prev) => patch((prev ?? toFormState()) as unknown as import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig) as unknown as IdentityFormState),
     secretOptions,
     secretsLoading,
     secretsError,
@@ -198,6 +208,15 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   // unconditionally above (Rules of Hooks), but only the active provider's
   // result is mounted.
   const activeProviderId = config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID;
+  // Known deferral (flagged repeatedly in review, e.g. against #63/#74): this
+  // still branches on SLACK/GITHUB by name instead of having each hook result
+  // carried through the registry itself, because `useCredentialStep` must be
+  // called unconditionally for every provider (Rules of Hooks), and the
+  // registry as typed today (`AnyProviderSettingsUIAdapter`, see
+  // provider-settings-ui-contract.ts) has no place to stash the per-provider
+  // hook *results* alongside the adapters. Fully registry-driven mounting
+  // (no provider id branch at all) is left as follow-up scope, consistent
+  // with the same deferral noted in provider-settings-contract.ts.
   const activeProviderUIState = activeProviderId === SLACK_IDENTITY_PROVIDER_ID ? slackUIState : githubUIState;
   const activeProviderUIAdapter = providerSettingsUIRegistry.get(activeProviderId);
   const ActiveCredentialStep = activeProviderUIAdapter?.CredentialStep;

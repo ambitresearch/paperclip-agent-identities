@@ -307,6 +307,123 @@ describe("SettingsPage interactions: reinstall (resume a Slack manifest flow)", 
   });
 });
 
+describe("SettingsPage interactions: GitHub OAuth callback restore (DRO-1025)", () => {
+  afterEach(() => {
+    window.sessionStorage.clear();
+    window.history.replaceState(null, "", "/");
+  });
+
+  it("reopens the wizard and restores the form when the dialog was closed on callback page load (finding: patchFormState silent no-op)", async () => {
+    // Simulate a fresh page load: no dialog open (formState is null), and the
+    // browser landed on GitHub's manifest callback URL.
+    window.history.pushState(null, "", "/?code=abc123&installation_id=999&state=pc_test-state");
+
+    actionFor("get-github-app-manifest-flow").mockResolvedValue({
+      state: "pc_test-state",
+      agentId: "agent-1",
+      provider: GITHUB_IDENTITY_PROVIDER_ID,
+      manifest: '{"name":"demo"}',
+      postUrl: "https://github.com/settings/apps/new",
+      setupUrl: "https://github.com/settings/apps/demo",
+      createdAt: new Date().toISOString(),
+      label: "Release Bot",
+      appName: "demo-app",
+      conversion: {
+        agentId: "agent-1",
+        provider: GITHUB_IDENTITY_PROVIDER_ID,
+        appId: "app-123",
+        appSlug: "demo-app",
+        appName: "demo-app",
+        githubUsername: "demo-app[bot]",
+        privateKeyFile: "/tmp/private-key.pem",
+        installUrl: "https://github.com/apps/demo-app/installations/new",
+      },
+    });
+
+    renderSettingsPage();
+
+    // No dialog should be open yet (formState starts null).
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("get-github-app-manifest-flow")).toHaveBeenCalledWith({ state: "pc_test-state" });
+    // The wizard must reopen with the restored state -- previously
+    // patchFormState's `prev ? patch(prev) : prev` silently no-op'd here
+    // because formState was null, so the dialog never appeared.
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    // Restored conversion data (appId) should already be prefilled on the
+    // GitHub credential step.
+    const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+    click(nextButton ?? null);
+    const appIdInput = Array.from(container.querySelectorAll("input")).find((i) => i.value === "app-123");
+    expect(appIdInput).not.toBeUndefined();
+  });
+
+  it("preserves fallbackTokenSecretId and tokenFile from the sessionStorage draft through the manifest restore (finding: normalizer dropped fallback fields)", async () => {
+    window.sessionStorage.setItem(
+      "paperclip-agent-identities:github-app-manifest-draft:pc_test-state-2",
+      JSON.stringify({
+        agentId: "agent-1",
+        provider: GITHUB_IDENTITY_PROVIDER_ID,
+        label: "Release Bot",
+        githubUsername: "",
+        commitName: "",
+        commitEmail: "",
+        githubAppId: "",
+        githubInstallationId: "",
+        privateKeySecretId: "",
+        privateKeyFile: "",
+        fallbackTokenSecretId: "fallback-secret-uuid",
+        tokenFile: "/tmp/fallback.token",
+        previousAgentId: "",
+        previousGithubAppId: "",
+        previousGithubInstallationId: "",
+        previousPrivateKeySecretId: "",
+        previousPrivateKeyFile: "",
+      }),
+    );
+    window.history.pushState(null, "", "/?installation_id=999&state=pc_test-state-2");
+
+    actionFor("get-github-app-manifest-flow").mockResolvedValue({
+      state: "pc_test-state-2",
+      agentId: "agent-1",
+      provider: GITHUB_IDENTITY_PROVIDER_ID,
+      manifest: '{"name":"demo"}',
+      postUrl: "https://github.com/settings/apps/new",
+      setupUrl: "https://github.com/settings/apps/demo",
+      createdAt: new Date().toISOString(),
+      label: "Release Bot",
+      appName: "demo-app",
+    });
+
+    renderSettingsPage();
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Advance to the GitHub credential step to read back the restored fields.
+    const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+    click(nextButton ?? null);
+
+    const fallbackSecretInput = Array.from(container.querySelectorAll("input")).find(
+      (i) => i.value === "fallback-secret-uuid",
+    );
+    const tokenFileInput = Array.from(container.querySelectorAll("input")).find(
+      (i) => i.value === "/tmp/fallback.token",
+    );
+    expect(fallbackSecretInput).not.toBeUndefined();
+    expect(tokenFileInput).not.toBeUndefined();
+  });
+});
+
 function fieldByPlaceholder(placeholder: string): HTMLInputElement | undefined {
   return Array.from(container.querySelectorAll("input")).find(
     (i) => i.placeholder?.includes(placeholder),

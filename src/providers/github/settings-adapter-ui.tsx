@@ -131,6 +131,8 @@ function normalizeManifestDraftForm(raw: unknown): Partial<GitHubSettingsUIFormC
     githubInstallationId: readString(raw.githubInstallationId),
     privateKeySecretId: readString(raw.privateKeySecretId),
     privateKeyFile: readString(raw.privateKeyFile),
+    fallbackTokenSecretId: readString(raw.fallbackTokenSecretId),
+    tokenFile: readString(raw.tokenFile),
     previousAgentId: readString(raw.previousAgentId),
     previousGithubAppId: readString(raw.previousGithubAppId),
     previousGithubInstallationId: readString(raw.previousGithubInstallationId),

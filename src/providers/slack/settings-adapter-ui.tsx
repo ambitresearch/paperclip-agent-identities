@@ -562,11 +562,13 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
   // fields the tool itself returns (see tools/whoami.ts's `perform`) -- the
   // bot token never leaves the credential sidecar, let alone this response.
   async function handleCheckSlackStatus() {
+    const agentId = config?.agentId?.trim();
+    if (!agentId) return;
     const generation = ++slackStatusGenerationRef.current;
     setSlackStatusLoading(true);
     setSlackStatusError(null);
     try {
-      const result = (await slackBotWhoami({})) as { data?: SlackBotWhoamiData } | SlackBotWhoamiData;
+      const result = (await slackBotWhoami({ agentId, companyId })) as { data?: SlackBotWhoamiData } | SlackBotWhoamiData;
       if (slackStatusGenerationRef.current !== generation) return;
       const data = (result as { data?: SlackBotWhoamiData })?.data ?? (result as SlackBotWhoamiData);
       setSlackStatus(data ?? null);
@@ -726,7 +728,13 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     <fieldset style={fieldsetStyle}>
       <legend style={legendStyle}>Slack App setup</legend>
       {hasExistingSlackIdentity && (
-        <SlackStatusPanel loading={slackStatusLoading} status={slackStatus} error={slackStatusError} />
+        <SlackStatusPanel
+          agentId={config.agentId}
+          label={config.label}
+          loading={slackStatusLoading}
+          status={slackStatus}
+          error={slackStatusError}
+        />
       )}
       {!credentialComplete && (
         <div style={validationNoticeStyle}>
@@ -978,23 +986,35 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
   );
 }
 
-function SlackStatusPanel(props: { loading: boolean; status: SlackBotWhoamiData | null; error: string | null }) {
-  const { loading, status, error } = props;
+function SlackStatusPanel(props: {
+  agentId: string;
+  label: string;
+  loading: boolean;
+  status: SlackBotWhoamiData | null;
+  error: string | null;
+}) {
+  const { agentId, label, loading, status, error } = props;
   if (loading) {
-    return <div style={inlineNoticeStyle}>Checking Slack connection status...</div>;
+    return <div style={inlineNoticeStyle}>Checking Slack connection status for {label || agentId}...</div>;
   }
   if (error) {
     // Deliberately renders only the (already-sanitized) error message, never
     // a raw payload -- see handleCheckSlackStatus's catch branch.
-    return <div style={validationNoticeStyle}>Slack status: Not connected ({error}).</div>;
+    return (
+      <div style={validationNoticeStyle}>
+        Slack status: Not connected for agent <strong>{label || agentId}</strong> ({error}).
+      </div>
+    );
   }
   if (!status) {
     return null;
   }
   return (
     <div style={inlineNoticeStyle}>
-      <strong>Slack connection status:</strong> team {status.teamId ?? "unknown"}, bot user {status.botUserId ?? "unknown"}
-      {status.hasDefaultChannel ? ", default channel configured" : ""}.
+      <strong>Slack connection status: Connected.</strong>{" "}
+      Agent <strong>{label || agentId}</strong>, workspace {status.teamId ?? "unknown"}, app {status.appId ?? "unknown"},
+      bot user {status.botUserId ?? "unknown"}
+      {status.hasDefaultChannel ? ", default channel configured" : ", no default channel configured"}.
     </div>
   );
 }

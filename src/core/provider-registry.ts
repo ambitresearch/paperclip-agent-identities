@@ -57,6 +57,15 @@ export interface ProviderRegistry {
    */
   liveTools(): readonly LiveProviderTool[];
   /**
+   * The subset of `liveTools()` that also opts in via
+   * `toolSpec.uiActionInvocable: true` -- i.e. tools the Settings UI needs to
+   * invoke via `usePluginAction`/`ctx.actions.register`, not just an agent via
+   * `ctx.tools.register`/`executeTool`. Kept as its own generic accessor
+   * (rather than having `src/worker.ts` filter `liveTools()` itself) so the
+   * "which tools also become actions" policy lives in one place.
+   */
+  uiInvocableLiveTools(): readonly LiveProviderTool[];
+  /**
    * Every webhook endpoint declared by any registered provider (regardless
    * of provider `status` -- a "coming-soon" provider can still ship inbound
    * ingress ahead of its tool surface, same precedent as `live` tools). The
@@ -94,6 +103,22 @@ export function buildProviderRegistry(providers: readonly IdentityProvider[]): P
           (provider.definition.toolsStatus ?? provider.definition.status) === "enabled";
         for (const tool of provider.tools) {
           if (toolsAreEnabled || tool.live === true) {
+            live.push({
+              provider: provider as IdentityProvider,
+              tool: tool as ProviderToolSpec<unknown, ResourceReference>,
+            });
+          }
+        }
+      }
+      return live;
+    },
+    uiInvocableLiveTools(): readonly LiveProviderTool[] {
+      const live: LiveProviderTool[] = [];
+      for (const provider of ordered) {
+        const toolsAreEnabled =
+          (provider.definition.toolsStatus ?? provider.definition.status) === "enabled";
+        for (const tool of provider.tools) {
+          if ((toolsAreEnabled || tool.live === true) && tool.uiActionInvocable === true) {
             live.push({
               provider: provider as IdentityProvider,
               tool: tool as ProviderToolSpec<unknown, ResourceReference>,

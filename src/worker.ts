@@ -93,6 +93,35 @@ const plugin = definePlugin({
         registered.handler as Parameters<typeof ctx.tools.register>[2],
       );
     }
+    // `ctx.tools.register` handlers are only reachable via the agent-facing
+    // `executeTool` RPC method -- `usePluginAction` in the Settings UI calls
+    // `performAction`, which looks up `ctx.actions.register` handlers only.
+    // A tool that opts in via `uiActionInvocable: true` (credential-free
+    // identity self-checks the UI needs to call, e.g. `slack_bot_whoami`,
+    // DRO-976) is ALSO registered here as an action under the same name,
+    // reusing the exact same pipeline handler. This loop stays
+    // provider-agnostic -- no provider-specific branch is added here.
+    for (const { provider, tool: toolSpec } of registry.uiInvocableLiveTools()) {
+      const deps: ProviderToolPipelineDeps<unknown> = {
+        resolveIdentity: async (toolCtx, runCtx) =>
+          await resolveIdentityForProvider(provider, toolCtx, runCtx),
+        redactSecrets,
+      };
+      const registered = createProviderTool(provider, toolSpec, ctx, deps);
+      ctx.actions.register(registered.name, async (params, actionContext) => {
+        const agentId = typeof params.agentId === "string" ? params.agentId.trim() : "";
+        if (!agentId) {
+          throw new Error(`${registered.name} requires an agentId`);
+        }
+        const runCtx: ToolRunContext = {
+          agentId,
+          runId: `ui-action:${registered.name}`,
+          companyId: actionContext.companyId ?? "",
+          projectId: "",
+        };
+        return await registered.handler(params, runCtx);
+      });
+    }
     // contributeActions is composed for EVERY registered provider, not just
     // "enabled" ones: a "coming-soon" provider (no tools yet) can still ship
     // setup/bootstrap actions (e.g. Slack's manifest-assisted app setup) ahead

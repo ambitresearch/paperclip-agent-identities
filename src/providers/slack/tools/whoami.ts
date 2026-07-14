@@ -32,6 +32,12 @@ export const slackWhoamiToolSpec: ProviderToolSpec<SlackAgentIdentity, ResourceR
   metadata: slackBotWhoamiToolMetadata,
   requiresCredential: false,
   live: true,
+  // The Settings UI's "check Slack status" readout (DRO-976) invokes this
+  // credential-free tool via `usePluginAction`, which only reaches
+  // `ctx.actions.register` handlers -- see `uiActionInvocable`'s doc in
+  // `core/provider-contract.ts` for why a credential-free tool needs this
+  // opt-in to also be reachable from the UI.
+  uiActionInvocable: true,
   validateParams(_raw: unknown): ParamsValidation {
     return { ok: true, params: {} };
   },

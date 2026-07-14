@@ -57,4 +57,42 @@ describe("worker provider registration", () => {
     );
     expect(result.error).toContain("github_bot_whoami failed closed for agent 'agent-missing'");
   });
+
+  // Regression test for the changes-requested review on DRO-976: the
+  // Settings UI's "check Slack status" readout calls `slack_bot_whoami` via
+  // `usePluginAction`, which reaches the worker through `performAction` --
+  // NOT `executeTool`. A tool registered only via `ctx.tools.register` is
+  // unreachable from `usePluginAction` (see PLUGIN_SPEC.md §13.9 vs §13.10),
+  // so `slack_bot_whoami` must ALSO be registered as an action (via
+  // `uiActionInvocable: true` and `registry.uiInvocableLiveTools()`) for the
+  // Settings UI bridge to work at all.
+  it("also registers uiActionInvocable live tools (e.g. slack_bot_whoami) as plugin actions reachable via performAction", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {
+        identities: {
+          "agent-1": { label: "Bot", teamId: "T1", appId: "A1", botUserId: "U1" },
+        },
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const result = await harness.performAction<{ data?: { teamId: string } }>(
+      "slack_bot_whoami",
+      { agentId: "agent-1" },
+      { companyId: "company-1" },
+    );
+    expect(result.data?.teamId).toBe("T1");
+  });
+
+  it("does not register credentialed tools (e.g. github_bot_create_pull_request) as plugin actions", async () => {
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
+    const register = vi.spyOn(harness.ctx.actions, "register");
+    await plugin.definition.setup(harness.ctx);
+
+    expect(register.mock.calls.map(([name]) => name)).not.toContain("github_bot_create_pull_request");
+    expect(register.mock.calls.map(([name]) => name)).not.toContain("github_bot_push_branch");
+    expect(register.mock.calls.map(([name]) => name)).toContain("slack_bot_whoami");
+  });
 });

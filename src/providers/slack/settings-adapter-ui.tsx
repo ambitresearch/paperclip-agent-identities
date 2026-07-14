@@ -59,6 +59,17 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
   handleResumeSlackAppManifestFlow: () => Promise<void>;
   handleCreateSlackAppManifest: () => Promise<void>;
   handleSaveSlackInstallMetadata: () => Promise<void>;
+  // Retry-only path for finding #2: when save-slack-install-metadata succeeds
+  // but the follow-up deleteConfig(previousAgentId) rebind cleanup fails, the
+  // new identity is already persisted and the one-time manifest flow is
+  // already consumed/deleted -- there is no "state" left to retry the save
+  // itself. slackCleanupPendingAgentId names the stale identity that still
+  // needs deleting; handleRetrySlackCleanup re-attempts only that delete
+  // without touching the (already-saved) install metadata.
+  slackCleanupPendingAgentId: string | null;
+  slackCleanupBusy: boolean;
+  slackCleanupError: string | null;
+  handleRetrySlackCleanup: () => Promise<void>;
   updateField: (field: keyof SlackSettingsUIFormConfig & string, value: string) => void;
   secretOptions: ReadonlyArray<{ id: string; name: string; key?: string; description?: string; provider?: string; status?: string }>;
   secretsLoading: boolean;
@@ -143,6 +154,21 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
   const [slackResumeStateInput, setSlackResumeStateInput] = useState("");
   const [slackResumeBusy, setSlackResumeBusy] = useState(false);
   const [slackResumeError, setSlackResumeError] = useState<string | null>(null);
+  // Finding #2: when the post-save rebind cleanup (deleteConfig(previousAgentId))
+  // fails, the new identity is already saved and the flow already
+  // consumed/deleted -- there is no "state" to retry the save itself. Track
+  // just the stale agentId that still needs deleting so the UI can offer a
+  // cleanup-only retry instead of telling the operator to redo a save that
+  // would fail (the flow is gone) or silently leaving an orphaned identity.
+  const [slackCleanupPendingAgentId, setSlackCleanupPendingAgentId] = useState<string | null>(null);
+  const [slackCleanupBusy, setSlackCleanupBusy] = useState(false);
+  const [slackCleanupError, setSlackCleanupError] = useState<string | null>(null);
+  // Holds the save-slack-install-metadata result that succeeded but whose
+  // rebind cleanup (deleteConfig(previousAgentId)) failed, so a later
+  // successful retry can still mark the save complete (setSlackSaveResult)
+  // without re-calling save-slack-install-metadata (whose one-time `state`
+  // is already consumed).
+  const slackCleanupPendingResultRef = useRef<SaveSlackInstallMetadataResult | null>(null);
   const slackSaveGenerationRef = useRef(0);
   // Guards the Slack manifest-flow lifecycle (automatic restore-on-mount,
   // manual "Restore flow", and "Create Slack App manifest") the same way
@@ -178,6 +204,15 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     // next. Mirrors the same generation-guard pattern used on field edits.
     slackSaveGenerationRef.current += 1;
     setSlackSaveBusy(false);
+    // A pending cleanup retry is scoped to the identity that was just being
+    // edited when deleteConfig(previousAgentId) failed. Starting a new/
+    // different identity or closing the dialog abandons that in-context
+    // retry UI; the stale identity itself still exists server-side, but it
+    // is no longer this form's concern once the dialog moves on.
+    setSlackCleanupPendingAgentId(null);
+    setSlackCleanupError(null);
+    setSlackCleanupBusy(false);
+    slackCleanupPendingResultRef.current = null;
   }
 
   // Any edit to the Slack install fields invalidates a prior successful
@@ -367,9 +402,19 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
           // identity behind with no obvious retry path. Surface the error
           // and leave slackSaveResult unset (credentialComplete stays
           // false) so the operator can retry, keeping the dialog open.
+          //
+          // Note: the install metadata itself IS already saved and the
+          // one-time manifest flow is already consumed/deleted at this
+          // point, so re-running handleSaveSlackInstallMetadata is not a
+          // valid retry (its `state` no longer exists). Track the stale
+          // agentId so the UI can offer a cleanup-only retry
+          // (handleRetrySlackCleanup) instead.
           setSlackManifestError(
-            `Slack install metadata saved, but could not remove the previous identity for ${previousAgentId}: ${err instanceof Error ? err.message : "unknown error"}. Please retry.`
+            `Slack install metadata saved, but could not remove the previous identity for ${previousAgentId}: ${err instanceof Error ? err.message : "unknown error"}. Use "Retry cleanup" below.`
           );
+          setSlackCleanupPendingAgentId(previousAgentId);
+          setSlackCleanupError(null);
+          slackCleanupPendingResultRef.current = result;
           await refresh();
           return;
         }
@@ -393,6 +438,38 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     }
   }
 
+  // Cleanup-only retry for finding #2: re-attempt just the
+  // deleteConfig(previousAgentId) rebind cleanup that failed after
+  // save-slack-install-metadata already succeeded. Deliberately does not
+  // re-call saveSlackInstallMetadata -- the manifest flow's one-time `state`
+  // token is already consumed/deleted by the earlier successful save, so
+  // retrying the save itself would fail with a stale/expired-flow error.
+  async function handleRetrySlackCleanup() {
+    const pendingAgentId = slackCleanupPendingAgentId;
+    const pendingResult = slackCleanupPendingResultRef.current;
+    if (!pendingAgentId || !pendingResult) return;
+    setSlackCleanupBusy(true);
+    setSlackCleanupError(null);
+    try {
+      await deleteConfig({ agentId: pendingAgentId, provider: SLACK_IDENTITY_PROVIDER_ID });
+      setSlackCleanupPendingAgentId(null);
+      slackCleanupPendingResultRef.current = null;
+      setSlackManifestError(null);
+      // The install metadata was already saved by the original request; now
+      // that cleanup has finally succeeded, mark the save complete so
+      // credentialComplete/isComplete reflect reality.
+      setSlackSaveResult(pendingResult);
+      patchFormState((prev) => ({ ...prev, previousAgentId: pendingResult.agentId }));
+      await refresh();
+    } catch (err) {
+      setSlackCleanupError(
+        err instanceof Error ? err.message : `Failed to remove the previous identity for ${pendingAgentId}`,
+      );
+    } finally {
+      setSlackCleanupBusy(false);
+    }
+  }
+
   return {
     validationExtra: { slackSaveResult, slackSaveBusy },
     reset,
@@ -411,6 +488,10 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     handleResumeSlackAppManifestFlow,
     handleCreateSlackAppManifest,
     handleSaveSlackInstallMetadata,
+    slackCleanupPendingAgentId,
+    slackCleanupBusy,
+    slackCleanupError,
+    handleRetrySlackCleanup,
     updateField,
     secretOptions: input.secretOptions,
     secretsLoading: input.secretsLoading,
@@ -478,6 +559,10 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     handleResumeSlackAppManifestFlow,
     handleCreateSlackAppManifest,
     handleSaveSlackInstallMetadata,
+    slackCleanupPendingAgentId,
+    slackCleanupBusy,
+    slackCleanupError,
+    handleRetrySlackCleanup,
     validationExtra,
     updateField,
     secretOptions,
@@ -605,6 +690,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           onChange={(e) => updateField("slackTeamId", e.target.value)}
           placeholder="e.g. T0123456789"
           style={inputStyle}
+          disabled={slackSaveBusy}
         />
       </label>
 
@@ -616,6 +702,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           onChange={(e) => updateField("slackAppId", e.target.value)}
           placeholder="e.g. A0123456789"
           style={inputStyle}
+          disabled={slackSaveBusy}
         />
       </label>
 
@@ -627,6 +714,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           onChange={(e) => updateField("slackBotUserId", e.target.value)}
           placeholder="e.g. U0123456789"
           style={inputStyle}
+          disabled={slackSaveBusy}
         />
       </label>
 
@@ -637,6 +725,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
             value={config.slackBotTokenSecretId}
             onChange={(e) => updateField("slackBotTokenSecretId", e.target.value)}
             style={inputStyle}
+            disabled={slackSaveBusy}
           >
             <option value="">No bot token secret reference</option>
             {config.slackBotTokenSecretId && !secretOptions.some((secret) => secret.id === config.slackBotTokenSecretId) && (
@@ -653,6 +742,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
             onChange={(e) => updateField("slackBotTokenSecretId", e.target.value)}
             placeholder="Company secret UUID containing the Slack bot token"
             style={inputStyle}
+            disabled={slackSaveBusy}
           />
         )}
         <span style={hintStyle}>{getSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })} The bot token itself is never stored in this config; only the secret reference is.</span>
@@ -666,6 +756,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           onChange={(e) => updateField("slackDefaultChannel", e.target.value)}
           placeholder="e.g. C0123456789"
           style={inputStyle}
+          disabled={slackSaveBusy}
         />
         <span style={hintStyle}>Optional. Must match the Slack channel ID pattern (starts with C or G).</span>
       </label>
@@ -677,6 +768,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           disabled={
             slackManifestBusy ||
             slackSaveBusy ||
+            Boolean(slackCleanupPendingAgentId) ||
             !slackManifestFlow ||
             !config.slackTeamId.trim() ||
             !config.slackAppId.trim() ||
@@ -689,8 +781,29 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         </button>
       </div>
 
-      {!slackManifestFlow && (
+      {!slackManifestFlow && !slackCleanupPendingAgentId && (
         <span style={hintStyle}>Create the manifest above first; saving install metadata requires an active manifest flow state.</span>
+      )}
+
+      {slackCleanupPendingAgentId && (
+        <div style={validationNoticeStyle}>
+          <div>
+            Slack install metadata was saved, but Paperclip could not remove the previous identity for{" "}
+            <strong>{slackCleanupPendingAgentId}</strong>. The new identity is safe; retry cleanup below rather than
+            saving again (the manifest flow used for this save has already been consumed).
+          </div>
+          <div style={formActionsStyle}>
+            <button
+              type="button"
+              onClick={() => void handleRetrySlackCleanup()}
+              disabled={slackCleanupBusy}
+              style={secondaryButtonStyle}
+            >
+              {slackCleanupBusy ? "Retrying..." : "Retry cleanup"}
+            </button>
+          </div>
+          {slackCleanupError && <span style={errorStyle}>{slackCleanupError}</span>}
+        </div>
       )}
 
       {slackSaveResult && <span style={successStyle}>Slack install metadata saved for team {slackSaveResult.teamId}.</span>}

@@ -216,6 +216,15 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const isLastFormStep = activeFormStepIndex === activeFormSteps.length - 1;
   const canGoNext = formValidation ? canAdvanceFromStep(activeFormSection, formValidation) : false;
   const canSave = Boolean(formValidation?.isComplete && isLastFormStep && !saving);
+  // Finding #1: while save-slack-install-metadata is in flight, the worker
+  // may already have persisted the new identity and consumed/deleted the
+  // one-time manifest flow by the time the response comes back. Letting the
+  // operator edit the Slack fields, switch the provider/agent, or navigate
+  // away during that window can invalidate the client's view of what was
+  // saved (see slackFieldsSignature invalidation in
+  // useSlackCredentialStep) with no way to recover the flow. Lock the whole
+  // identity-step fields and dialog navigation for the duration of the save.
+  const slackSaveInFlight = activeProviderId === SLACK_IDENTITY_PROVIDER_ID && slackUIState.slackSaveBusy;
 
   if (loading) return <div>Loading settings...</div>;
   if (error) return <div>Error loading settings: {error.message}</div>;
@@ -542,7 +551,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               <h3 id="agent-identity-dialog-title" style={dialogTitleStyle}>{isEditingExistingIdentity ? "Edit agent identity" : "Add agent identity"}</h3>
               <p style={sectionDescriptionStyle}>Configure the agent, GitHub App credential, and optional commit metadata.</p>
             </div>
-            <button onClick={() => setFormState(null)} disabled={saving} style={closeButtonStyle} aria-label="Close identity editor">x</button>
+            <button onClick={() => setFormState(null)} disabled={saving || slackSaveInFlight} style={closeButtonStyle} aria-label="Close identity editor">x</button>
           </header>
 
           <div style={dialogBodyStyle}>
@@ -571,6 +580,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                   value={config.agentId}
                   onChange={(e) => updateField("agentId", e.target.value)}
                   style={inputStyle}
+                  disabled={slackSaveInFlight}
                 >
                   <option value="" disabled>Select a Paperclip agent</option>
                   {hasSavedAgentOutsideOptions && <option value={config.agentId}>{config.agentId} (saved)</option>}
@@ -585,6 +595,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                   onChange={(e) => updateField("agentId", e.target.value)}
                   placeholder="UUID of the Paperclip agent"
                   style={inputStyle}
+                  disabled={slackSaveInFlight}
                 />
               )}
               <span style={hintStyle}>{getAgentFieldHint({ companyId, agentsLoading, agentsError, hasAgentOptions })}</span>
@@ -592,7 +603,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
             <label style={fieldStyle}>
               <span>Provider <span style={requiredStyle}>*</span></span>
-              <select value={config.provider} onChange={(e) => updateField("provider", e.target.value)} style={inputStyle} disabled={isEditingExistingIdentity}>
+              <select value={config.provider} onChange={(e) => updateField("provider", e.target.value)} style={inputStyle} disabled={isEditingExistingIdentity || slackSaveInFlight}>
                 {(data?.providers ?? []).map((provider) => (
                   <option
                     key={provider.id}
@@ -616,6 +627,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 onChange={(e) => updateField("label", e.target.value)}
                 placeholder="e.g. Cade Riven [Droidshop]"
                 style={inputStyle}
+                disabled={slackSaveInFlight}
               />
             </label>
           </fieldset>
@@ -693,8 +705,8 @@ export function SettingsPage(props: PluginSettingsPageProps) {
             <button
               type="button"
               onClick={() => setActiveFormSection(getPreviousFormStep(activeFormSection, config.provider))}
-              disabled={saving || activeFormStepIndex === 0}
-              style={buttonStyle(secondaryButtonStyle, saving || activeFormStepIndex === 0)}
+              disabled={saving || slackSaveInFlight || activeFormStepIndex === 0}
+              style={buttonStyle(secondaryButtonStyle, saving || slackSaveInFlight || activeFormStepIndex === 0)}
             >
               Previous
             </button>
@@ -702,8 +714,8 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               <button
                 type="button"
                 onClick={() => setActiveFormSection(getNextFormStep(activeFormSection, config.provider))}
-                disabled={saving || !canGoNext}
-                style={buttonStyle(primaryButtonStyle, saving || !canGoNext)}
+                disabled={saving || slackSaveInFlight || !canGoNext}
+                style={buttonStyle(primaryButtonStyle, saving || slackSaveInFlight || !canGoNext)}
               >
                 Next
               </button>
@@ -717,7 +729,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 {saving ? "Saving..." : "Save agent"}
               </button>
             )}
-            <button type="button" onClick={() => setFormState(null)} disabled={saving} style={secondaryButtonStyle}>Cancel</button>
+            <button type="button" onClick={() => setFormState(null)} disabled={saving || slackSaveInFlight} style={secondaryButtonStyle}>Cancel</button>
           </footer>
           </section>
         </div>

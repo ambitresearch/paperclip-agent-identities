@@ -442,6 +442,151 @@ describe("SettingsPage interactions: save-slack-install-metadata", () => {
   });
 });
 
+describe("SettingsPage interactions: retry safety while save-slack-install-metadata is in flight (DRO-1053 finding #1)", () => {
+  it("disables Slack field inputs, provider/agent/label fields, and dialog navigation while a save is in flight", async () => {
+    await openSlackWizardOnCredentialStep();
+    actionFor("save-slack-install-metadata").mockReturnValue(new Promise(() => {
+      // Never resolves for this test -- we only assert on the disabled state
+      // while the save is in flight.
+    }));
+
+    act(() => {
+      click(slackSaveButton() ?? null);
+    });
+    expect(text()).toContain("Saving...");
+
+    // Slack credential-step fields must be locked so an edit can't
+    // invalidate the in-flight save's result once it comes back.
+    expect(fieldByPlaceholder("T0123456789")?.disabled).toBe(true);
+    expect(fieldByPlaceholder("A0123456789")?.disabled).toBe(true);
+    expect(fieldByPlaceholder("U0123456789")?.disabled).toBe(true);
+    expect(fieldByPlaceholder("Company secret UUID containing the Slack bot token")?.disabled).toBe(true);
+
+    // Navigation that would let the operator leave/alter the identity while
+    // the save is still resolving must also be locked.
+    const previousButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Previous");
+    const cancelButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Cancel");
+    const closeButton = container.querySelector('[aria-label="Close identity editor"]') as HTMLButtonElement | null;
+    expect((previousButton as HTMLButtonElement | undefined)?.disabled).toBe(true);
+    expect((cancelButton as HTMLButtonElement | undefined)?.disabled).toBe(true);
+    expect(closeButton?.disabled).toBe(true);
+  });
+});
+
+describe("SettingsPage interactions: cleanup-only retry after a failed rename rebind (DRO-1053 finding #2)", () => {
+  it("offers a cleanup-only retry (not a re-save) when deleteConfig(previousAgentId) fails after a successful save, and completes without re-calling save-slack-install-metadata", async () => {
+    // Simulate editing an existing Slack identity (rename): previousAgentId
+    // differs from the current agentId, so a successful save triggers the
+    // rebind-cleanup deleteConfig call.
+    bridgeData["bot-identity-config"] = {
+      identities: [
+        {
+          id: "id-1",
+          agentId: "agent-0",
+          provider: SLACK_IDENTITY_PROVIDER_ID,
+          label: "Release Bot",
+          slack: { teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789" },
+          credential: {},
+          credentialStatus: "ok",
+        },
+      ],
+      providers,
+      companyName: "Acme",
+      credentialSidecarPath: "",
+      credentialSidecarError: null,
+    };
+    bridgeData["paperclip-agents"] = {
+      agents: [
+        { id: "agent-0", role: "Engineer", status: "active" },
+        { id: "agent-1", role: "Engineer", status: "active" },
+      ],
+    };
+
+    renderSettingsPage();
+    const editButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Edit");
+    click(editButton ?? null);
+
+    // Rename to a different agent.
+    const agentSelect = Array.from(container.querySelectorAll("select")).find((s) =>
+      Array.from(s.options).some((o) => o.value === "agent-1"),
+    );
+    setValue(agentSelect ?? null, "agent-1");
+
+    const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+    click(nextButton ?? null);
+
+    actionFor("create-slack-app-manifest").mockResolvedValue({
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      state: "state-1",
+      manifest: '{"name":"slack-demo"}',
+      createAppUrl: "https://api.slack.com/apps?new_app=1",
+      label: "Release Bot",
+    });
+    const createButton = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === "Create Slack App manifest",
+    );
+    await act(async () => {
+      click(createButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    setValue(fieldByPlaceholder("T0123456789") ?? null, "T0123456789");
+    setValue(fieldByPlaceholder("A0123456789") ?? null, "A0123456789");
+    setValue(fieldByPlaceholder("U0123456789") ?? null, "U0123456789");
+    setValue(
+      fieldByPlaceholder("Company secret UUID containing the Slack bot token") ?? null,
+      "11111111-1111-4111-8111-111111111111",
+    );
+
+    const savedResult = {
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      teamId: "T0123456789",
+      appId: "A0123456789",
+      botUserId: "U0123456789",
+      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      status: "saved",
+    };
+    actionFor("save-slack-install-metadata").mockResolvedValue(savedResult);
+    actionFor("delete-bot-identity-config").mockRejectedValueOnce(new Error("network blip"));
+
+    await act(async () => {
+      click(slackSaveButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The save succeeded, but the rename cleanup failed: the UI must offer a
+    // cleanup-only retry rather than telling the operator to redo the save
+    // (whose one-time manifest `state` is already consumed).
+    expect(actionFor("save-slack-install-metadata")).toHaveBeenCalledTimes(1);
+    expect(actionFor("delete-bot-identity-config")).toHaveBeenCalledWith({
+      agentId: "agent-0",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+    });
+    expect(text()).toContain("Retry cleanup");
+    expect(text()).not.toContain("Slack install metadata saved for team T0123456789.");
+
+    // Retry the cleanup only -- this must not re-invoke save-slack-install-metadata.
+    actionFor("delete-bot-identity-config").mockResolvedValueOnce({});
+    const retryButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Retry cleanup");
+    await act(async () => {
+      click(retryButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("save-slack-install-metadata")).toHaveBeenCalledTimes(1);
+    expect(actionFor("delete-bot-identity-config")).toHaveBeenCalledTimes(2);
+    expect(text()).toContain("Slack install metadata saved for team T0123456789.");
+    expect(text()).not.toContain("Retry cleanup");
+  });
+});
+
 describe("SettingsPage interactions: removal", () => {
   it("calls delete-bot-identity-config when confirming deletion of an existing identity", async () => {
     bridgeData["bot-identity-config"] = {

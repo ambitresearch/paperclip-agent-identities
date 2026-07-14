@@ -82,7 +82,7 @@ paperclipai plugin install . --local
 3. `/src/worker.ts` calls `definePlugin()` and registers:
    - data loaders: `health`, `bot-identity-config`, `paperclip-agents`
    - actions: `ping`, `save-bot-identity-config`, `delete-bot-identity-config`, GitHub App manifest-flow actions
-   - tools: `github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`
+   - tools: `github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`, and `slack_bot_whoami` — GitHub is still the only *enabled* provider (`registry.enabled()`), but the credential-free `slack_bot_whoami` (DRO-972) opts in individually via `ProviderToolSpec.live: true` and is composed through `registry.liveTools()`, so it registers and appears in the manifest ahead of the rest of the Slack provider's (still `"coming-soon"`) tool surface.
    - an `issue.created` event observer that marks issues as seen in plugin state
 4. `/src/ui/index.tsx` exports a dashboard widget summarizing identity coverage and re-exports the settings page.
 5. GitHub tools validate and normalize repository inputs, resolve the calling agent's identity, then resolve credentials just in time. Provider permissions decide repository/resource access.

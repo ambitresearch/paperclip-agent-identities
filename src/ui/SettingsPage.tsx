@@ -1,6 +1,9 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
-import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
+import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
+import { buildProviderSettingsRegistry } from "../core/provider-settings-contract.js";
+import { ALL_SETTINGS_ADAPTERS } from "../providers/settings-index.js";
+import { providerSettingsUIRegistry } from "../providers/settings-ui-index.js";
 import {
   createPaperclipThemeStyle,
   uiBorder,
@@ -28,9 +31,7 @@ import type {
   PaperclipAgentOption,
   PaperclipAgentsData,
   SaveBotIdentityConfigInput,
-  CreateGitHubAppManifestResult,
-  ConvertGitHubAppManifestResult,
-  GetGitHubAppManifestFlowResult
+  SaveSlackInstallMetadataResult
 } from "../shared/types.js";
 
 type PaperclipSecretOption = {
@@ -42,7 +43,7 @@ type PaperclipSecretOption = {
   status?: string;
 };
 
-type IdentityFormState = {
+export type IdentityFormState = {
   agentId: string;
   provider: string;
   label: string;
@@ -60,10 +61,15 @@ type IdentityFormState = {
   previousGithubInstallationId: string;
   previousPrivateKeySecretId: string;
   previousPrivateKeyFile: string;
+  slackTeamId: string;
+  slackAppId: string;
+  slackBotUserId: string;
+  slackDefaultChannel: string;
+  slackBotTokenSecretId: string;
 };
 
 type SettingsSection = "identities" | "setup" | "environment";
-type IdentityFormSection = "identity" | "github" | "commit";
+type IdentityFormSection = "identity" | "github" | "slack" | "commit";
 type IdentityFormValidation = {
   identityComplete: boolean;
   credentialComplete: boolean;
@@ -85,6 +91,9 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const createGitHubAppManifest = usePluginAction("create-github-app-manifest");
   const getGitHubAppManifestFlow = usePluginAction("get-github-app-manifest-flow");
   const convertGitHubAppManifest = usePluginAction("convert-github-app-manifest");
+  const createSlackAppManifest = usePluginAction("create-slack-app-manifest");
+  const getSlackAppManifestFlow = usePluginAction("get-slack-app-manifest-flow");
+  const saveSlackInstallMetadata = usePluginAction("save-slack-install-metadata");
 
   const [formState, setFormState] = useState<IdentityFormState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -94,77 +103,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [secretOptions, setSecretOptions] = useState<PaperclipSecretOption[]>([]);
   const [secretsLoading, setSecretsLoading] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
-  const [manifestFlow, setManifestFlow] = useState<CreateGitHubAppManifestResult | null>(null);
-  const [manifestBusy, setManifestBusy] = useState(false);
-  const [manifestCode, setManifestCode] = useState("");
-  const [manifestError, setManifestError] = useState<string | null>(null);
-  const [manifestResult, setManifestResult] = useState<ConvertGitHubAppManifestResult | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSection>("identities");
   const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
   const agentOptions = agentsData?.agents ?? [];
   const summary = summarizeIdentitySettings(identities, Boolean(data?.credentialSidecarError));
-
-  useEffect(() => {
-    const callback = getManifestCallbackParams();
-    if (!callback) return;
-
-    let cancelled = false;
-    setManifestBusy(true);
-    setManifestError(null);
-    setManifestResult(null);
-    void getGitHubAppManifestFlow({ state: callback.state })
-      .then((result) => {
-        if (cancelled) return;
-        const flow = result as GetGitHubAppManifestFlowResult;
-        const savedIdentity = identities.find((entry) => entry.agentId === flow.agentId && entry.provider === flow.provider);
-        const selectedAgent = agentOptions.find((agent) => agent.id === flow.agentId);
-        const defaults = selectedAgent
-          ? getAgentIdentityDefaults(selectedAgent, companyDisplayName, data?.credentialSidecarPath ?? "")
-          : null;
-        const restoredForm = toFormState(savedIdentity);
-        const draftForm = readManifestDraftForm(callback.state);
-        const conversion = flow.conversion;
-        setActiveFormSection("github");
-        setFormState({
-          ...restoredForm,
-          ...draftForm,
-          agentId: flow.agentId,
-          provider: flow.provider,
-          label: draftForm?.label || restoredForm.label || flow.label,
-          githubUsername: conversion?.githubUsername || draftForm?.githubUsername || restoredForm.githubUsername || defaults?.githubUsername || DEFAULT_BOT_IDENTITY_CONFIG.github.username,
-          commitName: draftForm?.commitName || restoredForm.commitName || defaults?.commitName || "",
-          commitEmail: draftForm?.commitEmail || restoredForm.commitEmail || defaults?.commitEmail || "",
-          githubAppId: conversion?.appId || draftForm?.githubAppId || restoredForm.githubAppId,
-          githubInstallationId: callback.installationId || restoredForm.githubInstallationId,
-          privateKeyFile: conversion?.privateKeyFile || draftForm?.privateKeyFile || restoredForm.privateKeyFile || defaults?.privateKeyFile || "",
-        });
-        setManifestFlow(flow);
-        setManifestCode(callback.code ?? "");
-        if (callback.installationId) {
-          setManifestResult(conversion ?? null);
-          deleteManifestDraftForm(callback.state);
-          void getGitHubAppManifestFlow({ state: callback.state, consume: true }).catch(() => undefined);
-        }
-        setSaveError(null);
-        setSaveSuccess(false);
-        cleanManifestCallbackParams();
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setManifestError(err instanceof Error ? err.message : "Could not restore GitHub App manifest flow");
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setManifestBusy(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [agentOptions, companyDisplayName, data?.credentialSidecarPath, getGitHubAppManifestFlow, identities]);
 
   useEffect(() => {
     if (!companyId) {
@@ -202,28 +145,111 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   const hasAgentOptions = agentOptions.length > 0;
   const config = formState;
+
+  // Slack's and GitHub's credential-step local state (manifest flow, busy
+  // flags, errors, restore-on-mount effects, and the save/rebind handlers)
+  // are each owned entirely by their provider's UI adapter -- see
+  // src/providers/slack/settings-adapter-ui.tsx and
+  // src/providers/github/settings-adapter-ui.tsx. SettingsPage only threads
+  // in the shared inputs each hook needs (config, updateField, refresh,
+  // deleteConfig, provider-specific plugin actions) and reads back
+  // `validationExtra` (for getIdentityFormValidation) and `reset` (called
+  // from startCreate/startEdit/agentId-or-label edits below).
+  const slackUIState = providerSettingsUIRegistry.get(SLACK_IDENTITY_PROVIDER_ID)!.useCredentialStep({
+    config: config as unknown as import("../providers/slack/settings-adapter-ui.js").SlackSettingsUIFormConfig | null,
+    updateField: (field: string, value: string) => updateField(field as keyof IdentityFormState, value),
+    refresh,
+    deleteConfig,
+    patchFormState: (patch: (prev: import("../providers/slack/settings-adapter-ui.js").SlackSettingsUIFormConfig) => import("../providers/slack/settings-adapter-ui.js").SlackSettingsUIFormConfig) => setFormState((prev) => (prev ? (patch(prev as unknown as import("../providers/slack/settings-adapter-ui.js").SlackSettingsUIFormConfig) as unknown as IdentityFormState) : prev)),
+    secretOptions,
+    secretsLoading,
+    secretsError,
+    companyId,
+    createSlackAppManifest,
+    getSlackAppManifestFlow,
+    saveSlackInstallMetadata,
+  });
+
+  const githubUIState = providerSettingsUIRegistry.get(GITHUB_IDENTITY_PROVIDER_ID)!.useCredentialStep({
+    config: config as unknown as import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig | null,
+    updateField: (field: string, value: string) => updateField(field as keyof IdentityFormState, value),
+    refresh,
+    deleteConfig,
+    // Unlike Slack's patchFormState (which only ever patches an already-open
+    // dialog), the GitHub OAuth callback effect can fire with the dialog
+    // closed (formState === null) -- the operator left the page entirely to
+    // authorize the GitHub App and is now landing back on a fresh page load.
+    // Falling back to a no-op there (as a plain `prev ? patch(prev) : prev`
+    // would) silently drops the restored manifest flow and the wizard never
+    // reopens. Construct a fresh base via `toFormState()` -- the same
+    // construction `startCreate` uses to open the dialog -- so the patch
+    // always has a form to apply to and the wizard reopens with the restored
+    // state.
+    patchFormState: (patch: (prev: import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig) => import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig) => setFormState((prev) => patch((prev ?? toFormState()) as unknown as import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig) as unknown as IdentityFormState),
+    secretOptions,
+    secretsLoading,
+    secretsError,
+    companyId,
+    createGitHubAppManifest,
+    getGitHubAppManifestFlow,
+    convertGitHubAppManifest,
+    identities,
+    agentOptions,
+    companyDisplayName,
+    credentialSidecarPath: data?.credentialSidecarPath ?? "",
+    getAgentIdentityDefaults,
+    toFormState,
+  });
+
+  // Provider-agnostic selection of the active provider's credential-step hook
+  // state, component, and step id -- keyed off `config.provider` via the
+  // registries rather than an `=== SLACK/GITHUB` branch in the render path
+  // (findings #5/#10/#19). Both provider hooks must still be *called*
+  // unconditionally above (Rules of Hooks), but only the active provider's
+  // result is mounted.
+  const activeProviderId = config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID;
+  // Known deferral (flagged repeatedly in review, e.g. against #63/#74): this
+  // still branches on SLACK/GITHUB by name instead of having each hook result
+  // carried through the registry itself, because `useCredentialStep` must be
+  // called unconditionally for every provider (Rules of Hooks), and the
+  // registry as typed today (`AnyProviderSettingsUIAdapter`, see
+  // provider-settings-ui-contract.ts) has no place to stash the per-provider
+  // hook *results* alongside the adapters. Fully registry-driven mounting
+  // (no provider id branch at all) is left as follow-up scope, consistent
+  // with the same deferral noted in provider-settings-contract.ts.
+  const activeProviderUIState = activeProviderId === SLACK_IDENTITY_PROVIDER_ID ? slackUIState : githubUIState;
+  const activeProviderUIAdapter = providerSettingsUIRegistry.get(activeProviderId);
+  const ActiveCredentialStep = activeProviderUIAdapter?.CredentialStep;
+  const activeProviderCredentialStepId = providerSettingsRegistry.get(activeProviderId).credentialStepId;
+
   const hasSavedAgentOutsideOptions = Boolean(
     config?.agentId && !agentOptions.some((agent) => agent.id === config.agentId)
   );
-  const hasSecretOptions = secretOptions.length > 0;
-  const hasSavedSecretOutsideOptions = Boolean(
-    config?.privateKeySecretId && !secretOptions.some((secret) => secret.id === config.privateKeySecretId)
-  );
-  const hasSavedFallbackSecretOutsideOptions = Boolean(
-    config?.fallbackTokenSecretId && !secretOptions.some((secret) => secret.id === config.fallbackTokenSecretId)
-  );
   const isEditingExistingIdentity = Boolean(config && identities.some((entry) => entry.agentId === config.agentId && entry.provider === config.provider));
   const duplicateIdentity = config ? identities.find((entry) => entry.agentId === config.agentId && entry.provider === config.provider && !(config.previousAgentId === entry.agentId && config.provider === entry.provider)) : undefined;
-  const hasExistingGitHubAppCredential = Boolean(
-    config?.previousGithubAppId ||
-    config?.previousGithubInstallationId ||
-    config?.previousPrivateKeySecretId ||
-    config?.previousPrivateKeyFile
-  );
-  const formValidation = config ? getIdentityFormValidation(config, Boolean(duplicateIdentity)) : null;
-  const activeFormStepIndex = getFormStepIndex(activeFormSection);
+  const formValidation = config
+    ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy)
+    : null;
+  const activeFormSteps = getFormSteps(config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
+  const activeFormStepIndex = getFormStepIndex(activeFormSection, config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
+  const isLastFormStep = activeFormStepIndex === activeFormSteps.length - 1;
   const canGoNext = formValidation ? canAdvanceFromStep(activeFormSection, formValidation) : false;
-  const canSave = Boolean(formValidation?.isComplete && activeFormSection === "commit" && !saving);
+  const canSave = Boolean(formValidation?.isComplete && isLastFormStep && !saving);
+  // Finding #1: while save-slack-install-metadata is in flight, the worker
+  // may already have persisted the new identity and consumed/deleted the
+  // one-time manifest flow by the time the response comes back. Letting the
+  // operator edit the Slack fields, switch the provider/agent, or navigate
+  // away during that window can invalidate the client's view of what was
+  // saved (see slackFieldsSignature invalidation in
+  // useSlackCredentialStep) with no way to recover the flow. Lock the whole
+  // identity-step fields and dialog navigation for the duration of the save.
+  // Also lock during a pending cleanup-only retry (deleteConfig(previousAgentId)
+  // re-attempt after save-slack-install-metadata succeeded): the operator
+  // could otherwise click "Retry cleanup", then navigate/edit the identity
+  // before it resolves, letting that stale response's state updates land on
+  // a different form (Copilot finding on settings-adapter-ui.tsx:454).
+  const slackSaveInFlight =
+    activeProviderId === SLACK_IDENTITY_PROVIDER_ID && (slackUIState.slackSaveBusy || slackUIState.slackCleanupBusy);
 
   if (loading) return <div>Loading settings...</div>;
   if (error) return <div>Error loading settings: {error.message}</div>;
@@ -233,7 +259,8 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setFormState(toFormState());
     setSaveError(null);
     setSaveSuccess(false);
-    resetManifestFlow();
+    githubUIState.reset();
+    slackUIState.reset();
   }
 
   function startEdit(entry: BotIdentitySettingsEntry) {
@@ -241,7 +268,8 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setFormState(toFormState(entry));
     setSaveError(null);
     setSaveSuccess(false);
-    resetManifestFlow();
+    githubUIState.reset();
+    slackUIState.reset();
   }
 
   function updateField(field: keyof IdentityFormState, value: string) {
@@ -256,8 +284,14 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     setSaveSuccess(false);
     setSaveError(null);
     if ((field === "agentId" || field === "label") && config?.[field] !== value) {
-      resetManifestFlow();
+      githubUIState.reset();
+      slackUIState.reset();
     }
+    // Invalidating a prior save-slack-install-metadata result on a Slack
+    // field edit (and clearing a now-stale slackSaveBusy) is handled inside
+    // the Slack UI adapter's hook itself, which watches the relevant config
+    // fields via a signature effect -- see useSlackCredentialStep in
+    // src/providers/slack/settings-adapter-ui.tsx.
   }
 
   function updateAgentSelection(agentId: string) {
@@ -284,75 +318,23 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     });
   }
 
-  function resetManifestFlow() {
-    setManifestFlow(null);
-    setManifestCode("");
-    setManifestError(null);
-    setManifestResult(null);
-  }
-
-  async function handleCreateGitHubAppManifest() {
-    if (!config) return;
-    if (config.provider !== GITHUB_IDENTITY_PROVIDER_ID) {
-      setManifestError("GitHub App setup is only available for the GitHub provider.");
-      return;
-    }
-    setManifestBusy(true);
-    setManifestError(null);
-    setManifestResult(null);
-    try {
-      const result = await createGitHubAppManifest({
-        agentId: config.agentId.trim(),
-        provider: config.provider,
-        label: config.label.trim(),
-        homepageUrl: getAgentDashboardUrl(config.agentId.trim()),
-        callbackUrl: getManifestReturnUrl(),
-      }) as CreateGitHubAppManifestResult;
-      setManifestFlow(result);
-      writeManifestDraftForm(result.state, config);
-      submitGitHubAppManifest(result);
-    } catch (err) {
-      setManifestError(err instanceof Error ? err.message : "Failed to create GitHub App manifest");
-    } finally {
-      setManifestBusy(false);
-    }
-  }
-
-  async function handleConvertGitHubAppManifest() {
-    if (!manifestFlow || !config) return;
-    setManifestBusy(true);
-    setManifestError(null);
-    try {
-      const result = await convertGitHubAppManifest({
-        state: manifestFlow.state,
-        code: manifestCode.trim(),
-      }) as ConvertGitHubAppManifestResult;
-      const nextFormState = {
-        ...config,
-        githubAppId: result.appId,
-        privateKeyFile: result.privateKeyFile,
-        githubUsername: result.githubUsername,
-      };
-      writeManifestDraftForm(manifestFlow.state, nextFormState);
-      setManifestResult(result);
-      updateField("githubAppId", result.appId);
-      updateField("privateKeyFile", result.privateKeyFile);
-      updateField("githubUsername", result.githubUsername);
-      window.location.assign(result.installUrl);
-    } catch (err) {
-      setManifestError(err instanceof Error ? err.message : "Failed to convert GitHub App manifest");
-    } finally {
-      setManifestBusy(false);
-    }
-  }
-
   async function handleSave() {
     if (!config) return;
-    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity));
+    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy);
     if (!validation.isComplete) {
       setSaveSuccess(false);
       setSaveError(validation.saveMessage);
-      setActiveFormSection(validation.identityComplete ? "github" : "identity");
+      const adapter = providerSettingsRegistry.get(config.provider);
+      setActiveFormSection(validation.identityComplete ? (adapter.credentialStepId as IdentityFormSection) : "identity");
+      return;
+    }
+    if (providerSettingsRegistry.get(config.provider).savesViaSeparateAction) {
+      // Slack identities are persisted by save-slack-install-metadata itself
+      // (see handleSaveSlackInstallMetadata); there is no separate
+      // save-bot-identity-config call for Slack. Reaching this step with a
+      // complete validation means that action already ran successfully.
+      setSaveSuccess(true);
+      setFormState(null);
       return;
     }
     setSaving(true);
@@ -533,7 +515,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                         <div style={rowTitleStyle}>{entry.label}</div>
                         <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
                       </div>
-                      <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : ""}</div>
+                      <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : entry.provider === "slack" ? `Team ${entry.slack.teamId}` : ""}</div>
                       <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
                       <div className="agent-identities-row-actions" style={rowActionsStyle}>
                         <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
@@ -594,12 +576,12 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               <h3 id="agent-identity-dialog-title" style={dialogTitleStyle}>{isEditingExistingIdentity ? "Edit agent identity" : "Add agent identity"}</h3>
               <p style={sectionDescriptionStyle}>Configure the agent, GitHub App credential, and optional commit metadata.</p>
             </div>
-            <button onClick={() => setFormState(null)} disabled={saving} style={closeButtonStyle} aria-label="Close identity editor">x</button>
+            <button onClick={() => setFormState(null)} disabled={saving || slackSaveInFlight} style={closeButtonStyle} aria-label="Close identity editor">x</button>
           </header>
 
           <div style={dialogBodyStyle}>
             <div className="agent-identities-wizard-steps" aria-label="Identity setup progress" style={wizardStepListStyle}>
-              {FORM_STEPS.map((step, index) => (
+              {activeFormSteps.map((step, index) => (
                 <WizardStepIndicator
                   key={step.id}
                   index={index + 1}
@@ -623,6 +605,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                   value={config.agentId}
                   onChange={(e) => updateField("agentId", e.target.value)}
                   style={inputStyle}
+                  disabled={slackSaveInFlight}
                 >
                   <option value="" disabled>Select a Paperclip agent</option>
                   {hasSavedAgentOutsideOptions && <option value={config.agentId}>{config.agentId} (saved)</option>}
@@ -637,6 +620,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                   onChange={(e) => updateField("agentId", e.target.value)}
                   placeholder="UUID of the Paperclip agent"
                   style={inputStyle}
+                  disabled={slackSaveInFlight}
                 />
               )}
               <span style={hintStyle}>{getAgentFieldHint({ companyId, agentsLoading, agentsError, hasAgentOptions })}</span>
@@ -644,14 +628,18 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
             <label style={fieldStyle}>
               <span>Provider <span style={requiredStyle}>*</span></span>
-              <select value={config.provider} onChange={(e) => updateField("provider", e.target.value)} style={inputStyle} disabled={isEditingExistingIdentity}>
+              <select value={config.provider} onChange={(e) => updateField("provider", e.target.value)} style={inputStyle} disabled={isEditingExistingIdentity || slackSaveInFlight}>
                 {(data?.providers ?? []).map((provider) => (
-                  <option key={provider.id} value={provider.id} disabled={provider.status !== "enabled"}>
-                    {provider.name}{provider.status === "coming-soon" ? " (coming soon)" : ""}
+                  <option
+                    key={provider.id}
+                    value={provider.id}
+                    disabled={provider.status !== "enabled" && provider.id !== SLACK_IDENTITY_PROVIDER_ID}
+                  >
+                    {provider.name}{provider.status === "coming-soon" ? (provider.id === SLACK_IDENTITY_PROVIDER_ID ? " (setup only — tools coming soon)" : " (coming soon)") : ""}
                   </option>
                 ))}
               </select>
-              <span style={hintStyle}>Each agent can have one identity per provider. GitHub is available now; additional providers are listed as they are planned.</span>
+              <span style={hintStyle}>Each agent can have one identity per provider. GitHub is fully available; Slack setup can be completed now, but Slack agent tools ship separately.</span>
             </label>
 
             {duplicateIdentity && <div style={validationNoticeStyle}>This agent already has a {getProviderDisplayName(config.provider, data?.providers)} identity. Edit the existing row instead.</div>}
@@ -664,10 +652,12 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 onChange={(e) => updateField("label", e.target.value)}
                 placeholder="e.g. Cade Riven [Droidshop]"
                 style={inputStyle}
+                disabled={slackSaveInFlight}
               />
             </label>
           </fieldset>
 
+          {providerSettingsRegistry.get(config.provider).hasProviderAccountFieldsInIdentityStep && (
           <fieldset style={fieldsetStyle}>
             <legend style={legendStyle}>Provider account</legend>
 
@@ -683,197 +673,22 @@ export function SettingsPage(props: PluginSettingsPageProps) {
               <span style={hintStyle}>Public GitHub App login for this agent. GitHub appends [bot] to app account logins. Repository access is controlled by the GitHub App installation and provider permissions.</span>
             </label>
           </fieldset>
+          )}
           </>
           )}
 
-          {activeFormSection === "github" && (
-          <fieldset style={fieldsetStyle}>
-            <legend style={legendStyle}>GitHub App credential source</legend>
-            {formValidation && !formValidation.credentialComplete && <div style={validationNoticeStyle}>{formValidation.credentialMessage}</div>}
-
-            {hasExistingGitHubAppCredential ? (
-              <div style={inlineNoticeStyle}>
-                <strong>GitHub App already configured.</strong> Edit the fields below to update the saved App ID, Installation ID, or private key source. Creating another manifest is a replacement/rotation flow; it creates a new GitHub App and does not update the existing app in GitHub.
-              </div>
-            ) : (
-              <GitHubAppManifestCreateIntro />
-            )}
-
-            {hasExistingGitHubAppCredential ? (
-              <details>
-                <summary>Replace this GitHub App with a new manifest-created app</summary>
-                <div style={detailsBodyStyle}>
-                  <GitHubAppManifestCreateIntro />
-                  <GitHubAppManifestActions
-                    manifestBusy={manifestBusy}
-                    disabled={!config.agentId || !config.label}
-                    manifestFlow={manifestFlow}
-                    onCreate={() => void handleCreateGitHubAppManifest()}
-                    buttonLabel="Create replacement GitHub App on GitHub"
-                  />
-                </div>
-              </details>
-            ) : (
-              <GitHubAppManifestActions
-                manifestBusy={manifestBusy}
-                disabled={!config.agentId || !config.label}
-                manifestFlow={manifestFlow}
-                onCreate={() => void handleCreateGitHubAppManifest()}
-                buttonLabel="Create GitHub App on GitHub"
-              />
-            )}
-
-            {manifestFlow && (
-              <div style={manifestPanelStyle}>
-                <div style={fieldStyle}>
-                  <span style={hintStyle}>If a popup was blocked, use this manual form:</span>
-                  <form action={manifestFlow.postUrl} method="post" target="_blank">
-                    <input type="hidden" name="manifest" value={manifestFlow.manifest} />
-                    <button type="submit" style={secondaryButtonStyle}>Open GitHub manifest form</button>
-                  </form>
-                </div>
-                <label style={fieldStyle}>
-                  <span>Callback code</span>
-                  <input
-                    type="text"
-                    value={manifestCode}
-                    onChange={(e) => setManifestCode(extractManifestCode(e.target.value))}
-                    placeholder="Paste GitHub's callback URL or just the code=... value"
-                    style={inputStyle}
-                  />
-                </label>
-                <div style={formActionsStyle}>
-                  <button
-                    type="button"
-                    onClick={() => void handleConvertGitHubAppManifest()}
-                    disabled={manifestBusy || !manifestCode.trim()}
-                    style={secondaryButtonStyle}
-                  >
-                    Save generated private key and prefill fields
-                  </button>
-                  {manifestResult && <a href={manifestResult.installUrl} target="_blank" rel="noreferrer" style={linkStyle}>Install GitHub App</a>}
-                </div>
-              </div>
-            )}
-
-            {manifestError && <span style={errorStyle}>{manifestError}</span>}
-            {manifestResult && config.githubInstallationId ? (
-              <span style={successStyle}>GitHub App {manifestResult.appName} installed. Review the prefilled Installation ID, then save this identity.</span>
-            ) : manifestResult ? (
-              <span style={successStyle}>GitHub App {manifestResult.appName} created. Install it on GitHub; Paperclip will prefill the Installation ID when GitHub redirects back.</span>
-            ) : null}
-
-            {hasExistingGitHubAppCredential && (
-              <div style={formActionsStyle}>
-                <a href="https://github.com/settings/apps" target="_blank" rel="noreferrer" style={linkStyle}>Manage GitHub Apps</a>
-                <a href="https://github.com/settings/installations" target="_blank" rel="noreferrer" style={linkStyle}>Manage GitHub App installations</a>
-              </div>
-            )}
-
-            <label style={fieldStyle}>
-              <span>GitHub App ID</span>
-              <input
-                type="text"
-                value={config.githubAppId}
-                onChange={(e) => updateField("githubAppId", e.target.value)}
-                placeholder="GitHub App ID"
-                style={inputStyle}
-              />
-            </label>
-
-            <label style={fieldStyle}>
-              <span>Installation ID</span>
-              <input
-                type="text"
-                value={config.githubInstallationId}
-                onChange={(e) => updateField("githubInstallationId", e.target.value)}
-                placeholder="GitHub App installation ID"
-                style={inputStyle}
-              />
-            </label>
-
-            <label style={fieldStyle}>
-              <span>Private key Paperclip secret UUID</span>
-              {hasSecretOptions ? (
-                <select
-                  value={config.privateKeySecretId}
-                  onChange={(e) => updateField("privateKeySecretId", e.target.value)}
-                  style={inputStyle}
-                >
-                  <option value="">No private key secret reference</option>
-                  {hasSavedSecretOutsideOptions && <option value={config.privateKeySecretId}>{config.privateKeySecretId} (saved)</option>}
-                  {secretOptions.map((secret) => (
-                    <option key={secret.id} value={secret.id}>{formatSecretOption(secret)}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="text"
-                  value={config.privateKeySecretId}
-                  onChange={(e) => updateField("privateKeySecretId", e.target.value)}
-                  placeholder="Company secret UUID containing the GitHub App private key"
-                  style={inputStyle}
-                />
-              )}
-              <span style={hintStyle}>{getSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })}</span>
-            </label>
-
-            <label style={fieldStyle}>
-              <span>Private key file fallback</span>
-              <input
-                type="text"
-                value={config.privateKeyFile}
-                onChange={(e) => updateField("privateKeyFile", e.target.value)}
-                placeholder="<runtime-home>/.paperclip/agent-identities/github-apps/<agent>/private-key.pem"
-                style={inputStyle}
-              />
-              <span style={hintStyle}>Used by plugin tools while a secret UUID is not configured or cannot be resolved. The plugin mints short-lived installation tokens from this private key; it does not store generated tokens.</span>
-            </label>
-
-            <details>
-              <summary>Fallback token source</summary>
-              <div style={detailsBodyStyle}>
-                <label style={fieldStyle}>
-                  <span>Fallback token secret UUID</span>
-                  {hasSecretOptions ? (
-                    <select
-                      value={config.fallbackTokenSecretId}
-                      onChange={(e) => updateField("fallbackTokenSecretId", e.target.value)}
-                      style={inputStyle}
-                    >
-                      <option value="">No fallback token secret reference</option>
-                      {hasSavedFallbackSecretOutsideOptions && <option value={config.fallbackTokenSecretId}>{config.fallbackTokenSecretId} (saved)</option>}
-                      {secretOptions.map((secret) => (
-                        <option key={secret.id} value={secret.id}>{formatSecretOption(secret)}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      value={config.fallbackTokenSecretId}
-                      onChange={(e) => updateField("fallbackTokenSecretId", e.target.value)}
-                      placeholder="Company secret UUID containing a GitHub token"
-                      style={inputStyle}
-                    />
-                  )}
-                  <span style={hintStyle}>{getFallbackTokenSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })}</span>
-                </label>
-                <label style={fieldStyle}>
-                  <span>Fallback token file</span>
-                  <input
-                    type="text"
-                    value={config.tokenFile}
-                    onChange={(e) => updateField("tokenFile", e.target.value)}
-                    placeholder="<runtime-home>/.paperclip/agent-identities/tokens/<agent-id>.token"
-                    style={inputStyle}
-                  />
-                  <span style={hintStyle}>Fallback token files are available for dev and recovery flows. Prefer GitHub App credentials above.</span>
-                </label>
-              </div>
-            </details>
-          </fieldset>
+          {/* The active provider's credential step is mounted entirely from
+              the UI registry -- the shared page no longer branches on provider
+              id strings here (findings #5/#10/#19). The current provider's
+              adapter decides which step id holds its credential fieldset
+              (`credentialStepId`), and we thread in that same provider's hook
+              state (already selected as `activeProviderUIState` above). */}
+          {activeFormSection === activeProviderCredentialStepId && ActiveCredentialStep && (
+            <ActiveCredentialStep
+              state={activeProviderUIState}
+              config={config as unknown as Record<string, string>}
+            />
           )}
-
           {activeFormSection === "commit" && (
           <fieldset style={fieldsetStyle}>
             <legend style={legendStyle}>Commit identity (optional)</legend>
@@ -909,23 +724,23 @@ export function SettingsPage(props: PluginSettingsPageProps) {
             <div style={saveStatusStyle}>
               {saveSuccess && <span style={successStyle}>Saved successfully.</span>}
               {saveError && <span style={errorStyle}>{saveError}</span>}
-              {!saveSuccess && !saveError && formValidation && activeFormSection !== "commit" && <span style={hintStyle}>{formValidation.saveMessage}</span>}
-              {!saveSuccess && !saveError && formValidation && activeFormSection === "commit" && !formValidation.isComplete && <span style={hintStyle}>{formValidation.saveMessage}</span>}
+              {!saveSuccess && !saveError && formValidation && !isLastFormStep && <span style={hintStyle}>{formValidation.saveMessage}</span>}
+              {!saveSuccess && !saveError && formValidation && isLastFormStep && !formValidation.isComplete && <span style={hintStyle}>{formValidation.saveMessage}</span>}
             </div>
             <button
               type="button"
-              onClick={() => setActiveFormSection(getPreviousFormStep(activeFormSection))}
-              disabled={saving || activeFormStepIndex === 0}
-              style={buttonStyle(secondaryButtonStyle, saving || activeFormStepIndex === 0)}
+              onClick={() => setActiveFormSection(getPreviousFormStep(activeFormSection, config.provider))}
+              disabled={saving || slackSaveInFlight || activeFormStepIndex === 0}
+              style={buttonStyle(secondaryButtonStyle, saving || slackSaveInFlight || activeFormStepIndex === 0)}
             >
               Previous
             </button>
-            {activeFormSection !== "commit" ? (
+            {!isLastFormStep ? (
               <button
                 type="button"
-                onClick={() => setActiveFormSection(getNextFormStep(activeFormSection))}
-                disabled={saving || !canGoNext}
-                style={buttonStyle(primaryButtonStyle, saving || !canGoNext)}
+                onClick={() => setActiveFormSection(getNextFormStep(activeFormSection, config.provider))}
+                disabled={saving || slackSaveInFlight || !canGoNext}
+                style={buttonStyle(primaryButtonStyle, saving || slackSaveInFlight || !canGoNext)}
               >
                 Next
               </button>
@@ -939,7 +754,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                 {saving ? "Saving..." : "Save agent"}
               </button>
             )}
-            <button type="button" onClick={() => setFormState(null)} disabled={saving} style={secondaryButtonStyle}>Cancel</button>
+            <button type="button" onClick={() => setFormState(null)} disabled={saving || slackSaveInFlight} style={secondaryButtonStyle}>Cancel</button>
           </footer>
           </section>
         </div>
@@ -986,105 +801,6 @@ function WizardStepIndicator(props: { index: number; label: string; active: bool
       <span>{props.label}</span>
     </div>
   );
-}
-
-function GitHubAppManifestCreateIntro() {
-  return (
-    <div style={inlineNoticeStyle}>
-      <strong>Create a GitHub App with a manifest.</strong> This opens GitHub with the required app permissions prefilled. After GitHub creates the app, Paperclip saves the generated private key file, preloads the App ID, opens the install flow, and restores the form with the Installation ID when GitHub redirects back.
-    </div>
-  );
-}
-
-function GitHubAppManifestActions(props: {
-  manifestBusy: boolean;
-  disabled: boolean;
-  manifestFlow: CreateGitHubAppManifestResult | null;
-  onCreate: () => void;
-  buttonLabel: string;
-}) {
-  return (
-    <div style={formActionsStyle}>
-      <button
-        type="button"
-        onClick={props.onCreate}
-        disabled={props.manifestBusy || props.disabled}
-        style={secondaryButtonStyle}
-      >
-        {props.manifestBusy ? "Working..." : props.buttonLabel}
-      </button>
-      {props.manifestFlow && <span style={hintStyle}>Manifest ready for {props.manifestFlow.appName}. GitHub should be open in a new tab.</span>}
-    </div>
-  );
-}
-
-function submitGitHubAppManifest(flow: CreateGitHubAppManifestResult) {
-  const form = document.createElement("form");
-  form.method = "post";
-  form.action = flow.postUrl;
-  form.target = "_blank";
-  form.setAttribute("rel", "noopener noreferrer");
-  const manifest = document.createElement("input");
-  manifest.type = "hidden";
-  manifest.name = "manifest";
-  manifest.value = flow.manifest;
-  form.appendChild(manifest);
-  document.body.appendChild(form);
-  form.submit();
-  form.remove();
-}
-
-function getManifestReturnUrl(): string {
-  const url = new URL(window.location.href);
-  url.searchParams.delete("code");
-  url.searchParams.delete("installation_id");
-  url.searchParams.delete("setup_action");
-  url.searchParams.delete("state");
-  url.searchParams.set("githubAppManifest", "1");
-  return url.toString();
-}
-
-function getAgentDashboardUrl(agentId: string): string {
-  const url = new URL(window.location.href);
-  const companySegment = url.pathname.split("/").filter(Boolean)[0];
-  const agentSegment = encodeURIComponent(agentId);
-  url.pathname = companySegment
-    ? `/${encodeURIComponent(companySegment)}/agents/${agentSegment}/dashboard`
-    : `/agents/${agentSegment}/dashboard`;
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-}
-
-function getManifestCallbackParams(): { code?: string; installationId?: string; state: string } | null {
-  const url = new URL(window.location.href);
-  const code = url.searchParams.get("code")?.trim();
-  const installationId = url.searchParams.get("installation_id")?.trim();
-  const state = url.searchParams.get("state")?.trim();
-  if (!state?.startsWith("pc_") || (!code && !installationId)) return null;
-  return { ...(code ? { code } : {}), ...(installationId ? { installationId } : {}), state };
-}
-
-function cleanManifestCallbackParams() {
-  const url = new URL(window.location.href);
-  url.searchParams.delete("code");
-  url.searchParams.delete("installation_id");
-  url.searchParams.delete("setup_action");
-  url.searchParams.delete("state");
-  url.searchParams.delete("githubAppManifest");
-  window.history.replaceState(window.history.state, document.title, url.toString());
-}
-
-function extractManifestCode(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-
-  try {
-    const parsed = new URL(trimmed);
-    return parsed.searchParams.get("code")?.trim() || trimmed;
-  } catch {
-    return trimmed.replace(/^code=/i, "").trim();
-  }
 }
 
 function getAgentIdentityDefaults(
@@ -1152,7 +868,7 @@ function slugifyGitHubAppName(value: string): string {
     .replace(/^-+|-+$/g, "") || "paperclip-agent";
 }
 
-function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState {
+export function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState {
   return {
     agentId: entry?.agentId ?? DEFAULT_BOT_IDENTITY_CONFIG.agentId,
     provider: entry?.provider ?? DEFAULT_BOT_IDENTITY_CONFIG.provider,
@@ -1171,124 +887,61 @@ function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState {
     previousGithubInstallationId: entry?.credential?.githubApp?.installationId ?? "",
     previousPrivateKeySecretId: entry?.credential?.githubApp?.privateKeySecretId ?? "",
     previousPrivateKeyFile: entry?.credential?.githubApp?.privateKeyFile ?? "",
+    slackTeamId: entry?.provider === "slack" ? entry.slack.teamId : "",
+    slackAppId: entry?.provider === "slack" ? entry.slack.appId : "",
+    slackBotUserId: entry?.provider === "slack" ? entry.slack.botUserId : "",
+    slackDefaultChannel: entry?.provider === "slack" ? entry.slack.defaultChannel ?? "" : "",
+    slackBotTokenSecretId: "",
   };
 }
 
-const MANIFEST_DRAFT_STORAGE_PREFIX = "paperclip-agent-identities:github-app-manifest-draft:";
+// Composed once here from the per-provider Settings-UI adapters
+// (src/providers/*/settings-adapter.ts) via src/providers/settings-index.ts,
+// mirroring how src/providers/index.ts composes ALL_PROVIDERS for the
+// worker/manifest tool surface -- kept as a separate composition root because
+// providers/index.ts pulls in server-only code unsafe for this client bundle
+// (see settings-index.ts). SettingsPage no longer branches on provider id
+// strings to pick a step list or validation rule set -- it looks up the
+// adapter for the active provider and delegates.
+const providerSettingsRegistry = buildProviderSettingsRegistry([...ALL_SETTINGS_ADAPTERS], GITHUB_IDENTITY_PROVIDER_ID);
 
-function getManifestDraftStorageKey(state: string): string {
-  return MANIFEST_DRAFT_STORAGE_PREFIX + state;
+export function getFormSteps(provider: string): Array<{ id: IdentityFormSection; label: string }> {
+  return providerSettingsRegistry.get(provider).formSteps as Array<{ id: IdentityFormSection; label: string }>;
 }
 
-function writeManifestDraftForm(state: string, formState: IdentityFormState): void {
-  try {
-    window.sessionStorage.setItem(getManifestDraftStorageKey(state), JSON.stringify(formState));
-  } catch {
-    // Redirect restoration is best-effort; the server-side manifest flow still restores required fields.
-  }
+export function getIdentityFormValidation(
+  config: IdentityFormState,
+  hasDuplicate = false,
+  slackSaveResult: SaveSlackInstallMetadataResult | null = null,
+  slackSaveBusy = false,
+): IdentityFormValidation {
+  const adapter = providerSettingsRegistry.get(config.provider);
+  return adapter.getValidation(config, hasDuplicate, { slackSaveResult, slackSaveBusy });
 }
 
-function readManifestDraftForm(state: string): IdentityFormState | null {
-  try {
-    const raw = window.sessionStorage.getItem(getManifestDraftStorageKey(state));
-    if (!raw) return null;
-    return normalizeManifestDraftForm(JSON.parse(raw));
-  } catch {
-    return null;
-  }
+function getFormStepIndex(step: IdentityFormSection, provider: string): number {
+  return getFormSteps(provider).findIndex((entry) => entry.id === step);
 }
 
-function deleteManifestDraftForm(state: string): void {
-  try {
-    window.sessionStorage.removeItem(getManifestDraftStorageKey(state));
-  } catch {
-    // Ignore sessionStorage cleanup failures; stale drafts are scoped by opaque manifest state.
-  }
+function getNextFormStep(step: IdentityFormSection, provider: string): IdentityFormSection {
+  const steps = getFormSteps(provider);
+  return steps[Math.min(getFormStepIndex(step, provider) + 1, steps.length - 1)]?.id ?? step;
 }
 
-function normalizeManifestDraftForm(raw: unknown): IdentityFormState | null {
-  if (!isRecord(raw)) return null;
-  return {
-    agentId: readString(raw.agentId),
-    provider: readString(raw.provider) || GITHUB_IDENTITY_PROVIDER_ID,
-    label: readString(raw.label),
-    githubUsername: readString(raw.githubUsername),
-    commitName: readString(raw.commitName),
-    commitEmail: readString(raw.commitEmail),
-    githubAppId: readString(raw.githubAppId),
-    githubInstallationId: readString(raw.githubInstallationId),
-    privateKeySecretId: readString(raw.privateKeySecretId),
-    privateKeyFile: readString(raw.privateKeyFile),
-    fallbackTokenSecretId: readString(raw.fallbackTokenSecretId),
-    tokenFile: readString(raw.tokenFile),
-    previousAgentId: readString(raw.previousAgentId),
-    previousGithubAppId: readString(raw.previousGithubAppId),
-    previousGithubInstallationId: readString(raw.previousGithubInstallationId),
-    previousPrivateKeySecretId: readString(raw.previousPrivateKeySecretId),
-    previousPrivateKeyFile: readString(raw.previousPrivateKeyFile),
-  };
-}
-
-const FORM_STEPS: Array<{ id: IdentityFormSection; label: string }> = [
-  { id: "identity", label: "Identity" },
-  { id: "github", label: "GitHub App" },
-  { id: "commit", label: "Commit" },
-];
-
-function getIdentityFormValidation(config: IdentityFormState, hasDuplicate = false): IdentityFormValidation {
-  const hasIdentity = Boolean(config.agentId.trim() && config.provider.trim() && config.label.trim() && config.githubUsername.trim()) && !hasDuplicate;
-  const hasGitHubAppCredential = Boolean(
-    config.githubAppId.trim() &&
-    config.githubInstallationId.trim() &&
-    (config.privateKeySecretId.trim() || config.privateKeyFile.trim())
-  );
-  const hasFallbackCredential = Boolean(config.fallbackTokenSecretId.trim() || config.tokenFile.trim());
-  const identityComplete = hasIdentity;
-  const credentialComplete = hasGitHubAppCredential || hasFallbackCredential;
-  const identityMessage = hasDuplicate
-    ? "This agent already has an identity for the selected provider. Edit the existing identity instead."
-    : !hasIdentity
-      ? "Choose an agent, provider, label, and provider username before continuing."
-    : "Identity details are complete.";
-  const credentialMessage = credentialComplete
-    ? "Credential source is complete."
-    : "Add a complete GitHub App credential, or choose a fallback token source, before this identity can be saved.";
-  const saveMessage = !identityComplete
-    ? identityMessage
-    : !credentialComplete
-      ? credentialMessage
-      : "Required setup is complete. Review optional commit metadata, then save.";
-  return {
-    identityComplete,
-    credentialComplete,
-    isComplete: identityComplete && credentialComplete,
-    identityMessage,
-    credentialMessage,
-    saveMessage,
-  };
-}
-
-function getFormStepIndex(step: IdentityFormSection): number {
-  return FORM_STEPS.findIndex((entry) => entry.id === step);
-}
-
-function getNextFormStep(step: IdentityFormSection): IdentityFormSection {
-  return FORM_STEPS[Math.min(getFormStepIndex(step) + 1, FORM_STEPS.length - 1)]?.id ?? step;
-}
-
-function getPreviousFormStep(step: IdentityFormSection): IdentityFormSection {
-  return FORM_STEPS[Math.max(getFormStepIndex(step) - 1, 0)]?.id ?? step;
+function getPreviousFormStep(step: IdentityFormSection, provider: string): IdentityFormSection {
+  const steps = getFormSteps(provider);
+  return steps[Math.max(getFormStepIndex(step, provider) - 1, 0)]?.id ?? step;
 }
 
 function canAdvanceFromStep(step: IdentityFormSection, validation: IdentityFormValidation): boolean {
   if (step === "identity") return validation.identityComplete;
-  if (step === "github") return validation.credentialComplete;
+  if (step === "github" || step === "slack") return validation.credentialComplete;
   return validation.isComplete;
 }
 
 function isWizardStepComplete(step: IdentityFormSection, validation: IdentityFormValidation): boolean {
   if (step === "identity") return validation.identityComplete;
-  if (step === "github") return validation.credentialComplete;
+  if (step === "github" || step === "slack") return validation.credentialComplete;
   return validation.isComplete;
 }
 
@@ -1306,7 +959,7 @@ function getProviderDisplayName(providerId: string, providers: BotIdentitySettin
   return providers?.find((provider) => provider.id === providerId)?.name ?? providerId;
 }
 
-function formatSecretOption(secret: PaperclipSecretOption): string {
+export function formatSecretOption(secret: PaperclipSecretOption): string {
   const label = secret.name || secret.key || secret.id;
   const details = [secret.key && secret.key !== label ? secret.key : null, secret.status, secret.provider]
     .filter(Boolean)
@@ -1314,7 +967,7 @@ function formatSecretOption(secret: PaperclipSecretOption): string {
   return details ? `${label} (${details})` : label;
 }
 
-function getSecretFieldHint(input: {
+export function getSecretFieldHint(input: {
   companyId: string;
   secretsLoading: boolean;
   secretsError: string | null;
@@ -1335,7 +988,7 @@ function getSecretFieldHint(input: {
   return "Saved as a Paperclip secret reference for the GitHub App private key and optionally propagated to agent environments.";
 }
 
-function getFallbackTokenSecretFieldHint(input: {
+export function getFallbackTokenSecretFieldHint(input: {
   companyId: string;
   secretsLoading: boolean;
   secretsError: string | null;
@@ -2130,7 +1783,7 @@ const saveStatusStyle: CSSProperties = {
   fontSize: "0.875rem",
 };
 
-const validationNoticeStyle: CSSProperties = {
+export const validationNoticeStyle: CSSProperties = {
   padding: "0.65rem 0.75rem",
   border: "1px solid color-mix(in srgb, var(--agent-identities-warning) 36%, transparent)",
   borderRadius: 8,
@@ -2139,7 +1792,7 @@ const validationNoticeStyle: CSSProperties = {
   fontSize: "0.875rem",
 };
 
-const fieldsetStyle: CSSProperties = {
+export const fieldsetStyle: CSSProperties = {
   border: `1px solid ${uiBorder}`,
   borderRadius: 12,
   padding: "1rem",
@@ -2147,21 +1800,21 @@ const fieldsetStyle: CSSProperties = {
   gap: "0.75rem",
 };
 
-const legendStyle: CSSProperties = {
+export const legendStyle: CSSProperties = {
   padding: "0 0.25rem",
   color: uiText,
   fontSize: "0.875rem",
   fontWeight: 600,
 };
 
-const fieldStyle: CSSProperties = {
+export const fieldStyle: CSSProperties = {
   display: "grid",
   gap: "0.35rem",
   fontSize: "0.875rem",
   fontWeight: 600,
 };
 
-const inputStyle: CSSProperties = {
+export const inputStyle: CSSProperties = {
   minHeight: 38,
   padding: "0.45rem 0.65rem",
   border: `1px solid ${uiBorderStrong}`,
@@ -2171,18 +1824,18 @@ const inputStyle: CSSProperties = {
   color: uiText,
 };
 
-const textareaStyle: CSSProperties = {
+export const textareaStyle: CSSProperties = {
   ...inputStyle,
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
 };
 
-const detailsBodyStyle: CSSProperties = {
+export const detailsBodyStyle: CSSProperties = {
   display: "grid",
   gap: "0.75rem",
   marginTop: "0.75rem",
 };
 
-const manifestPanelStyle: CSSProperties = {
+export const manifestPanelStyle: CSSProperties = {
   display: "grid",
   gap: "0.75rem",
   padding: "0.85rem",
@@ -2191,12 +1844,12 @@ const manifestPanelStyle: CSSProperties = {
   backgroundColor: uiPanel,
 };
 
-const linkStyle: CSSProperties = {
+export const linkStyle: CSSProperties = {
   color: uiLink,
   fontWeight: 600,
 };
 
-const inlineNoticeStyle: CSSProperties = {
+export const inlineNoticeStyle: CSSProperties = {
   padding: "0.75rem 0.9rem",
   border: `1px solid ${uiBorder}`,
   borderRadius: 10,
@@ -2205,13 +1858,13 @@ const inlineNoticeStyle: CSSProperties = {
   fontSize: "0.875rem",
 };
 
-const hintStyle: CSSProperties = {
+export const hintStyle: CSSProperties = {
   fontSize: "0.8125rem",
   fontWeight: 400,
   color: uiMutedText,
 };
 
-const formActionsStyle: CSSProperties = {
+export const formActionsStyle: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "0.75rem",
@@ -2229,7 +1882,7 @@ const primaryButtonStyle: CSSProperties = {
   fontWeight: 650,
 };
 
-const secondaryButtonStyle: CSSProperties = {
+export const secondaryButtonStyle: CSSProperties = {
   minHeight: 34,
   padding: "0.4rem 0.75rem",
   backgroundColor: uiSurface,
@@ -2245,15 +1898,15 @@ const dangerButtonStyle: CSSProperties = {
   color: uiDanger,
 };
 
-const requiredStyle: CSSProperties = {
+export const requiredStyle: CSSProperties = {
   color: uiDanger,
 };
 
-const successStyle: CSSProperties = {
+export const successStyle: CSSProperties = {
   color: uiSuccess,
 };
 
-const errorStyle: CSSProperties = {
+export const errorStyle: CSSProperties = {
   color: uiDanger,
 };
 

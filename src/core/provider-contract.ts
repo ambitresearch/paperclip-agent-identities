@@ -12,8 +12,9 @@ export interface IdentityProviderDefinition {
   // Gates the provider's presence in agent-facing surfaces: the settings UI
   // provider picker (src/ui/SettingsPage.tsx) and the shared provider list
   // (src/shared/types.ts's SUPPORTED_IDENTITY_PROVIDERS). A provider can be
-  // "coming-soon" here (its settings/config wiring isn't finished) while its
-  // tool surface is independently live — see `toolsStatus`.
+  // "coming-soon" here (its full tool surface isn't finished, even if its
+  // setup/config UI is live) while a subset of its tools is independently
+  // live — see `toolsStatus`.
   readonly status: IdentityProviderStatus;
   // Gates whether the provider's `tools`/`manifestTools` are actually wired
   // into the runtime tool registry (src/worker.ts) and the composed plugin
@@ -21,9 +22,11 @@ export interface IdentityProviderDefinition {
   // provider that doesn't set this explicitly keeps the original
   // status-gates-everything behavior. Set this independently of `status` when
   // a provider's tool implementation is functionally complete and tested
-  // before its settings/config UI lands (e.g. Slack: DRO-973's
-  // slack_bot_post_message tool is live even though the Slack settings UI,
-  // DRO-976/1006, is still pending).
+  // before its *entire* tool surface lands (e.g. Slack: DRO-973's
+  // slack_bot_post_message and DRO-972's slack_bot_whoami tools are live
+  // even though `status` stays "coming-soon" until the remaining
+  // react/lookup-channel tools, DRO-974/975, land — independent of the
+  // Slack settings UI, which is already live, see src/ui/SettingsPage.tsx).
   readonly toolsStatus?: IdentityProviderStatus;
   readonly description: string;
 }

@@ -20,16 +20,17 @@ const slackProviderDefinition: IdentityProviderDefinition = {
   // `slack_bot_whoami` identity self-check tool (DRO-972), and
   // slack_bot_post_message (posting + threaded replies, DRO-973) all exist
   // now. The remaining tools (react/lookup-channel) are separate,
-  // still-backlog work (DRO-974/975). `status` stays "coming-soon" until the
-  // settings UI wiring for Slack identities is finished (tracked separately
-  // in DRO-976/1006) — that keeps Slack out of the provider picker and
-  // SUPPORTED_IDENTITY_PROVIDERS-driven UI surfaces. `toolsStatus` is set to
-  // "enabled" independently: it is what actually gates live tool
-  // registration (registry.toolsEnabled()/liveTools(), consumed by
-  // worker.ts/manifest.ts), so slack_bot_post_message and slack_bot_whoami
-  // are reachable now even though the settings UI isn't ready. Once the
-  // settings UI lands, flip `status` to "enabled" too and `toolsStatus`
-  // becomes redundant (but harmless) to keep.
+  // still-backlog work (DRO-974/975). The manifest-assisted Slack setup UI
+  // (DRO-1025/#73) is also live in Settings, and the provider picker there
+  // already surfaces Slack as selectable (see SettingsPage.tsx). `status`
+  // stays "coming-soon" purely because the *full* tool surface (react/
+  // lookup-channel) isn't finished yet -- not because setup is unavailable.
+  // `toolsStatus` is set to "enabled" independently: it is what actually
+  // gates live tool registration (registry.toolsEnabled()/liveTools(),
+  // consumed by worker.ts/manifest.ts), so slack_bot_post_message and
+  // slack_bot_whoami are reachable now even though `status` hasn't flipped.
+  // Once react/lookup-channel land, flip `status` to "enabled" too and
+  // `toolsStatus` becomes redundant (but harmless) to keep.
   status: "coming-soon",
   toolsStatus: "enabled",
   description:

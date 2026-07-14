@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { createProviderTool } from "../src/core/tool-pipeline.js";
 import type { IdentityProvider, ProviderToolSpec } from "../src/core/provider-contract.js";
 import type { ResourceReference } from "../src/core/resource-reference.js";
+import { slackBotPostMessageToolSpec } from "../src/providers/slack/tools/post-message.js";
+import { resolveSlackCredential } from "../src/providers/slack/credentials.js";
+import type { SlackAgentIdentity } from "../src/providers/slack/config.js";
 
 interface Ref extends ResourceReference {
   kind: "repo";
@@ -191,5 +194,68 @@ describe("tool pipeline security ordering", () => {
     expect(calls).not.toContain("resolveCredential");
     expect(calls).not.toContain("resolveResourceRef");
     expect(result).toEqual({ echoedToken: null });
+  });
+});
+
+describe("tool pipeline security ordering — real Slack provider regression", () => {
+  // Regression for the Slack-specific wrong-team review finding: exercise
+  // `slack_bot_post_message` through the actual generic `createProviderTool`
+  // pipeline (not a fixture stand-in for it), with a wrong-team target, and
+  // prove neither Slack's credential resolver nor its `chat.postMessage`
+  // fetch/perform path is ever invoked. The team-mismatch denial must happen
+  // entirely inside `resolveResourceRef` (see channel-ref.ts), before step 4
+  // (resolveCredential) runs.
+  it("denies slack_bot_post_message on a wrong-team target before the Slack credential resolver or chat.postMessage fetch ever runs", async () => {
+    const slackIdentity: SlackAgentIdentity = {
+      label: "Bot",
+      teamId: "T0123456789",
+      appId: "A0123456789",
+      botUserId: "U0123456789"
+    };
+
+    const resolveCredentialSpy = vi.fn(resolveSlackCredential);
+    const fetchSpy = vi.fn(async () => {
+      throw new Error("chat.postMessage must never be called for a wrong-team target");
+    });
+
+    const provider = {
+      id: "slack",
+      definition: { id: "slack", name: "Slack", status: "coming-soon", description: "" },
+      validateConfig: () => ({}),
+      projectPluginConfig: () => ({}),
+      resolveCredential: resolveCredentialSpy,
+      tools: [slackBotPostMessageToolSpec],
+      manifestTools: []
+    } as unknown as IdentityProvider<SlackAgentIdentity, ResourceReference>;
+
+    const deps = {
+      resolveIdentity: async () => ({ agentId: "agent-1", identity: slackIdentity }),
+      redactSecrets: <T,>(value: T): T => value
+    };
+
+    const ctx = {
+      activity: { log: vi.fn().mockResolvedValue(undefined) },
+      logger: { error: vi.fn(), info: vi.fn() },
+      http: { fetch: fetchSpy },
+      secrets: { resolve: vi.fn() }
+    } as never;
+
+    const tool = createProviderTool(
+      provider,
+      slackBotPostMessageToolSpec as unknown as ProviderToolSpec<SlackAgentIdentity, ResourceReference>,
+      ctx,
+      deps
+    );
+
+    const result = await tool.handler(
+      { channel: "C0123456789", text: "hello", teamId: "T9999999999" },
+      { agentId: "agent-1", companyId: "co-1", projectId: "proj-1", runId: "run-1" } as never
+    );
+
+    expect(result).toEqual({
+      error: "Slack resource denied: workspace mismatch. Expected team 'T0123456789', got 'T9999999999'."
+    });
+    expect(resolveCredentialSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

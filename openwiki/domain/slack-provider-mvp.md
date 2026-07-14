@@ -207,27 +207,42 @@ which a Slack token could land in an agent's environment/logs.
 | **Credential disclosure** (bot token / signing secret / refresh token leaked via config, logs, git, tool output) | Same invariant as GitHub: `resolveCredential` mints/reads the token just-in-time from the sidecar (Paperclip-secret-backed), never persisted in `AgentIdentityConfig`, never returned by any tool `perform()`. Follows the mandatory pipeline order (validate params → resolve identity → resolve resource ref → resolve credentials → perform → redact) so a credential is only in memory for the shortest possible window. |
 | **Confused-deputy posting** (agent A's tool call posts using agent B's Slack identity) | `resolveAgentIdentity()` keys strictly off `runContext.agentId` (same as GitHub) — there is no cross-agent identity parameter a tool call can supply. Because Slack identity is 1 app/bot-user per agent, there is no shared-token surface for a mixup to exploit (unlike a hypothetical shared workspace app). |
 | **Forged OAuth callbacks** | MVP doesn't implement an OAuth callback at all (manifest deep-link + operator paste-back of IDs only) — this threat class is deferred until/unless an in-house OAuth install flow is built, at which point the decision record's OAuth section (state validation, exact redirect-URI match) is the mandatory implementation baseline. |
-| **Replayed events** (inbound Events API POSTs replayed by an attacker) | Deferred to when inbound event handling ships (see §10) — the Events API path must verify `X-Slack-Signature`/`X-Slack-Request-Timestamp` per the decision record's HTTP-vs-Socket-Mode section, AND reject requests with a timestamp outside a small window (Slack's own recommended ±5 min) to bound replay. |
+| **Replayed events** (inbound Events API POSTs replayed by an attacker) | Implemented (DRO-975, see §10): `src/providers/slack/ingress/signature.ts` verifies `X-Slack-Signature`/`X-Slack-Request-Timestamp` per the decision record's HTTP-vs-Socket-Mode section, AND rejects requests with a timestamp outside a 5-minute window to bound replay. |
 | **Cross-workspace IDs** (a `teamId`/`channel` ref from workspace X accidentally used against workspace Y's token) | `SlackChannelRef.teamId` is carried alongside `channel` through `resolveResourceRef`; the tool must assert `identity.slack.teamId === ref.teamId` before calling `perform`, the same "expectedRepository mismatch guard" pattern GitHub's push tool already uses for cross-repo mixups. |
 | **Revoked tokens** (bot token revoked/uninstalled mid-operation) | `resolveCredential` calls fail closed (matching `fail closed with stable error on credential resolution failure`, already implemented for GitHub in `f8baa63`) — a Slack API 401/`invalid_auth` response surfaces as a tool error, not a silent no-op or retry-with-stale-token. |
 | **Logging** (accidental token/signing-secret leakage into structured logs or error messages) | Errors from Slack API calls must be sanitized the same way GitHub App token errors already avoid returning secret values (see "GitHub App token minting" section of `agent-identities.md`) — never log full request/response bodies for Slack `oauth.v2.access`, `apps.manifest.*`, or Events API signature-verification failures. |
 
-## 10. Inbound events — ship or defer?
+## 10. Inbound events — shipped (DRO-975)
 
-**Decision: defer inbound event handling from MVP.** MVP tools are all agent-initiated
-(post/reply/react/lookup) via `slack-whoami`-style just-in-time credential resolution — no
-long-running listener needed. Shipping `app_mention` inbound events requires:
+**Update:** inbound HTTP Events API ingress has shipped (DRO-975, PR #81), superseding the "defer"
+decision this section previously recorded. Socket Mode remains deferred/operator-opt-in per the
+decision record — HTTP Events API is the only transport implemented.
 
-- a durable HTTPS Request URL endpoint on the Paperclip-hosted worker (deferred — needs its own
-  signature-verification, ack-within-3s, and retry-dedup implementation, plus a decision on how an
-  inbound Slack event maps to triggering an agent run, which is a product decision beyond this
-  provider's scope);
-- the replay/timestamp-window mitigation in §9.
+Implementation (`src/providers/slack/ingress/`):
 
-Recorded as a downstream, not-yet-scoped task. If/when it ships, it is transport `HTTP Events API`
-(not Socket Mode) per the decision record, added as a new worker route composed through the
-provider registry the same way `contributeActions` composes today — not a new `worker.ts`
-provider-specific branch.
+- `signature.ts` — verifies `X-Slack-Signature` (HMAC-SHA256, constant-time compare) and rejects
+  requests whose `X-Slack-Request-Timestamp` falls outside a 5-minute window, before the body is
+  parsed or trusted, per the §9 replay mitigation.
+- `routing.ts` — routes an inbound event to exactly one agent keyed on `(api_app_id, team_id)`; no
+  match or more than one match both fail closed (no best-effort fan-out).
+- `dedup.ts` — deduplicates Slack retries/`event_id`s per agent via plugin state so a Slack-side
+  retry (e.g. after a slow ack) never re-triggers agent work twice.
+- `webhook-handler.ts` — the pure pipeline composing the above, plus the `url_verification`
+  handshake.
+- `provider-webhook.ts` — wires the pipeline to a `PluginContext`: resolves the signing secret via
+  the credential sidecar just-in-time (never persisted, never logged), then invokes the routed
+  agent.
+
+Composed generically: `src/core/provider-contract.ts` adds an optional `webhooks`/`handleWebhook`
+seam (mirroring the existing `manifestTools`/`liveTools()` pattern), `src/manifest.ts` declares the
+`slack-events` endpoint through the registry, and `src/worker.ts` dispatches `onWebhook` deliveries
+by `endpointKey` via the registry — no Slack-specific branch in either file. 61 unit/integration
+tests cover URL verification, signature/timestamp rejection, routing ambiguity, dedup, and worker
+wiring (`tests/providers/slack/ingress-*.spec.ts`).
+
+**Still deferred**, unchanged from the decision record: Socket Mode as an alternate transport, and
+the app-manifest generator's `app_mentions:read` scope (a small follow-up now that ingress exists
+to consume it).
 
 ## 11. Coexistence with the `paperclip-slack-agent` plugin
 
@@ -238,16 +253,24 @@ Slack app manifest, bot token, and per-agent identity mapping, exactly as it own
 identity today and nothing about GitHub's CI/PR-automation logic. The boundary:
 
 - **This provider owns**: Slack app creation (manifest), credential sidecar storage, `resolveCredential`,
-  and narrowly-scoped tools (`post-message`, `reply-thread`, `react`, `lookup-channel`, `whoami`).
+  narrowly-scoped tools (`post-message`, `reply-thread`, `react`, `lookup-channel`, `whoami`), and
+  (as of DRO-975) the HTTP Events API ingress endpoint itself — signature/timestamp verification,
+  app-ID+team-ID routing to exactly one agent, and retry dedup (see §10). Routing here means
+  "identify which Paperclip agent identity a raw Slack event belongs to and invoke it," not
+  "interpret the event's semantics or drive a conversational agent runtime."
 - **`paperclip-slack-agent` (if/when it needs Slack credentials) owns**: consuming those
   credentials/tokens via the same `resolveIdentityForProvider()`/registry surface other Paperclip
   code already uses to read a provider identity — it should not mint or store its own separate copy
-  of a Slack bot token. If `paperclip-slack-agent` already has its own token acquisition path, that
-  is a duplication to reconcile before this provider ships, not something to silently ignore; flag
-  it explicitly in the implementation task rather than merge two credential stores for the same
-  Slack app.
-- Responsibilities do not collide because this provider does not run any inbound listener or agent
-  dispatch logic (see §10) — it purely supplies identity + credentialed tool calls.
+  of a Slack bot token, and it should not stand up a second, competing Events API Request URL for
+  the same Slack app (this provider's `slack-events` endpoint, wired in `src/manifest.ts`/
+  `src/worker.ts`, is the one ingress path). If `paperclip-slack-agent` already has its own token
+  acquisition path or its own event listener, that is a duplication to reconcile, not something to
+  silently ignore; flag it explicitly rather than merge two credential stores or two ingress
+  endpoints for the same Slack app.
+- Responsibilities do not collide: this provider's ingress (§10) only performs identity resolution,
+  auth/replay verification, and routing to invoke the correct agent — it does not interpret event
+  payloads, run conversational/turn logic, or own any Slack-facing agent-runtime behavior. That
+  remains `paperclip-slack-agent`'s domain if/when it consumes these routed events.
 
 ## 12. MVP vs. deferred capability matrix
 
@@ -255,7 +278,7 @@ identity today and nothing about GitHub's CI/PR-automation logic. The boundary:
 | --- | --- | --- |
 | One app/bot per agent, manifest deep-link install | ✅ | |
 | `slack-whoami`, `-post-message`, `-reply-thread`, `-react`, `-lookup-channel` tools | ✅ | |
-| HTTP Events API inbound (`app_mention`) | | ✅ (§10) |
+| HTTP Events API inbound routing/dedup (DRO-975) | ✅ (§10) | |
 | Socket Mode | | ✅ (operator opt-in only, per decision record) |
 | App Manifest API (`apps.manifest.*`) bulk automation | | ✅ (operator-only, per decision record) |
 | In-house OAuth v2 install flow (vs. manifest deep-link + paste-back) | | ✅ |

@@ -1,8 +1,21 @@
-import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
+import type { PluginContext, PluginWebhookInput, ToolRunContext } from "@paperclipai/plugin-sdk";
 import type { ResolvedAgentIdentity } from "./agent-identity.js";
 import type { ResourceReference } from "./resource-reference.js";
 
 export type { ResourceReference };
+
+// Generic manifest-facing webhook endpoint declaration a provider can
+// contribute. Mirrors `manifestTools`/`contributeActions`: this is the ONE
+// seam `src/manifest.ts`/`src/worker.ts` use to learn about inbound HTTP
+// endpoints, so adding Slack's Events API ingress (DRO-975) requires no
+// provider-specific branch in either file. Shape matches the SDK's
+// `PluginWebhookDeclaration` one-for-one; kept as a separate provider-owned
+// type so this module does not otherwise depend on manifest types.
+export interface ProviderWebhookDeclaration {
+  readonly endpointKey: string;
+  readonly displayName: string;
+  readonly description?: string;
+}
 
 export type IdentityProviderStatus = "enabled" | "coming-soon";
 
@@ -112,4 +125,12 @@ export interface IdentityProvider<
   readonly tools: ReadonlyArray<ProviderToolSpec<TIdentity, TRef>>;
   contributeActions?(ctx: PluginContext): void;
   readonly manifestTools: ReadonlyArray<unknown>;
+  // Optional inbound-webhook surface a provider contributes (e.g. Slack's
+  // HTTP Events API ingress, DRO-975). Both are optional and provider-owned:
+  // `webhooks` feeds `src/manifest.ts`'s `webhooks` array generically, and
+  // `handleWebhook` is dispatched by `src/worker.ts`'s single `onWebhook`
+  // hook by matching `input.endpointKey` against each provider's declared
+  // `endpointKey`s -- no provider-specific branch in either file.
+  readonly webhooks?: ReadonlyArray<ProviderWebhookDeclaration>;
+  handleWebhook?(input: PluginWebhookInput, ctx: PluginContext): Promise<void>;
 }

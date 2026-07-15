@@ -1,5 +1,16 @@
-import type { IdentityProvider, ProviderToolSpec } from "./provider-contract.js";
+import type { IdentityProvider, ProviderToolSpec, ProviderWebhookDeclaration } from "./provider-contract.js";
 import type { ResourceReference } from "./resource-reference.js";
+
+/**
+ * A webhook endpoint declaration paired with the provider that owns it, and
+ * that provider's handler. Returned by `webhooks()` so generic consumers
+ * (worker/manifest) can compose inbound HTTP endpoints without a
+ * provider-specific branch (mirrors `LiveProviderTool`/`liveTools()`).
+ */
+export interface ProviderWebhook {
+  readonly provider: IdentityProvider;
+  readonly declaration: ProviderWebhookDeclaration;
+}
 
 /**
  * A tool paired with the provider that owns it. Returned by `liveTools()` so
@@ -45,6 +56,16 @@ export interface ProviderRegistry {
    * should use instead of branching on provider id.
    */
   liveTools(): readonly LiveProviderTool[];
+  /**
+   * Every webhook endpoint declared by any registered provider (regardless
+   * of provider `status` -- a "coming-soon" provider can still ship inbound
+   * ingress ahead of its tool surface, same precedent as `live` tools). The
+   * ONE generic seam `src/manifest.ts` uses to build the manifest's
+   * `webhooks` array and `src/worker.ts`'s `onWebhook` uses to find the
+   * owning provider by `endpointKey` -- no provider-specific branch in
+   * either file.
+   */
+  webhooks(): readonly ProviderWebhook[];
 }
 
 export function buildProviderRegistry(providers: readonly IdentityProvider[]): ProviderRegistry {
@@ -81,6 +102,15 @@ export function buildProviderRegistry(providers: readonly IdentityProvider[]): P
         }
       }
       return live;
+    },
+    webhooks(): readonly ProviderWebhook[] {
+      const declared: ProviderWebhook[] = [];
+      for (const provider of ordered) {
+        for (const declaration of provider.webhooks ?? []) {
+          declared.push({ provider: provider as IdentityProvider, declaration });
+        }
+      }
+      return declared;
     }
   };
 }

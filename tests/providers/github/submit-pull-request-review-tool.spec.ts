@@ -158,6 +158,7 @@ describe("githubSubmitPullRequestReviewToolSpec.perform", () => {
     const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://api.github.com/repos/acme/widgets/pulls/7/reviews");
     expect((init.headers as Record<string, string>)["Authorization"]).toBe("Bearer tok");
+    expect((init.headers as Record<string, string>)["User-Agent"]).toBe("paperclip-agent-identities/github-api");
     expect(result.data.id).toBe(99);
     expect(result.content).toContain("APPROVE");
   });

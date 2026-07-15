@@ -8,6 +8,7 @@ import { resolveSlackCredential } from "./credentials.js";
 import { contributeSlackAppManifestActions } from "./app-manifest.js";
 import { slackWhoamiToolSpec } from "./tools/whoami.js";
 import { slackManifestTools } from "./manifest-tools.js";
+import { slackWebhookDeclarations, handleSlackProviderWebhook } from "./ingress/provider-webhook.js";
 import { slackBotPostMessageToolSpec } from "./tools/post-message.js";
 import { slackBotPostMessageManifestTool } from "../../shared/slack-bot-post-message-tool.js";
 import { slackAddReactionToolSpec, slackRemoveReactionToolSpec } from "./tools/react.js";
@@ -60,5 +61,12 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
     slackRemoveReactionToolSpec
   ],
   contributeActions: contributeSlackAppManifestActions,
-  manifestTools: [...slackManifestTools, slackBotPostMessageManifestTool]
+  manifestTools: [...slackManifestTools, slackBotPostMessageManifestTool],
+  // HTTP Events API ingress (DRO-1005): the design decision record
+  // (openwiki/domain/slack-provisioning-decision.md) selects HTTP Events API
+  // over Socket Mode as the default/only transport implemented here. Composed
+  // through the generic `webhooks`/`handleWebhook` provider-contract seam --
+  // no provider-specific branch in src/worker.ts or src/manifest.ts.
+  webhooks: slackWebhookDeclarations,
+  handleWebhook: handleSlackProviderWebhook
 };

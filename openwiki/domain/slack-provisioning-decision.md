@@ -1,10 +1,10 @@
 # Slack app manifests and per-agent provisioning — decision record
 
-Status: **decided (research)** — this remains a research/decision record, not an implementation
-spec. The identity-config and credential-resolver slice it informed (`src/providers/slack/`,
-see [`slack-provider-mvp.md`](./slack-provider-mvp.md)) is now implemented; the per-agent
-provisioning automation (manifest deep link / App Manifest API flow) and the actual Slack tools
-described below remain **deferred, unimplemented** future work.
+Status: **decided** — this remains the transport/provisioning decision record. The HTTP Events API
+receiver it selected is implemented by DRO-1005/PR #81. Generated app-manifest Request URL and
+event-subscription provisioning remain deferred, so the receiver is not automatically enabled for
+apps created by the current settings flow. Socket Mode remains an unimplemented, operator-opt-in
+future transport; the target manifest below keeps it disabled.
 
 ## Decision
 
@@ -21,28 +21,28 @@ described below remain **deferred, unimplemented** future work.
   link, chooses "From an app manifest," pastes in the JSON our plugin generated, reviews what
   Slack renders, picks the target workspace, and clicks **Create**. Slack then walks the operator
   through installing the app to the workspace, which produces the bot token (and, per the
-  canonical manifest, a signing secret). This install sequence itself requires no Slack credential
+  target manifest, a signing secret). This install sequence itself requires no Slack credential
   of any kind inside Paperclip's config, workspace, or logs — only a URL and manifest JSON our
   plugin generates. The resulting bot token is the mandatory downstream artifact: the operator
   must copy it into a Paperclip company secret and record only that secret's UUID
   (`botTokenSecretId`) in the credential sidecar (see "Downstream assumptions" and the
   shareable-vs-secret table below) before any Slack tool can resolve credentials —
-  `resolveSlackBotToken` reads only the bot token. The signing secret is also produced by the
-  manifest's canonical shape, but it is reserved for the deferred inbound Events API / HTTP
-  request-signature verification path (see "Event transport" below) and is optional for the MVP:
-  no MVP tool or credential resolution path requires it today.
+  `resolveSlackBotToken` reads only the bot token. The signing secret is consumed by the DRO-1005
+  HTTP receiver for request-signature verification (see "Event transport" below), but the current
+  generated manifest does not provision an Events API Request URL or subscriptions. It remains
+  optional unless an operator separately enables that inbound path.
   Source: [App manifests overview](https://api.slack.com/reference/manifests) (the "From an app
   manifest" creation flow is UI paste-in; no query-string prefill parameter is documented).
 - **Event transport: HTTP Events API (Request URL), not Socket Mode.** Rejected Socket Mode for
   the default path — see rationale below. Socket Mode remains an optional advanced mode for
-  operators who cannot expose a public HTTPS endpoint.
+  operators who cannot expose a public HTTPS endpoint, but is not implemented by DRO-1005/PR #81.
 - **App Manifest APIs (`apps.manifest.*`) are an optional operator-only automation path**, not
   part of the default agent-facing flow, because they require a rotating, short-lived
   configuration token that itself needs secure storage and periodic refresh. Using them at all
   is a product decision to trade a small amount of operator convenience for holding another
   credential; the default path (manifest deep link) needs none.
 
-## Why not Socket Mode by default
+## Why HTTP only in the implemented slice
 
 | Concern | HTTP Events API | Socket Mode |
 | --- | --- | --- |
@@ -52,20 +52,17 @@ described below remain **deferred, unimplemented** future work.
 | Infra requirement | Needs a reachable HTTPS endpoint | No public endpoint needed; app dials out |
 | Reconnect/ack model | Standard HTTP 200 ack within 3s; retries on non-2xx/timeout | Must ack each message over the socket and handle `disconnect`/reconnect frames, hello, and periodic re-opens |
 
-Agent identities run behind a Paperclip-hosted worker, but that worker does not currently expose
-any public inbound HTTP route or webhook: today's manifest only declares `http.outbound`, the
-provider contract exposes tools/actions with no inbound-route hook, and the GitHub App flow
-returns through the settings UI without configuring a webhook
-(`openwiki/domain/agent-identities.md:151-175`). A public HTTPS Request URL for Slack Events API
-ingress is therefore an **unimplemented prerequisite**, not an existing capability Slack can
-mirror — it requires new inbound-routing infrastructure in the plugin/worker contract before any
-Events API subscription can be added. That infrastructure gap does not change the transport
-*decision* below (HTTP Events API over Socket Mode once ingress exists), but it means Events API
-subscriptions (including `app_mention`) are out of MVP scope until the prerequisite ships (see
-§10/"Inbound events" scoping in the follow-on design record). Socket Mode is documented here as a
-fallback for operators in constrained network environments, gated as an explicit opt-in, and does
-not depend on this missing inbound-routing prerequisite since it dials out rather than receiving
-inbound HTTP.
+At the time of this decision, the Paperclip-hosted worker exposed no provider webhook seam, so a
+public Events API receiver was an implementation prerequisite. DRO-1005 added that HTTP ingress
+composition path; see `slack-provider-mvp.md` §10 for its current scope and host-response
+limitations. It did not add generated-manifest Request URL/event-subscription provisioning, and it
+deliberately did not add Socket Mode.
+
+The Socket Mode acceptance bullet that appeared in linked GitHub issue #62 combined two transports
+despite this record selecting HTTP. It is explicitly deferred to separate work: an implementation
+would need operator-side `xapp-...` token custody, per-envelope WebSocket acknowledgements,
+`disconnect`/reconnect handling, and connection refresh without logging tokens or WebSocket URLs.
+None of those behaviors is claimed by DRO-1005/PR #81.
 
 Sources:
 [Using Socket Mode](https://api.slack.com/apis/socket-mode) (app-level token requirement,
@@ -106,7 +103,7 @@ Source: [App Manifest APIs / Configuration tokens](https://api.slack.com/referen
 | Posting messages | `chat:write` | Core scope; also required for threaded replies (same scope, pass `thread_ts`). |
 | Threaded replies | `chat:write` | No separate scope; thread targeting is a message parameter, not a scope. |
 | Reactions | `reactions:write` | Add/remove emoji reactions. |
-| Inbound mentions | `app_mentions:read` (Events API subscription `app_mention`) | Requires the bot to already be a member of the conversation to receive it, or — for the specific inciting mention only — the user's mention to trigger an invitation flow the bot must accept; an app that is not a member and does not accept the invite receives no event. This is not unconditional coverage. |
+| Inbound mentions | `app_mentions:read` (Events API subscription `app_mention`) | Deferred until generated-manifest Request URL/subscription provisioning ships. Once enabled, the bot must already be a member of the conversation to receive it, or — for the specific inciting mention only — the user's mention must trigger an invitation flow the bot accepts; an app that is not a member and does not accept the invite receives no event. This is not unconditional coverage. |
 | (Optional) join channels itself | `channels:join` | Only if the agent should self-invite rather than be invited by an operator/user. |
 
 This is the **minimum** set for identity check → find channel → post → thread-reply → react →
@@ -153,7 +150,11 @@ Sources: [Installing with OAuth](https://api.slack.com/authentication/oauth-v2);
 | | OAuth bot/user **refresh tokens** — if `token_rotation_enabled: true` is used, these are bearer credentials that mint new access tokens and must be protected with the same rigor as the access token itself, not treated as install metadata |
 | | OAuth `state` value (short-lived secret, not long-term credential material but must not be logged) |
 
-## Canonical manifest template (MVP: HTTP Events API, no Socket Mode)
+## Target manifest template (after Events API subscription provisioning; no Socket Mode)
+
+This is the decided target once the settings flow can provision and verify the receiver URL. The
+current generated Slack app manifest intentionally omits `app_mentions:read` and the entire
+`settings.event_subscriptions` block; DRO-1005 ships the receiver, not this app-side provisioning.
 
 ```yaml
 _metadata:
@@ -228,8 +229,11 @@ above, including `socket_mode_enabled` and `token_rotation_enabled`).
 
 ## Downstream assumptions requiring follow-up implementation work
 
-- A Slack provider module under `src/providers/slack/` (manifest builder, OAuth callback handler,
-  event Request URL handler, credential sidecar entry) composed through
+- The existing Slack provider module under `src/providers/slack/` includes the manifest builder,
+  credential sidecar entry, and DRO-1005 receiver. Follow-up work must teach the generated manifest
+  to add and verify the Request URL, request `app_mentions:read`, and subscribe to `app_mention`
+  once the host can forward Slack's URL-verification response. Any future OAuth callback remains
+  separate. The provider stays composed through
   `src/providers/index.ts`, mirroring the existing GitHub provider composition-root pattern
   described in `openwiki/domain/agent-identities.md` (there is no separate provider-adapter
   workflow document; this is the authoritative reference for the provider contract and

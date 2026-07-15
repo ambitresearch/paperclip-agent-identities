@@ -91,7 +91,7 @@ describe("githubCreatePullRequestToolSpec.perform", () => {
   });
 
   it("posts to the GitHub PR API and returns the created PR", async () => {
-    const fetchImpl = vi.fn(async () => new Response(
+    const fetchImpl = vi.fn(async (_url: string, _init: RequestInit) => new Response(
       JSON.stringify({ number: 42, html_url: "https://github.com/acme/widgets/pull/42", state: "open", draft: false, head: { ref: "feature" }, base: { ref: "main" } }),
       { status: 201 }
     ));
@@ -99,6 +99,8 @@ describe("githubCreatePullRequestToolSpec.perform", () => {
     (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
     const result = (await githubCreatePullRequestToolSpec.perform(exec)) as { content: string; data: { number: number } };
     expect(fetchImpl).toHaveBeenCalledOnce();
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["User-Agent"]).toBe("paperclip-agent-identities/github-api");
     expect(result.data.number).toBe(42);
     expect(result.content).toContain("#42");
   });

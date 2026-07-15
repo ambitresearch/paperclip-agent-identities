@@ -76,6 +76,13 @@ dropped):
   long-lived bot token. Refresh-token storage and renewal are deferred with
   automated OAuth.
 
+Follow-on scope note: DRO-1005/PR #81 later implemented the HTTP Events API receiver selected by
+[`slack-provisioning-decision.md`](./slack-provisioning-decision.md). Generated app-manifest
+Request URL/event-subscription provisioning remains deferred, as does Socket Mode. The HTTP slice
+did not implement the Socket Mode bullet that appeared in linked GitHub issue #62; app-level-token
+custody, WebSocket envelope acknowledgements, and refresh/disconnect handling remain a separate
+deferred transport, not acceptance evidence required from the receiver.
+
 ## 2. Identity shape
 
 Following the GitHub precedent (`src/providers/github/config.ts`), the Slack
@@ -157,10 +164,11 @@ const sidecarIdentitySchema = z.object({
   tool call needs. Because MVP explicitly leaves Slack token rotation disabled,
   it is a long-lived bearer token rather than a short-lived GitHub App-style
   installation token; that changes the threat model in §9.
-- `signingSecretId`: optional and omitted from every MVP save/install path. It
-  is reserved only for future ingress (DRO-1005), which will need it to verify
-  inbound Slack request signatures. Adding it later to an existing sidecar is
-  therefore backward-compatible.
+- `signingSecretId`: optional in the original outbound MVP and now consumed by
+  the DRO-1005 HTTP receiver to verify inbound Slack request signatures. The
+  generated app manifest still does not provision event subscriptions, so an
+  operator enabling that receiver must add the reference without placing the
+  signing secret itself in plugin state or identity config.
 
 No `privateKeyFile`-style on-disk fallback for Slack. The operator copies the
 installed app's bot token directly into the host's company-secret UI, then
@@ -549,16 +557,15 @@ agent; verify it before any code exchange. Store client credentials outside
 plugin state and require an exact registered redirect URI. The operator-driven
 MVP has no callback endpoint and therefore does not expose this attack surface.
 
-### T5 — Signing-secret / ingress abuse (deferred but shape-relevant)
-**Risk:** out of MVP scope (§1), but the sidecar shape in §3 already reserves
-`signingSecretId`. If ingress is implemented before this threat is
-reconsidered, an attacker who can reach the ingress endpoint without a valid
-Slack signature could spoof events as if from Slack.
-**Mitigation (forward-looking, not implemented here):** ingress (DRO-1005)
-must verify the `X-Slack-Signature`/`X-Slack-Request-Timestamp` headers
-against `signingSecretId` before trusting any event body, and must reject
-requests outside Slack's replay window (roughly 5 minutes). This record only
-flags the requirement so DRO-1005 does not have to re-derive it.
+### T5 — Signing-secret / ingress abuse
+**Risk:** the HTTP receiver is public-facing; an attacker who can reach it
+without a valid Slack signature could spoof events as if from Slack.
+**Mitigation (implemented by DRO-1005):** verify the
+`X-Slack-Signature`/`X-Slack-Request-Timestamp` headers against
+`signingSecretId` before parsing or trusting the event body, reject requests
+outside Slack's replay window (roughly 5 minutes), bound request size and
+unauthenticated work, and never log the signing secret. Generated app
+subscription provisioning remains separate deferred work.
 
 ### T6 — Secret leakage through tool output or manifest-flow logs
 **Risk:** same class of risk the project constraints already name explicitly

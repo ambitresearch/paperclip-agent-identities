@@ -124,6 +124,29 @@ describe("worker provider registration", () => {
     ).rejects.toThrow("agentId does not belong to the host-authorized company");
   });
 
+  it("rejects a UI-invocable tool request with no host company scope before listing agents", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {
+        identities: {
+          "agent-1": { label: "Bot", teamId: "T1", appId: "A1", botUserId: "U1" },
+        },
+      },
+    });
+    const listAgents = vi.spyOn(harness.ctx.agents, "list");
+    await plugin.definition.setup(harness.ctx);
+
+    await expect(
+      harness.performAction(
+        "slack_bot_whoami",
+        { agentId: "agent-1" },
+        { companyId: "" },
+      ),
+    ).rejects.toThrow("requires a host-authorized companyId");
+    expect(listAgents).not.toHaveBeenCalled();
+  });
+
   it("does not register credentialed tools (e.g. github_bot_create_pull_request) as plugin actions", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
     const register = vi.spyOn(harness.ctx.actions, "register");

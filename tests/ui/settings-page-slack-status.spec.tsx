@@ -288,6 +288,9 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     });
 
     expect(actionFor("slack_bot_whoami")).not.toHaveBeenCalled();
+    expect(Array.from(container.querySelectorAll("button")).some((button) =>
+      button.textContent === "Create Slack App manifest",
+    )).toBe(true);
     expect(Array.from(container.querySelectorAll("summary")).some((summary) =>
       summary.textContent?.match(/reinstall/i),
     )).toBe(false);
@@ -307,6 +310,7 @@ describe("Slack status panel (slack_bot_whoami)", () => {
   });
 
   it("re-checks configured metadata after updating an already-persisted identity", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     actionFor("slack_bot_whoami").mockResolvedValue({
       data: {
         label: "Release Bot",
@@ -341,11 +345,18 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     });
     expect(actionFor("slack_bot_whoami")).toHaveBeenCalledTimes(1);
 
-    const createButton = Array.from(container.querySelectorAll("button")).find((button) =>
+    expect(Array.from(container.querySelectorAll("button")).some((button) =>
       button.textContent === "Create Slack App manifest",
+    )).toBe(false);
+    const reinstallSummary = Array.from(container.querySelectorAll("summary")).find((summary) =>
+      summary.textContent?.match(/reinstall/i),
+    );
+    click(reinstallSummary ?? null);
+    const reinstallButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "Reinstall",
     );
     await act(async () => {
-      click(createButton ?? null);
+      click(reinstallButton ?? null);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -387,6 +398,10 @@ describe("Slack reinstall action", () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     await openSlackEditDialog();
+
+    expect(Array.from(container.querySelectorAll("button")).some((button) =>
+      button.textContent === "Create Slack App manifest",
+    )).toBe(false);
 
     const detailsSummary = Array.from(container.querySelectorAll("summary")).find((s) =>
       s.textContent?.match(/reinstall/i),

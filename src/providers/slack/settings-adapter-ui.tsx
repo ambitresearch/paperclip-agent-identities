@@ -284,11 +284,12 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
       return;
     }
     void handleCheckSlackStatus();
-    // Re-check when a just-saved identity appears in refreshed settings, or
-    // when switching to a different persisted agent. Form-field presence is
-    // not evidence that a new wizard row has been saved yet.
+    // Re-check when a just-saved identity appears in refreshed settings, when
+    // switching to a different persisted agent, or after a label edit resets
+    // the provider-owned state. Form-field presence is not evidence that a
+    // new wizard row has been saved yet.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config?.agentId, config?.provider, hasPersistedIdentity]);
+  }, [config?.agentId, config?.label, config?.provider, hasPersistedIdentity]);
 
   // Restore an in-progress Slack manifest flow after a reload or editor
   // reopen. Unlike GitHub, Slack has no redirect callback to carry state
@@ -779,16 +780,18 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         where you paste it in via "From an app manifest".
       </div>
 
-      <div style={formActionsStyle}>
-        <button
-          type="button"
-          onClick={() => void handleCreateSlackAppManifest()}
-          disabled={slackManifestBusy || slackSaveBusy || slackResumeBusy || !config.agentId || !config.label}
-          style={secondaryButtonStyle}
-        >
-          {slackManifestBusy ? "Working..." : "Create Slack App manifest"}
-        </button>
-      </div>
+      {!hasPersistedIdentity && (
+        <div style={formActionsStyle}>
+          <button
+            type="button"
+            onClick={() => void handleCreateSlackAppManifest()}
+            disabled={slackManifestBusy || slackSaveBusy || slackResumeBusy || !config.agentId || !config.label}
+            style={secondaryButtonStyle}
+          >
+            {slackManifestBusy ? "Working..." : "Create Slack App manifest"}
+          </button>
+        </div>
+      )}
 
       {!slackManifestFlow && (
         <div style={formActionsStyle}>

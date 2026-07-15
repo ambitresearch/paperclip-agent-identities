@@ -18,6 +18,10 @@ function baseHeaders(timestamp: string, rawBody: string) {
   };
 }
 
+function authorizationsFor(teamId: string) {
+  return [{ team_id: teamId }];
+}
+
 function makeDeps(overrides: Partial<Parameters<typeof handleSlackWebhook>[0]> = {}) {
   const identities: Record<string, SlackAgentIdentity> = {
     "agent-1": { label: "Agent 1", teamId: "T111", appId: "A111", botUserId: "U111" },
@@ -149,6 +153,7 @@ describe("handleSlackWebhook", () => {
       team_id: "T111",
       api_app_id: "A111",
       event_id: "Ev001",
+      authorizations: authorizationsFor("T111"),
       event: { type: "app_mention", text: "hi" },
     };
     const rawBody = JSON.stringify(payload);
@@ -170,6 +175,7 @@ describe("handleSlackWebhook", () => {
       team_id: "T111",
       api_app_id: "A111",
       event_id: "Ev001",
+      authorizations: authorizationsFor("T111"),
       event: { type: "app_mention", text: "hi" },
     };
     const rawBody = JSON.stringify(payload);
@@ -183,12 +189,61 @@ describe("handleSlackWebhook", () => {
     expect(deps.onAgentEvent).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    ["missing", undefined],
+    ["blank", "   "],
+  ])("acks (200) but fails closed when an event_callback has a %s event_id", async (_label, eventId) => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: eventId,
+      authorizations: authorizationsFor("T111"),
+      event: { type: "app_mention", text: "hi" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const deps = makeDeps({ rawBody, headers: baseHeaders(timestamp, rawBody), nowEpochSeconds: 1_800_000_000 });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result).toEqual({ status: 200, body: { ok: true, dispatched: false } });
+    expect(deps.shouldProcessEvent).not.toHaveBeenCalled();
+    expect(deps.onAgentEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["empty", []],
+    ["malformed", [null, { team_id: " " }]],
+    ["for a different team", authorizationsFor("T222")],
+  ])("acks (200) but fails closed when the authorizations list is %s", async (_label, authorizations) => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-auth",
+      authorizations,
+      event: { type: "app_mention", text: "hi" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const deps = makeDeps({ rawBody, headers: baseHeaders(timestamp, rawBody), nowEpochSeconds: 1_800_000_000 });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result).toEqual({ status: 200, body: { ok: true, dispatched: false } });
+    expect(deps.shouldProcessEvent).not.toHaveBeenCalled();
+    expect(deps.onAgentEvent).not.toHaveBeenCalled();
+  });
+
   it("fails closed (still acks 200, per Slack's retry-suppression contract) but does not dispatch when routing is ambiguous", async () => {
     const payload = {
       type: "event_callback",
       team_id: "T111",
       api_app_id: "A111",
       event_id: "Ev002",
+      authorizations: authorizationsFor("T111"),
       event: { type: "app_mention", text: "hi" },
     };
     const rawBody = JSON.stringify(payload);
@@ -251,6 +306,31 @@ describe("handleSlackWebhook", () => {
     expect(JSON.stringify(result.body)).not.toContain(SIGNING_SECRET);
   });
 
+  it("throws a sanitized retryable failure when no signature can be checked because secret resolution failed", async () => {
+    const rawBody = JSON.stringify({ type: "event_callback", team_id: "T111", api_app_id: "A111" });
+    const timestamp = "1800000000";
+    const deps = makeDeps({
+      rawBody,
+      headers: baseHeaders(timestamp, rawBody),
+      nowEpochSeconds: 1_800_000_000,
+      resolveSigningSecret: vi.fn(async () => {
+        throw new Error("sensitive vault path /internal/slack/signing-secret");
+      }),
+    });
+
+    let failure: unknown;
+    try {
+      await handleSlackWebhook(deps as never);
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/temporarily unavailable/i);
+    expect((failure as Error).message).not.toContain("/internal/slack/signing-secret");
+    expect(deps.onAgentEvent).not.toHaveBeenCalled();
+  });
+
   it("authenticates the signature before any JSON.parse of the body — an unsigned request with a malicious/malformed body is rejected at 401, not 400", async () => {
     // A body that is well-formed enough to parse but was never signed by any
     // configured agent's secret must be rejected on authentication grounds
@@ -280,6 +360,7 @@ describe("handleSlackWebhook", () => {
       team_id: "T111",
       api_app_id: "A111",
       event_id: "Ev999",
+      authorizations: authorizationsFor("T111"),
       event: { type: "app_mention" },
     };
     const rawBody = JSON.stringify(payload);
@@ -365,6 +446,7 @@ describe("handleSlackWebhook rate limiting", () => {
         team_id: teamId,
         api_app_id: "A111",
         event_id: `Ev${i}`,
+        authorizations: authorizationsFor(teamId),
         event: { type: "app_mention" },
       };
       const rawBody = JSON.stringify(payload);

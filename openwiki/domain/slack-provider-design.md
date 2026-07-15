@@ -76,6 +76,12 @@ dropped):
   long-lived bot token. Refresh-token storage and renewal are deferred with
   automated OAuth.
 
+Follow-on scope note: DRO-975/PR #81 later implemented only the HTTP Events API transport selected
+by [`slack-provisioning-decision.md`](./slack-provisioning-decision.md). It did not implement the
+Socket Mode bullet that appeared in linked GitHub issue #62. App-level-token custody, WebSocket
+envelope acknowledgements, and refresh/disconnect handling remain a separate deferred transport,
+not acceptance evidence required from the HTTP slice.
+
 ## 2. Identity shape
 
 Following the GitHub precedent (`src/providers/github/config.ts`), the Slack

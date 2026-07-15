@@ -87,6 +87,7 @@ describe("Slack Events API ingress — manifest + worker wiring", () => {
       team_id: "T111",
       api_app_id: "A111",
       event_id: "Ev001",
+      authorizations: [{ team_id: "T111" }],
       event: { type: "app_mention", text: "hello" },
     };
     const rawBody = JSON.stringify(payload);
@@ -194,6 +195,7 @@ describe("Slack Events API ingress — manifest + worker wiring", () => {
       team_id: "T111",
       api_app_id: "A111",
       event_id: "Ev-retry-after-failure",
+      authorizations: [{ team_id: "T111" }],
       event: { type: "app_mention", text: "hello" },
     };
     const rawBody = JSON.stringify(payload);

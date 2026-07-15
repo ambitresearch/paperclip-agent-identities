@@ -17,6 +17,7 @@ interface RawSlackEnvelopeFields {
   readonly team_id?: string;
   readonly api_app_id?: string;
   readonly event_id?: string;
+  readonly authorizations?: unknown;
   readonly event?: unknown;
 }
 
@@ -28,6 +29,17 @@ function parseEnvelope(rawBody: string): RawSlackEnvelopeFields | null {
   } catch {
     return null;
   }
+}
+
+function hasTeamAuthorization(authorizations: unknown, teamId: string): boolean {
+  return (
+    Array.isArray(authorizations) &&
+    authorizations.some((authorization) => {
+      if (typeof authorization !== "object" || authorization === null) return false;
+      const authorizationTeamId = (authorization as { readonly team_id?: unknown }).team_id;
+      return typeof authorizationTeamId === "string" && authorizationTeamId.trim() === teamId;
+    })
+  );
 }
 
 export interface SlackWebhookHeaders {
@@ -53,7 +65,7 @@ export interface SlackAgentEventDispatch {
   readonly agentId: string;
   readonly teamId: string;
   readonly appId: string;
-  readonly eventId: string | undefined;
+  readonly eventId: string;
   readonly event: unknown;
 }
 
@@ -89,6 +101,8 @@ export interface SlackWebhookResponse {
  * Handles one inbound HTTP delivery from Slack (Events API), implementing
  * DRO-975's acceptance criteria:
  *  - route by (api_app_id, team_id) to exactly one agent; ambiguity fails closed
+ *  - require Slack's authorizations list to contain that routed team; the list
+ *    proves event visibility but never fans one delivery out to more agents
  *  - verify the HMAC-SHA256 request signature (constant-time compare) and the
  *    5-minute timestamp window before any event is dispatched — and before
  *    any JSON.parse of the body happens at all, for every delivery kind
@@ -159,13 +173,18 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
   }
 
   const matchedAgentIds: string[] = [];
+  let signingSecretResolutionFailed = false;
   for (const agentId of agentIds) {
     let candidateSecret: string;
     try {
       candidateSecret = await deps.resolveSigningSecret(agentId);
     } catch {
       // Resolution failure for one configured agent should not block
-      // checking the rest — just skip this candidate.
+      // checking the rest. Remember the transient failure, though: if no
+      // other candidate verifies, acknowledging a permanent 401 would stop
+      // Slack from retrying a request that may have been valid for the
+      // temporarily unavailable secret.
+      signingSecretResolutionFailed = true;
       continue;
     }
 
@@ -183,6 +202,13 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
   }
 
   if (matchedAgentIds.length === 0) {
+    if (signingSecretResolutionFailed) {
+      logger.error("Slack webhook: signing secret resolution unavailable; delivery must be retried");
+      // Deliberately generic: secret-store errors can contain provider IDs,
+      // paths, or other sensitive operational detail. Rejecting the worker
+      // call tells the host this was transient without echoing that detail.
+      throw new Error("Slack webhook authentication is temporarily unavailable");
+    }
     logger.warn("Slack webhook: signature verification failed — no configured identity matched");
     return { status: 401, body: { error: "unauthorized" } };
   }
@@ -207,6 +233,26 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
 
   const teamId = typeof envelope.team_id === "string" ? envelope.team_id : "";
   const appId = typeof envelope.api_app_id === "string" ? envelope.api_app_id : "";
+
+  // Only Events API callbacks are dispatchable. A missing/blank event_id
+  // cannot participate in deduplication, so acknowledging and dropping it is
+  // safer than allowing Slack retries to create duplicate Paperclip work.
+  // Likewise, Slack's authorizations list must include an installation in
+  // the outer team_id. It is visibility evidence, not an alternate routing
+  // source: routing remains exactly (api_app_id, team_id), and additional
+  // authorizations never cause fan-out. Enterprise-only authorizations with
+  // no team_id are outside the MVP's one-workspace-per-agent contract.
+  const eventId = typeof envelope.event_id === "string" ? envelope.event_id.trim() : "";
+  if (envelope.type !== "event_callback" || !eventId) {
+    logger.warn("Slack webhook: ignored non-event callback or callback without event_id", {
+      envelopeType: envelope.type,
+    });
+    return { status: 200, body: { ok: true, dispatched: false } };
+  }
+  if (!hasTeamAuthorization(envelope.authorizations, teamId.trim())) {
+    logger.warn("Slack webhook: event authorizations do not include the routed team", { teamId });
+    return { status: 200, body: { ok: true, dispatched: false } };
+  }
 
   // Rate-limit per Slack team, after authentication but before routing/
   // dispatch — bounds worst-case per-process work from a single
@@ -244,13 +290,10 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
     return { status: 401, body: { error: "unauthorized" } };
   }
 
-  const eventId = typeof envelope.event_id === "string" ? envelope.event_id : undefined;
-  if (eventId) {
-    const shouldProcess = await deps.shouldProcessEvent(agentId, eventId);
-    if (!shouldProcess) {
-      logger.info("Slack webhook: duplicate event_id skipped", { agentId, eventId });
-      return { status: 200, body: { ok: true, deduplicated: true } };
-    }
+  const shouldProcess = await deps.shouldProcessEvent(agentId, eventId);
+  if (!shouldProcess) {
+    logger.info("Slack webhook: duplicate event_id skipped", { agentId, eventId });
+    return { status: 200, body: { ok: true, deduplicated: true } };
   }
 
   await deps.onAgentEvent({

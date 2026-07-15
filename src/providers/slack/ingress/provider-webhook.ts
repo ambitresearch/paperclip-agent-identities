@@ -2,11 +2,14 @@ import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk"
 import type { ProviderWebhookDeclaration } from "../../../core/provider-contract.js";
 import { CONFIG_SCOPE } from "../../../config-source.js";
 import { normalizeSettingsState } from "../../../core/identity-config.js";
-import { resolveAgentIdentity } from "../../../core/agent-identity.js";
 import { resolveSlackSigningSecret } from "../credentials.js";
-import { projectSlackPluginConfig, type SlackAgentIdentity } from "../config.js";
+import { projectSlackPluginConfig, validateSlackConfig, type SlackAgentIdentity } from "../config.js";
 import { handleSlackWebhook, type SlackWebhookHeaders } from "./webhook-handler.js";
-import { shouldProcessSlackEvent, releaseSlackEventClaim } from "./dedup.js";
+import {
+  completeSlackEventClaim,
+  releaseSlackEventClaim,
+  shouldProcessSlackEvent,
+} from "./dedup.js";
 
 // Stable endpoint key this Slack ingress route registers under. Referenced
 // by `slackWebhookDeclarations` (manifest composition) and
@@ -45,6 +48,63 @@ async function resolveCompanyIdForAgent(ctx: PluginContext, agentId: string): Pr
   return null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Builds the effective identity view once per delivery. A valid identity in
+ * instance config is authoritative for that agent; missing or invalid
+ * instance entries fall back to the settings-page projection. Both routing
+ * and credential lookup consume this same immutable snapshot, preventing a
+ * stale settings read from routing differently than signature resolution.
+ */
+async function buildSlackIdentitySnapshot(ctx: PluginContext): Promise<Record<string, SlackAgentIdentity>> {
+  const [instanceConfig, settingsState] = await Promise.all([
+    ctx.config.get(),
+    ctx.state.get(CONFIG_SCOPE),
+  ]);
+  const snapshot = projectSlackPluginConfig(normalizeSettingsState(settingsState).identities);
+  if (!isRecord(instanceConfig.identities)) return snapshot;
+
+  for (const [agentId, rawIdentity] of Object.entries(instanceConfig.identities)) {
+    const validated = validateSlackConfig(rawIdentity);
+    if (typeof validated !== "string") snapshot[agentId] = validated;
+  }
+  return snapshot;
+}
+
+const MAX_SLACK_EVENT_TEXT_LENGTH = 4_096;
+const MAX_SLACK_EVENT_FIELD_LENGTH = 256;
+
+function boundedString(value: unknown, maxLength: number): string | undefined {
+  return typeof value === "string" ? value.slice(0, maxLength) : undefined;
+}
+
+function buildInvocationPrompt(dispatch: {
+  readonly eventId: string;
+  readonly teamId: string;
+  readonly appId: string;
+  readonly event: unknown;
+}): string {
+  const rawEvent = isRecord(dispatch.event) ? dispatch.event : {};
+  const event = {
+    type: boundedString(rawEvent.type, MAX_SLACK_EVENT_FIELD_LENGTH),
+    text: boundedString(rawEvent.text, MAX_SLACK_EVENT_TEXT_LENGTH),
+    channel: boundedString(rawEvent.channel, MAX_SLACK_EVENT_FIELD_LENGTH),
+    user: boundedString(rawEvent.user, MAX_SLACK_EVENT_FIELD_LENGTH),
+    ts: boundedString(rawEvent.ts, MAX_SLACK_EVENT_FIELD_LENGTH),
+    thread_ts: boundedString(rawEvent.thread_ts, MAX_SLACK_EVENT_FIELD_LENGTH),
+  };
+  const payload = {
+    eventId: boundedString(dispatch.eventId, MAX_SLACK_EVENT_FIELD_LENGTH),
+    teamId: boundedString(dispatch.teamId, MAX_SLACK_EVENT_FIELD_LENGTH),
+    appId: boundedString(dispatch.appId, MAX_SLACK_EVENT_FIELD_LENGTH),
+    event,
+  };
+  return `Slack event received:\n${JSON.stringify(payload)}`;
+}
+
 /**
  * Handles one inbound HTTP delivery routed to the `slack-events` endpoint
  * key. Delegates all signature/timestamp/routing/dedup logic to
@@ -52,24 +112,19 @@ async function resolveCompanyIdForAgent(ctx: PluginContext, agentId: string): Pr
  * `PluginContext`-backed dependencies (state, secrets, agent invocation).
  */
 export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx: PluginContext): Promise<void> {
+  const identities = await buildSlackIdentitySnapshot(ctx);
   const result = await handleSlackWebhook({
     rawBody: input.rawBody,
     headers: input.headers as SlackWebhookHeaders,
     nowEpochSeconds: Math.floor(Date.now() / 1000),
     nowMs: Date.now(),
     async getProjectedIdentities() {
-      const state = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
-      return projectSlackPluginConfig(state.identities);
+      return identities;
     },
     async resolveSigningSecret(agentId) {
-      const identities = projectSlackPluginConfig(
-        normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE)).identities
-      );
-      const resolvedIdentity = resolveAgentIdentity<SlackAgentIdentity>(
-        { identities },
-        { agentId, companyId: "", projectId: "", runId: "" }
-      );
-      return resolveSlackSigningSecret(resolvedIdentity, (secretRef) => ctx.secrets.resolve(secretRef));
+      const identity = identities[agentId];
+      if (!identity) throw new Error(`No Slack identity configured for agent '${agentId}'.`);
+      return resolveSlackSigningSecret({ agentId, identity }, (secretRef) => ctx.secrets.resolve(secretRef));
     },
     async shouldProcessEvent(agentId, eventId) {
       return shouldProcessSlackEvent(ctx.state, agentId, eventId);
@@ -77,8 +132,9 @@ export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx:
     async onAgentEvent(dispatch) {
       // Route to exactly one agent (already enforced by routeSlackEventToAgent
       // inside handleSlackWebhook) by invoking/waking it with the event
-      // payload. No secret/token is included in this prompt payload -- only
-      // the already-public team/app/event-type shape.
+      // payload. No secret/token or arbitrary Slack field is included in the
+      // prompt: only the bounded, explicitly whitelisted projection built
+      // above is serialized.
       //
       // `shouldProcessEvent` above already recorded this (agentId, eventId)
       // pair as "seen" so a fast Slack retry landing before this dispatch
@@ -87,46 +143,49 @@ export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx:
       // failing -- must release that claim; otherwise the failure is
       // permanent (a genuine Slack retry of the same event_id would be
       // silently deduplicated forever and this work would never run).
-      const eventType =
-        typeof dispatch.event === "object" && dispatch.event !== null && "type" in dispatch.event
-          ? String((dispatch.event as { type?: unknown }).type)
-          : "unknown";
-      const companyId = await resolveCompanyIdForAgent(ctx, dispatch.agentId);
+      let companyId: string | null;
+      try {
+        companyId = await resolveCompanyIdForAgent(ctx, dispatch.agentId);
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        ctx.logger.error("Slack webhook: failed to resolve companyId for routed agent", {
+          agentId: dispatch.agentId,
+          reason: failure.message,
+        });
+        await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId, failure);
+        throw failure;
+      }
       if (!companyId) {
+        const failure = new Error(`Slack webhook: unable to resolve companyId for agent ${dispatch.agentId}`);
         ctx.logger.error("Slack webhook: could not resolve companyId for routed agent", {
           agentId: dispatch.agentId,
         });
-        if (dispatch.eventId) {
-          await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId);
-        }
+        await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId, failure);
         // Re-throw (rather than swallow) so the caller -- and ultimately the
         // host's `handleWebhook` RPC caller -- observes this as a failed
         // delivery instead of a silent 200. See the module-level note below:
         // until the SDK/host webhook response contract exists (DRO-1074),
         // rejecting here is the only signal this plugin can give the host
         // that the delivery should not be acknowledged as a success.
-        throw new Error(`Slack webhook: unable to resolve companyId for agent ${dispatch.agentId}`);
+        throw failure;
       }
-      await ctx.agents
-        .invoke(dispatch.agentId, companyId, {
-          prompt: `Slack event received (type: ${eventType}, team: ${dispatch.teamId}, app: ${dispatch.appId}).`,
+      try {
+        await ctx.agents.invoke(dispatch.agentId, companyId, {
+          prompt: buildInvocationPrompt(dispatch),
           reason: "slack-inbound-event",
-        })
-        .catch(async (error) => {
-          ctx.logger.error("Slack webhook: failed to invoke routed agent", {
-            agentId: dispatch.agentId,
-            reason: error instanceof Error ? error.message : String(error),
-          });
-          if (dispatch.eventId) {
-            await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId);
-          }
-          // Propagate the failure -- see comment above. Swallowing this
-          // previously meant a failed agent invocation was acknowledged to
-          // Slack as a successful delivery, so a real outage/bug never got
-          // Slack's own retry(s), only whatever this plugin's own dedup
-          // claim release allowed on the next *organic* delivery.
-          throw error instanceof Error ? error : new Error(String(error));
         });
+      } catch (error) {
+        const failure = error instanceof Error ? error : new Error(String(error));
+        ctx.logger.error("Slack webhook: failed to invoke routed agent", {
+          agentId: dispatch.agentId,
+          reason: failure.message,
+        });
+        await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId, failure);
+        // Propagate the failure so the host does not acknowledge work that
+        // never reached the agent and Slack can retry the delivery.
+        throw failure;
+      }
+      await completeSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId);
     },
     logger: ctx.logger,
   });

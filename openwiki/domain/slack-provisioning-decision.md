@@ -1,10 +1,8 @@
 # Slack app manifests and per-agent provisioning — decision record
 
-Status: **decided (research)** — this remains a research/decision record, not an implementation
-spec. The identity-config and credential-resolver slice it informed (`src/providers/slack/`,
-see [`slack-provider-mvp.md`](./slack-provider-mvp.md)) is now implemented; the per-agent
-provisioning automation (manifest deep link / App Manifest API flow) and the actual Slack tools
-described below remain **deferred, unimplemented** future work.
+Status: **decided** — this remains the transport/provisioning decision record. The HTTP Events API
+transport it selected is implemented by DRO-975/PR #81. Socket Mode remains an unimplemented,
+operator-opt-in future transport; the canonical manifest below keeps it disabled.
 
 ## Decision
 
@@ -35,14 +33,14 @@ described below remain **deferred, unimplemented** future work.
   manifest" creation flow is UI paste-in; no query-string prefill parameter is documented).
 - **Event transport: HTTP Events API (Request URL), not Socket Mode.** Rejected Socket Mode for
   the default path — see rationale below. Socket Mode remains an optional advanced mode for
-  operators who cannot expose a public HTTPS endpoint.
+  operators who cannot expose a public HTTPS endpoint, but is not implemented by DRO-975/PR #81.
 - **App Manifest APIs (`apps.manifest.*`) are an optional operator-only automation path**, not
   part of the default agent-facing flow, because they require a rotating, short-lived
   configuration token that itself needs secure storage and periodic refresh. Using them at all
   is a product decision to trade a small amount of operator convenience for holding another
   credential; the default path (manifest deep link) needs none.
 
-## Why not Socket Mode by default
+## Why HTTP only in the implemented slice
 
 | Concern | HTTP Events API | Socket Mode |
 | --- | --- | --- |
@@ -52,20 +50,16 @@ described below remain **deferred, unimplemented** future work.
 | Infra requirement | Needs a reachable HTTPS endpoint | No public endpoint needed; app dials out |
 | Reconnect/ack model | Standard HTTP 200 ack within 3s; retries on non-2xx/timeout | Must ack each message over the socket and handle `disconnect`/reconnect frames, hello, and periodic re-opens |
 
-Agent identities run behind a Paperclip-hosted worker, but that worker does not currently expose
-any public inbound HTTP route or webhook: today's manifest only declares `http.outbound`, the
-provider contract exposes tools/actions with no inbound-route hook, and the GitHub App flow
-returns through the settings UI without configuring a webhook
-(`openwiki/domain/agent-identities.md:151-175`). A public HTTPS Request URL for Slack Events API
-ingress is therefore an **unimplemented prerequisite**, not an existing capability Slack can
-mirror — it requires new inbound-routing infrastructure in the plugin/worker contract before any
-Events API subscription can be added. That infrastructure gap does not change the transport
-*decision* below (HTTP Events API over Socket Mode once ingress exists), but it means Events API
-subscriptions (including `app_mention`) are out of MVP scope until the prerequisite ships (see
-§10/"Inbound events" scoping in the follow-on design record). Socket Mode is documented here as a
-fallback for operators in constrained network environments, gated as an explicit opt-in, and does
-not depend on this missing inbound-routing prerequisite since it dials out rather than receiving
-inbound HTTP.
+At the time of this decision, the Paperclip-hosted worker exposed no provider webhook seam, so a
+public Events API Request URL was an implementation prerequisite. DRO-975 added that HTTP ingress
+composition path; see `slack-provider-mvp.md` §10 for its current scope and host-response
+limitations. That follow-on deliberately did not add Socket Mode.
+
+The Socket Mode acceptance bullet that appeared in linked GitHub issue #62 combined two transports
+despite this record selecting HTTP. It is explicitly deferred to separate work: an implementation
+would need operator-side `xapp-...` token custody, per-envelope WebSocket acknowledgements,
+`disconnect`/reconnect handling, and connection refresh without logging tokens or WebSocket URLs.
+None of those behaviors is claimed by DRO-975/PR #81.
 
 Sources:
 [Using Socket Mode](https://api.slack.com/apis/socket-mode) (app-level token requirement,

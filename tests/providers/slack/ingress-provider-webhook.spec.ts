@@ -34,15 +34,28 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
       },
     },
   };
+  const stateStore = new Map<string, unknown>();
+  const stateKey = (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) =>
+    `${key.scopeKind}:${key.scopeId ?? ""}:${key.namespace ?? ""}:${key.stateKey}`;
 
   return {
+    config: {
+      get: vi.fn(async () => ({ identities: {} })),
+    },
     state: {
-      get: vi.fn(async (key: { stateKey: string }) => {
+      get: vi.fn(async (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => {
         if (key.stateKey === CONFIG_SCOPE.stateKey) return settingsState;
-        return null;
+        return stateStore.get(stateKey(key)) ?? null;
       }),
-      set: vi.fn(async () => undefined),
-      delete: vi.fn(async () => undefined),
+      set: vi.fn(async (
+        key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string },
+        value: unknown,
+      ) => {
+        stateStore.set(stateKey(key), value);
+      }),
+      delete: vi.fn(async (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => {
+        stateStore.delete(stateKey(key));
+      }),
     },
     secrets: {
       resolve: vi.fn(async (secretRef: string) => (secretRef === SIGNING_SECRET_ID ? SIGNING_SECRET : "unexpected")),
@@ -94,6 +107,7 @@ describe("handleSlackProviderWebhook", () => {
       team_id: "T111",
       api_app_id: "A111",
       event_id: "Ev001",
+      authorizations: [{ team_id: "T111" }],
       event: { type: "app_mention", text: "hello" },
     };
     const rawBody = JSON.stringify(payload);
@@ -118,8 +132,57 @@ describe("handleSlackProviderWebhook", () => {
     );
   });
 
+  it("uses valid instance config ahead of stale settings state for both authentication and routing", async () => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T222",
+      api_app_id: "A222",
+      event_id: "Ev-instance-config",
+      authorizations: [{ team_id: "T222" }],
+      event: { type: "app_mention", text: "current config" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const ctx = makeCtx({
+      config: {
+        get: vi.fn(async () => ({
+          identities: {
+            "agent-1": {
+              label: "Agent 1 from instance config",
+              teamId: "T222",
+              appId: "A222",
+              botUserId: "U222",
+            },
+          },
+        })),
+      },
+    });
+
+    await handleSlackProviderWebhook(
+      {
+        endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+        headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": sign(timestamp, rawBody) },
+        rawBody,
+        requestId: "req-instance-config",
+      },
+      ctx as never,
+    );
+
+    expect(ctx.agents.invoke).toHaveBeenCalledTimes(1);
+    expect(ctx.config.get).toHaveBeenCalledTimes(1);
+    expect(
+      ctx.state.get.mock.calls.filter(([key]) => key.stateKey === CONFIG_SCOPE.stateKey),
+    ).toHaveLength(1);
+  });
+
   it("does not invoke any agent when the signature is invalid, and returns without throwing", async () => {
-    const payload = { type: "event_callback", team_id: "T111", api_app_id: "A111", event: {} };
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      authorizations: [{ team_id: "T111" }],
+      event: {},
+    };
     const rawBody = JSON.stringify(payload);
     const ctx = makeCtx();
 
@@ -148,6 +211,7 @@ describe("handleSlackProviderWebhook", () => {
       team_id: "T111",
       api_app_id: "A111",
       event_id: "Ev002",
+      authorizations: [{ team_id: "T111" }],
       event: { type: "app_mention" },
     };
     const rawBody = JSON.stringify(payload);
@@ -185,6 +249,7 @@ describe("handleSlackProviderWebhook", () => {
       team_id: "T111",
       api_app_id: "A111",
       event_id: "Ev003",
+      authorizations: [{ team_id: "T111" }],
       event: { type: "app_mention" },
     };
     const rawBody = JSON.stringify(payload);
@@ -218,6 +283,150 @@ describe("handleSlackProviderWebhook", () => {
       "Slack webhook: failed to invoke routed agent",
       expect.objectContaining({ agentId: "agent-1", reason: invokeError.message })
     );
+  });
+
+  it("rejects retryably with a sanitized error when signing-secret resolution is transiently unavailable", async () => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-secret-outage",
+      authorizations: [{ team_id: "T111" }],
+      event: { type: "app_mention" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const ctx = makeCtx({
+      secrets: {
+        resolve: vi.fn(async () => {
+          throw new Error("vault backend outage at secret/internal/path");
+        }),
+      },
+    });
+
+    let failure: unknown;
+    try {
+      await handleSlackProviderWebhook(
+        {
+          endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+          headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": sign(timestamp, rawBody) },
+          rawBody,
+          requestId: "req-secret-outage",
+        },
+        ctx as never,
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(/temporarily unavailable/i);
+    expect((failure as Error).message).not.toContain("secret/internal/path");
+    expect(ctx.agents.invoke).not.toHaveBeenCalled();
+  });
+
+  it("makes a concurrent duplicate share the routed invocation failure instead of acknowledging it early", async () => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-concurrent-failure",
+      authorizations: [{ team_id: "T111" }],
+      event: { type: "app_mention" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const invokeError = new Error("agent runtime unavailable");
+    let signalInvokeStarted!: () => void;
+    let rejectInvoke!: (reason: unknown) => void;
+    const invokeStarted = new Promise<void>((resolve) => {
+      signalInvokeStarted = resolve;
+    });
+    const ctx = makeCtx({
+      agents: {
+        list: vi.fn(async () => []),
+        get: vi.fn(async (agentId: string, companyId: string) =>
+          agentId === "agent-1" && companyId === "co-1" ? { id: agentId, companyId } : null
+        ),
+        invoke: vi.fn(() => new Promise((_resolve, reject) => {
+          rejectInvoke = reject;
+          signalInvokeStarted();
+        })),
+      },
+    });
+    const input = (requestId: string) => ({
+      endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+      headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": sign(timestamp, rawBody) },
+      rawBody,
+      requestId,
+    });
+
+    const first = handleSlackProviderWebhook(input("req-concurrent-1"), ctx as never);
+    await invokeStarted;
+    const duplicate = handleSlackProviderWebhook(input("req-concurrent-2"), ctx as never);
+    await vi.waitFor(() => expect(ctx.secrets.resolve).toHaveBeenCalledTimes(2));
+    await Promise.resolve();
+    rejectInvoke(invokeError);
+
+    const results = await Promise.allSettled([first, duplicate]);
+    expect(results).toEqual([
+      { status: "rejected", reason: invokeError },
+      { status: "rejected", reason: invokeError },
+    ]);
+    expect(ctx.agents.invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes only a bounded, JSON-escaped Slack event projection to the agent", async () => {
+    const text = `hello\n"quoted"${"x".repeat(5_000)}`;
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-bounded-prompt",
+      authorizations: [{ team_id: "T111" }],
+      event: {
+        type: "app_mention",
+        text,
+        channel: "C".repeat(400),
+        user: "U111",
+        ts: "123.456",
+        thread_ts: "123.000",
+        arbitrary: "DO_NOT_INCLUDE_THIS_MARKER",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const ctx = makeCtx();
+
+    await handleSlackProviderWebhook(
+      {
+        endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+        headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": sign(timestamp, rawBody) },
+        rawBody,
+        requestId: "req-bounded-prompt",
+      },
+      ctx as never,
+    );
+
+    const invocation = (
+      ctx.agents.invoke.mock.calls as unknown as Array<[string, string, { prompt: string }]>
+    )[0][2];
+    const prefix = "Slack event received:\n";
+    expect(invocation.prompt.startsWith(prefix)).toBe(true);
+    expect(invocation.prompt).not.toContain("DO_NOT_INCLUDE_THIS_MARKER");
+    expect(invocation.prompt).toContain("\\n\\\"quoted\\\"");
+    const projected = JSON.parse(invocation.prompt.slice(prefix.length)) as {
+      eventId: string;
+      teamId: string;
+      appId: string;
+      event: Record<string, string>;
+    };
+    expect(projected.eventId).toBe("Ev-bounded-prompt");
+    expect(projected.teamId).toBe("T111");
+    expect(projected.appId).toBe("A111");
+    expect(projected.event.text).toBe(text.slice(0, 4_096));
+    expect(projected.event.channel).toHaveLength(256);
+    expect(Object.keys(projected.event)).toEqual(["type", "text", "channel", "user", "ts", "thread_ts"]);
   });
 
   it("responds to the url_verification handshake without touching agents/companies", async () => {

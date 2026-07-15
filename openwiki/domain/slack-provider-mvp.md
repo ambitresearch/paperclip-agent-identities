@@ -212,11 +212,18 @@ which a Slack token could land in an agent's environment/logs.
 | **Revoked tokens** (bot token revoked/uninstalled mid-operation) | `resolveCredential` calls fail closed (matching `fail closed with stable error on credential resolution failure`, already implemented for GitHub in `f8baa63`) — a Slack API 401/`invalid_auth` response surfaces as a tool error, not a silent no-op or retry-with-stale-token. |
 | **Logging** (accidental token/signing-secret leakage into structured logs or error messages) | Errors from Slack API calls must be sanitized the same way GitHub App token errors already avoid returning secret values (see "GitHub App token minting" section of `agent-identities.md`) — never log full request/response bodies for Slack `oauth.v2.access`, `apps.manifest.*`, or Events API signature-verification failures. |
 
-## 10. Inbound events — shipped (DRO-975)
+## 10. Inbound events — HTTP transport shipped (DRO-975)
 
 **Update:** inbound HTTP Events API ingress has shipped (DRO-975, PR #81), superseding the "defer"
 decision this section previously recorded. Socket Mode remains deferred/operator-opt-in per the
 decision record — HTTP Events API is the only transport implemented.
+
+This is intentionally the HTTP slice selected by
+[`slack-provisioning-decision.md`](./slack-provisioning-decision.md), not an implementation of
+both Slack transports. The Socket Mode acceptance bullet that appeared on linked GitHub issue
+#62 (operator-side app tokens, WebSocket envelope acknowledgements, and refresh/disconnect
+handling) is broader than that decision and remains separate follow-up scope. PR #81 must not be
+used as evidence that those Socket Mode behaviors shipped.
 
 Implementation (`src/providers/slack/ingress/`):
 
@@ -224,9 +231,14 @@ Implementation (`src/providers/slack/ingress/`):
   requests whose `X-Slack-Request-Timestamp` falls outside a 5-minute window, before the body is
   parsed or trusted, per the §9 replay mitigation.
 - `routing.ts` — routes an inbound event to exactly one agent keyed on `(api_app_id, team_id)`; no
-  match or more than one match both fail closed (no best-effort fan-out).
+  match or more than one match both fail closed (no best-effort fan-out). For an
+  `event_callback`, `authorizations` must be a non-empty list containing at least one installation
+  whose `team_id` equals the outer `team_id`. That list is visibility evidence only: it never
+  overrides the outer app/team route or fans a delivery out. Enterprise-only entries without a
+  `team_id` are rejected because the MVP identity model is one workspace installation per agent.
 - `dedup.ts` — deduplicates Slack retries/`event_id`s per agent via plugin state so a Slack-side
-  retry (e.g. after a slow ack) never re-triggers agent work twice.
+  retry (e.g. after a slow ack) never re-triggers agent work twice. A missing or blank `event_id`
+  is acknowledged but not dispatched because it cannot be deduplicated safely.
 - `webhook-handler.ts` — the pure pipeline composing the above, plus the `url_verification`
   handshake.
 - `provider-webhook.ts` — wires the pipeline to a `PluginContext`: resolves the signing secret via
@@ -236,13 +248,14 @@ Implementation (`src/providers/slack/ingress/`):
 Composed generically: `src/core/provider-contract.ts` adds an optional `webhooks`/`handleWebhook`
 seam (mirroring the existing `manifestTools`/`liveTools()` pattern), `src/manifest.ts` declares the
 `slack-events` endpoint through the registry, and `src/worker.ts` dispatches `onWebhook` deliveries
-by `endpointKey` via the registry — no Slack-specific branch in either file. 61 unit/integration
-tests cover URL verification, signature/timestamp rejection, routing ambiguity, dedup, and worker
-wiring (`tests/providers/slack/ingress-*.spec.ts`).
+by `endpointKey` via the registry — no Slack-specific branch in either file. Unit/integration
+tests cover URL verification, signature/timestamp rejection, routing ambiguity, authorization
+lists, required event IDs, dedup, and worker wiring (`tests/providers/slack/ingress-*.spec.ts`).
 
-**Still deferred**, unchanged from the decision record: Socket Mode as an alternate transport, and
-the app-manifest generator's `app_mentions:read` scope (a small follow-up now that ingress exists
-to consume it).
+**Still deferred**, unchanged from the decision record: Socket Mode as an alternate transport
+(including app-level-token custody, WebSocket envelope acknowledgements, reconnect/disconnect,
+and connection refresh), and the app-manifest generator's `app_mentions:read` scope (a small
+follow-up now that ingress exists to consume it).
 
 ## 11. Coexistence with the `paperclip-slack-agent` plugin
 

@@ -76,6 +76,11 @@ describe("worker provider registration", () => {
         },
       },
     });
+    harness.seed({
+      agents: [
+        { id: "agent-1", companyId: "company-1", name: "Bot", role: "engineer", title: null, status: "idle" } as never,
+      ],
+    });
     await plugin.definition.setup(harness.ctx);
 
     const result = await harness.performAction<{ data?: { teamId: string } }>(
@@ -84,6 +89,45 @@ describe("worker provider registration", () => {
       { companyId: "company-1" },
     );
     expect(result.data?.teamId).toBe("T1");
+  });
+
+  // Regression test for the Copilot finding on PR #84 (fa1d97b): a
+  // uiActionInvocable action only had params.agentId as caller input, with
+  // no check that it belongs to the host-authorized company from
+  // actionContext -- so a caller scoped to one company could read another
+  // company's agent's provider status/identity metadata. Verify a
+  // cross-company agentId is now rejected rather than resolved.
+  it("rejects a uiActionInvocable action when agentId does not belong to the host-authorized company", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {
+        identities: {
+          "agent-other-company": { label: "Bot", teamId: "T1", appId: "A1", botUserId: "U1" },
+        },
+      },
+    });
+    harness.seed({
+      agents: [
+        {
+          id: "agent-other-company",
+          companyId: "company-2",
+          name: "Bot",
+          role: "engineer",
+          title: null,
+          status: "idle",
+        } as never,
+      ],
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    await expect(
+      harness.performAction(
+        "slack_bot_whoami",
+        { agentId: "agent-other-company" },
+        { companyId: "company-1" },
+      ),
+    ).rejects.toThrow(/does not belong to the host-authorized company/);
   });
 
   it("does not register credentialed tools (e.g. github_bot_create_pull_request) as plugin actions", async () => {

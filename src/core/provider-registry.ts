@@ -122,6 +122,12 @@ export function buildProviderRegistry(providers: readonly IdentityProvider[]): P
     uiInvocableLiveTools(): readonly LiveProviderTool[] {
       const live: LiveProviderTool[] = [];
       for (const provider of ordered) {
+        // Use the same "tools are live" gate as liveTools() (toolsStatus,
+        // falling back to status), not the provider UI status. A provider
+        // can be UI status: "coming-soon" while its tools are already
+        // toolsStatus: "enabled" — this is a subset of liveTools(), so it
+        // must use the same tool-surface gate to avoid silently omitting an
+        // opted-in tool that lacks redundant `live: true`.
         const toolsAreEnabled =
           (provider.definition.toolsStatus ?? provider.definition.status) === "enabled";
         for (const tool of provider.tools) {

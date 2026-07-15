@@ -178,6 +178,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     getSlackAppManifestFlow,
     saveSlackInstallMetadata,
     slackBotWhoami,
+    identities,
   });
 
   const githubUIState = providerSettingsUIRegistry.get(GITHUB_IDENTITY_PROVIDER_ID)!.useCredentialStep({

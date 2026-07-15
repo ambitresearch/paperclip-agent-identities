@@ -113,10 +113,22 @@ const plugin = definePlugin({
         if (!agentId) {
           throw new Error(`${registered.name} requires an agentId`);
         }
+        const companyId = actionContext.companyId ?? "";
+        // The caller only supplies agentId; validate it belongs to the
+        // host-authorized company before resolving anything for it. Without
+        // this, a caller scoped to one company could request another
+        // company's agentId and read its provider identity/status metadata
+        // (same check the Slack manifest actions already enforce — see
+        // app-manifest.ts's requireCompanyAgent / bot-identity-config).
+        const agents = await ctx.agents.list({ companyId });
+        const belongs = agents.some((agent) => agent.id === agentId);
+        if (!belongs) {
+          throw new Error("agentId does not belong to the host-authorized company.");
+        }
         const runCtx: ToolRunContext = {
           agentId,
           runId: `ui-action:${registered.name}`,
-          companyId: actionContext.companyId ?? "",
+          companyId,
           projectId: "",
         };
         return await registered.handler(params, runCtx);

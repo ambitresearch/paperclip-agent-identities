@@ -87,6 +87,12 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
   secretsLoading: boolean;
   secretsError: string | null;
   companyId: string;
+  // Whether this agentId/provider pair already has a persisted identity row
+  // (i.e. SettingsPage's `identities` list, not form-field presence). Team/app
+  // IDs can be typed into a brand-new wizard before anything is saved, so
+  // gating the status panel/Reinstall action on non-empty fields exposes them
+  // during initial setup too. Drive both from this instead.
+  hasPersistedSlackIdentity: boolean;
 }
 
 // Only the non-secret identity/status fields `slack_bot_whoami` returns (see
@@ -166,7 +172,10 @@ async function copyTextToClipboard(value: string): Promise<void> {
 type SlackCredentialStepInput = ProviderSettingsUIHookInput<SlackSettingsUIFormConfig> & SlackSettingsUIActionsInput;
 
 function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsUIHookResult {
-  const { config, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, saveSlackInstallMetadata, slackBotWhoami, companyId } = input;
+  const { config, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, saveSlackInstallMetadata, slackBotWhoami, companyId, identities } = input;
+  const hasPersistedSlackIdentity = Boolean(
+    config && identities.some((entry) => entry.agentId === config.agentId && entry.provider === config.provider),
+  );
 
   const [slackManifestFlow, setSlackManifestFlow] = useState<CreateSlackAppManifestResult | null>(null);
   const [slackManifestBusy, setSlackManifestBusy] = useState(false);
@@ -639,6 +648,7 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     slackStatusError,
     handleCheckSlackStatus,
     handleReinstallSlackApp,
+    hasPersistedSlackIdentity,
     updateField,
     secretOptions: input.secretOptions,
     secretsLoading: input.secretsLoading,
@@ -660,6 +670,10 @@ export interface SlackSettingsUIActionsInput {
   // The credential-free `slack_bot_whoami` tool (DRO-972), invoked identically
   // to the actions above via `usePluginAction` in SettingsPage.
   slackBotWhoami: (input: Record<string, unknown>) => Promise<unknown>;
+  // Read-only: SettingsPage's persisted identities list, used to gate the
+  // status panel/Reinstall action on an actually-saved identity rather than
+  // form-field presence (see hasPersistedSlackIdentity above).
+  identities: readonly { agentId: string; provider: string }[];
 }
 
 function getSecretFieldHint(input: {
@@ -717,6 +731,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     slackStatusLoading,
     slackStatusError,
     handleReinstallSlackApp,
+    hasPersistedSlackIdentity,
     validationExtra,
     updateField,
     secretOptions,
@@ -725,7 +740,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     companyId,
   } = state;
   const hasSecretOptions = secretOptions.length > 0;
-  const hasExistingSlackIdentity = Boolean(config.slackTeamId.trim() && config.slackAppId.trim());
+  const hasExistingSlackIdentity = hasPersistedSlackIdentity;
   const credentialComplete = Boolean(
     slackSaveResult &&
       slackSaveResult.teamId === config.slackTeamId.trim() &&
@@ -1023,10 +1038,12 @@ function SlackStatusPanel(props: {
   }
   return (
     <div style={inlineNoticeStyle}>
-      <strong>Slack connection status: Connected.</strong>{" "}
+      <strong>Slack identity configured.</strong>{" "}
       Agent <strong>{label || agentId}</strong>, workspace {status.teamId ?? "unknown"}, app {status.appId ?? "unknown"},
       bot user {status.botUserId ?? "unknown"}
       {status.hasDefaultChannel ? ", default channel configured" : ", no default channel configured"}.
+      {" "}This reflects saved install metadata only -- it does not verify the bot token is still valid; a revoked or
+      stale token is not detected here.
     </div>
   );
 }
@@ -1036,6 +1053,6 @@ export const slackSettingsUIAdapter: ProviderSettingsUIAdapter<SlackSettingsUIFo
   useCredentialStep: useSlackCredentialStep,
   CredentialStep: SlackCredentialStep,
   getRemovalConfirmation(entry) {
-    return `Delete agent identity mapping for ${entry.label}? This clears saved Slack install metadata; your Slack app and bot token are not deleted, only unlinked from this agent. You can re-link with "Setup" or "Reinstall" below.`;
+    return `Delete agent identity mapping for ${entry.label}? This clears saved Slack install metadata; your Slack app and bot token are not deleted, only unlinked from this agent. Once deleted, this identity row no longer exists -- to reconnect, use "Add identity" to create a new one for this agent.`;
   },
 };

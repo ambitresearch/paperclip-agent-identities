@@ -15,6 +15,7 @@ vi.mock("../src/providers/index.js", () => ({
     enabled: () => [],
     toolsEnabled: () => [],
     liveTools: () => [],
+    uiInvocableLiveTools: () => [],
     all: () => [],
     get: () => undefined,
   }),

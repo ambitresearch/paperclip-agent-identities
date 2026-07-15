@@ -178,7 +178,19 @@ const plugin = definePlugin({
       return;
     }
 
-    await matched.provider.handleWebhook?.(input, ctx);
+    // `webhooks` and `handleWebhook` are declared independently on
+    // `IdentityProvider`, so a provider can declare an endpoint here without
+    // implementing the handler. Optional-chaining that call would silently
+    // drop (and implicitly ack) the delivery -- fail loud instead so a
+    // provider wiring mistake surfaces immediately rather than as a quiet
+    // dropped webhook.
+    if (!matched.provider.handleWebhook) {
+      throw new Error(
+        `Provider for webhook endpointKey '${input.endpointKey}' declares the endpoint but has no handleWebhook implementation`
+      );
+    }
+
+    await matched.provider.handleWebhook(input, ctx);
   }
 });
 

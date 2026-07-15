@@ -34,10 +34,19 @@ export interface SlackWebhookHeaders {
   readonly [header: string]: string | string[] | undefined;
 }
 
+// HTTP header names are case-insensitive (RFC 7230 §3.2); a host that
+// preserves request casing (e.g. `X-Slack-Signature`) must still match here,
+// not just the exact key and its all-lowercase form. Scan every key
+// case-insensitively rather than special-casing two spellings.
 function readHeader(headers: SlackWebhookHeaders, name: string): string | undefined {
-  const value = headers[name] ?? headers[name.toLowerCase()];
-  if (Array.isArray(value)) return value[0];
-  return value;
+  const lowerName = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowerName) {
+      const value = headers[key];
+      return Array.isArray(value) ? value[0] : value;
+    }
+  }
+  return undefined;
 }
 
 export interface SlackAgentEventDispatch {
@@ -137,6 +146,17 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
 
   const timestampHeader = readHeader(headers, "x-slack-request-timestamp");
   const signatureHeader = readHeader(headers, "x-slack-signature");
+
+  // Cheap, pre-secret-resolution rejection: a request missing (or with a
+  // blank) signature/timestamp header can never verify against any secret
+  // (verifySlackSignature rejects it for every candidate), so resolving N
+  // agents' signing secrets first just to fail every one of them is wasted
+  // work an unauthenticated caller can force on demand. Fail closed here,
+  // before touching `resolveSigningSecret` at all.
+  if (!timestampHeader || !timestampHeader.trim() || !signatureHeader || !signatureHeader.trim()) {
+    logger.warn("Slack webhook: rejected — missing signature or timestamp header");
+    return { status: 401, body: { error: "unauthorized" } };
+  }
 
   const matchedAgentIds: string[] = [];
   for (const agentId of agentIds) {

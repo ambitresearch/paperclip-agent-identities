@@ -305,6 +305,46 @@ describe("handleSlackWebhook", () => {
     expect(result.status).toBe(401);
     expect(deps.onAgentEvent).not.toHaveBeenCalled();
   });
+
+  it("accepts a valid signature even when the host preserves header casing (headers are matched case-insensitively, not just exact/all-lowercase)", async () => {
+    const rawBody = JSON.stringify({ type: "url_verification", challenge: "case-ok", token: "x" });
+    const timestamp = "1800000000";
+    const { "x-slack-request-timestamp": ts, "x-slack-signature": sig } = baseHeaders(timestamp, rawBody);
+    const deps = makeDeps({
+      rawBody,
+      headers: { "X-Slack-Request-Timestamp": ts, "X-Slack-Signature": sig },
+      nowEpochSeconds: 1_800_000_000,
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(200);
+    expect(result.body).toEqual({ challenge: "case-ok" });
+  });
+
+  it("rejects a request missing the signature/timestamp headers before resolving any agent's signing secret (cheap early reject)", async () => {
+    const rawBody = JSON.stringify({ type: "event_callback", team_id: "T111", api_app_id: "A111" });
+    const deps = makeDeps({ rawBody, headers: {}, nowEpochSeconds: 1_800_000_000 });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(401);
+    expect(deps.resolveSigningSecret).not.toHaveBeenCalled();
+  });
+
+  it("rejects a request with a blank signature header before resolving any agent's signing secret", async () => {
+    const rawBody = JSON.stringify({ type: "event_callback", team_id: "T111", api_app_id: "A111" });
+    const deps = makeDeps({
+      rawBody,
+      headers: { "x-slack-request-timestamp": "1800000000", "x-slack-signature": "   " },
+      nowEpochSeconds: 1_800_000_000,
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(401);
+    expect(deps.resolveSigningSecret).not.toHaveBeenCalled();
+  });
 });
 
 describe("handleSlackWebhook rate limiting", () => {

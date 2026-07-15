@@ -128,6 +128,21 @@ function click(el: Element | null) {
   });
 }
 
+function change(el: Element | null, value: string) {
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLSelectElement)) {
+    throw new Error("form control not found");
+  }
+  const proto = el instanceof HTMLSelectElement
+    ? window.HTMLSelectElement.prototype
+    : window.HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, "value")!.set!;
+  act(() => {
+    setter.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 function text(): string {
   return container.textContent ?? "";
 }
@@ -147,6 +162,38 @@ async function openSlackEditDialog() {
   click(nextButton ?? null);
 }
 
+function rerenderSettingsPage() {
+  act(() => {
+    root?.render(
+      // @ts-expect-error -- minimal PluginHostContext for the test harness
+      <SettingsPage context={{ companyId: "", companyPrefix: "acme" }} />,
+    );
+  });
+}
+
+function openNewSlackCredentialStep() {
+  renderSettingsPage();
+  const addButton = Array.from(container.querySelectorAll("button")).find((button) =>
+    button.textContent?.match(/New identity|Add identity/),
+  );
+  click(addButton ?? null);
+
+  const agentSelect = Array.from(container.querySelectorAll("select")).find((select) =>
+    select.querySelector('option[value="agent-0"]'),
+  );
+  change(agentSelect ?? null, "agent-0");
+  const providerSelect = Array.from(container.querySelectorAll("select")).find((select) =>
+    select.querySelector(`option[value="${SLACK_IDENTITY_PROVIDER_ID}"]`),
+  );
+  change(providerSelect ?? null, SLACK_IDENTITY_PROVIDER_ID);
+  change(container.querySelector('input[placeholder="e.g. Cade Riven [Droidshop]"]'), "Release Bot");
+
+  const nextButton = Array.from(container.querySelectorAll("button")).find((button) =>
+    button.textContent === "Next",
+  );
+  click(nextButton ?? null);
+}
+
 describe("Slack status panel (slack_bot_whoami)", () => {
   it("shows a loading state while slack_bot_whoami is in flight", async () => {
     actionFor("slack_bot_whoami").mockReturnValue(new Promise(() => {
@@ -155,7 +202,7 @@ describe("Slack status panel (slack_bot_whoami)", () => {
 
     await openSlackEditDialog();
 
-    expect(text()).toMatch(/Checking Slack connection|Loading/i);
+    expect(text()).toMatch(/Loading configured Slack identity metadata/i);
   });
 
   it("renders bot user id / team from a successful slack_bot_whoami response, never a token", async () => {
@@ -179,6 +226,8 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     });
 
     expect(actionFor("slack_bot_whoami")).toHaveBeenCalled();
+    expect(text()).toMatch(/Configured Slack identity/i);
+    expect(text()).not.toMatch(/connection status: Connected/i);
     expect(text()).toContain("bot-user-U123");
     expect(text()).toContain("T0123456789");
     expect(text()).not.toMatch(/xox[bpa]-/);
@@ -195,7 +244,7 @@ describe("Slack status panel (slack_bot_whoami)", () => {
       await Promise.resolve();
     });
 
-    expect(text()).toMatch(/Not connected/i);
+    expect(text()).toMatch(/identity metadata unavailable/i);
     expect(text()).not.toMatch(/xox[bpa]-/);
   });
 
@@ -216,8 +265,107 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     });
 
     expect(text()).not.toMatch(/Connected\./i);
-    expect(text()).toMatch(/Not connected|No Slack identity bound/i);
+    expect(text()).toMatch(/identity metadata unavailable|No Slack identity bound/i);
     expect(text()).not.toMatch(/xox[bpa]-/);
+  });
+
+  it("does not check or expose reinstall for unsaved form fields, then checks when that identity becomes persisted", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: {
+        label: "Release Bot",
+        teamId: "T0123456789",
+        appId: "A0123456789",
+        botUserId: "U0123456789",
+        hasDefaultChannel: false,
+      },
+    });
+    openNewSlackCredentialStep();
+
+    change(container.querySelector('input[placeholder="e.g. T0123456789"]'), "T0123456789");
+    change(container.querySelector('input[placeholder="e.g. A0123456789"]'), "A0123456789");
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(actionFor("slack_bot_whoami")).not.toHaveBeenCalled();
+    expect(Array.from(container.querySelectorAll("summary")).some((summary) =>
+      summary.textContent?.match(/reinstall/i),
+    )).toBe(false);
+
+    bridgeData = baseBridgeData([slackIdentityEntry()]);
+    rerenderSettingsPage();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("slack_bot_whoami")).toHaveBeenCalledTimes(1);
+    expect(text()).toMatch(/Configured Slack identity/i);
+    expect(Array.from(container.querySelectorAll("summary")).some((summary) =>
+      summary.textContent?.match(/reinstall/i),
+    )).toBe(true);
+  });
+
+  it("re-checks configured metadata after updating an already-persisted identity", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: {
+        label: "Release Bot",
+        teamId: "T0123456789",
+        appId: "A0123456789",
+        botUserId: "U0123456789",
+        hasDefaultChannel: false,
+      },
+    });
+    actionFor("create-slack-app-manifest").mockResolvedValue({
+      agentId: "agent-0",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      state: "state-update",
+      manifest: '{"name":"slack-demo"}',
+      createAppUrl: "https://api.slack.com/apps?new_app=1",
+      label: "Release Bot",
+    });
+    actionFor("save-slack-install-metadata").mockResolvedValue({
+      agentId: "agent-0",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      teamId: "T0123456789",
+      appId: "A0123456789",
+      botUserId: "U0123456789",
+      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      status: "saved",
+    });
+
+    await openSlackEditDialog();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(actionFor("slack_bot_whoami")).toHaveBeenCalledTimes(1);
+
+    const createButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "Create Slack App manifest",
+    );
+    await act(async () => {
+      click(createButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    change(
+      container.querySelector('input[placeholder="Company secret UUID containing the Slack bot token"]'),
+      "11111111-1111-4111-8111-111111111111",
+    );
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "Save Slack install metadata",
+    );
+    await act(async () => {
+      click(saveButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("save-slack-install-metadata")).toHaveBeenCalledTimes(1);
+    expect(actionFor("slack_bot_whoami")).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -295,6 +443,7 @@ describe("Slack removal confirmation copy", () => {
     const confirmMessage = confirmSpy.mock.calls[0]?.[0] as string;
     expect(confirmMessage).toMatch(/Slack install metadata/i);
     expect(confirmMessage).toMatch(/not.*deleted|are not deleted/i);
+    expect(confirmMessage).toMatch(/New identity/i);
     expect(actionFor("delete-bot-identity-config")).not.toHaveBeenCalled();
 
     confirmSpy.mockReturnValue(true);
@@ -340,6 +489,7 @@ describe("Slack removal confirmation copy", () => {
 
     const confirmMessage = confirmSpy.mock.calls[0]?.[0] as string;
     expect(confirmMessage).toMatch(/GitHub App/i);
+    expect(confirmMessage).toMatch(/New identity/i);
     expect(confirmMessage).not.toMatch(/Slack/i);
   });
 });

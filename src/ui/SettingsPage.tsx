@@ -154,6 +154,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   const hasAgentOptions = agentOptions.length > 0;
   const config = formState;
+  const isEditingExistingIdentity = Boolean(
+    config && identities.some(
+      (entry) => entry.agentId === config.agentId && entry.provider === config.provider,
+    ),
+  );
 
   // Slack's and GitHub's credential-step local state (manifest flow, busy
   // flags, errors, restore-on-mount effects, and the save/rebind handlers)
@@ -166,6 +171,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   // from startCreate/startEdit/agentId-or-label edits below).
   const slackUIState = providerSettingsUIRegistry.get(SLACK_IDENTITY_PROVIDER_ID)!.useCredentialStep({
     config: config as unknown as import("../providers/slack/settings-adapter-ui.js").SlackSettingsUIFormConfig | null,
+    hasPersistedIdentity: isEditingExistingIdentity,
     updateField: (field: string, value: string) => updateField(field as keyof IdentityFormState, value),
     refresh,
     deleteConfig,
@@ -178,11 +184,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     getSlackAppManifestFlow,
     saveSlackInstallMetadata,
     slackBotWhoami,
-    identities,
   });
 
   const githubUIState = providerSettingsUIRegistry.get(GITHUB_IDENTITY_PROVIDER_ID)!.useCredentialStep({
     config: config as unknown as import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig | null,
+    hasPersistedIdentity: isEditingExistingIdentity,
     updateField: (field: string, value: string) => updateField(field as keyof IdentityFormState, value),
     refresh,
     deleteConfig,
@@ -236,7 +242,6 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const hasSavedAgentOutsideOptions = Boolean(
     config?.agentId && !agentOptions.some((agent) => agent.id === config.agentId)
   );
-  const isEditingExistingIdentity = Boolean(config && identities.some((entry) => entry.agentId === config.agentId && entry.provider === config.provider));
   const duplicateIdentity = config ? identities.find((entry) => entry.agentId === config.agentId && entry.provider === config.provider && !(config.previousAgentId === entry.agentId && config.provider === entry.provider)) : undefined;
   const formValidation = config
     ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy)

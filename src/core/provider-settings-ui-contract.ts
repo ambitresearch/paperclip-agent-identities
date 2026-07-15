@@ -27,6 +27,8 @@ export interface ProviderSettingsUIFormConfig {
 export interface ProviderSettingsUIHookInput<TConfig extends ProviderSettingsUIFormConfig> {
   /** The current wizard form config, or null when no identity dialog is open. */
   readonly config: TConfig | null;
+  /** Whether the current agent/provider pair exists in persisted settings. */
+  readonly hasPersistedIdentity: boolean;
   /** Update a single form field, mirroring SettingsPage's `updateField`. */
   readonly updateField: (field: keyof TConfig & string, value: string) => void;
   /** Re-fetch identities/config after a mutation (mirrors usePluginData's `refresh`). */

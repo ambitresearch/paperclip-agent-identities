@@ -106,8 +106,8 @@ export interface SlackWebhookResponse {
  *  - verify the HMAC-SHA256 request signature (constant-time compare) and the
  *    5-minute timestamp window before any event is dispatched — and before
  *    any JSON.parse of the body happens at all, for every delivery kind
- *  - deduplicate retried event_ids so Paperclip work never runs twice for the
- *    same delivery
+ *  - deduplicate retried event_ids with bounded retention and make concurrent
+ *    retries in one worker share the original processing outcome
  *  - never log or return the signing secret / any token
  *
  * Always returns HTTP 200 for anything Slack itself needs acked (including

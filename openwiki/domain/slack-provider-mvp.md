@@ -236,9 +236,13 @@ Implementation (`src/providers/slack/ingress/`):
   whose `team_id` equals the outer `team_id`. That list is visibility evidence only: it never
   overrides the outer app/team route or fans a delivery out. Enterprise-only entries without a
   `team_id` are rejected because the MVP identity model is one workspace installation per agent.
-- `dedup.ts` — deduplicates Slack retries/`event_id`s per agent via plugin state so a Slack-side
-  retry (e.g. after a slow ack) never re-triggers agent work twice. A missing or blank `event_id`
-  is acknowledged but not dispatched because it cannot be deduplicated safely.
+- `dedup.ts` — keeps a per-agent, hashed event ledger bounded to 512 entries with a 10-minute TTL.
+  Concurrent retries in one worker await the original processing outcome; failures release their
+  claim so every waiter fails retryably instead of acknowledging lost work. A token write/read-back
+  check also elects one winner for overlapping writes it can observe. The current plugin-state SDK
+  has no compare-and-set primitive, so this is not an atomic cross-process exactly-once guarantee;
+  a later competing write can still race after another process confirms ownership. A missing or
+  blank `event_id` is acknowledged but not dispatched because it cannot be deduplicated safely.
 - `webhook-handler.ts` — the pure pipeline composing the above, plus the `url_verification`
   handshake.
 - `provider-webhook.ts` — wires the pipeline to a `PluginContext`: resolves the signing secret via

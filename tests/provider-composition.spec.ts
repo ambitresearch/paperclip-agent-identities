@@ -67,9 +67,11 @@ describe("provider composition root", () => {
   it("keeps all live tool definitions provider-owned", () => {
     expect(githubProvider.tools.map((tool) => tool.name)).toEqual([
       "github_bot_whoami", "github_bot_create_pull_request", "github_bot_push_branch",
+      "github_bot_submit_pull_request_review",
     ]);
     expect(githubProvider.manifestTools.map((tool) => (tool as { name: string }).name)).toEqual([
       "github_bot_whoami", "github_bot_create_pull_request", "github_bot_push_branch",
+      "github_bot_submit_pull_request_review",
     ]);
   });
 });

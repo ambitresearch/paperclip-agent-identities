@@ -1,6 +1,6 @@
 {
   "name": "@gautamroshan/paperclip-agent-identities",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "packageManager": "pnpm@10.17.1",
   "type": "module",
   "private": false,

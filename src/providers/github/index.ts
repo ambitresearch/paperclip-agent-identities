@@ -12,6 +12,7 @@ import { resolveGitHubCredential } from "./credentials.js";
 import { githubWhoamiToolSpec } from "./tools/whoami.js";
 import { githubCreatePullRequestToolSpec } from "./tools/create-pull-request.js";
 import { githubPushBranchToolSpec } from "./tools/push-branch.js";
+import { githubSubmitPullRequestReviewToolSpec } from "./tools/submit-pull-request-review.js";
 import { githubManifestTools } from "./manifest-tools.js";
 import { contributeGitHubAppManifestActions } from "./app-manifest.js";
 
@@ -51,9 +52,9 @@ export const githubProvider: IdentityProvider<GitHubAgentIdentity, ResourceRefer
   validateConfig: validateGitHubConfig,
   projectPluginConfig: projectGitHubPluginConfig,
   resolveCredential: resolveGitHubCredential,
-  // The three tool specs have heterogeneous TRefs: whoami=ResourceReference,
-  // create-PR=GitHubRepoRef, push-branch=GitHubPushTarget. They are all
-  // assignable to ProviderToolSpec<GitHubAgentIdentity, ResourceReference>
+  // The four tool specs have heterogeneous TRefs: whoami=ResourceReference,
+  // create-PR=GitHubRepoRef, push-branch=GitHubPushTarget, submit-review=GitHubRepoRef.
+  // They are all assignable to ProviderToolSpec<GitHubAgentIdentity, ResourceReference>
   // because ProviderToolSpec declares perform/resolveResourceRef/validateParams
   // as METHODS — method parameters are bivariant even under strictFunctionTypes.
   // Do NOT "fix" this into a union TRef (e.g. GitHubRepoRef | GitHubPushTarget);
@@ -62,7 +63,8 @@ export const githubProvider: IdentityProvider<GitHubAgentIdentity, ResourceRefer
   tools: [
     githubWhoamiToolSpec,
     githubCreatePullRequestToolSpec,
-    githubPushBranchToolSpec
+    githubPushBranchToolSpec,
+    githubSubmitPullRequestReviewToolSpec
   ],
   contributeActions: contributeGitHubAppManifestActions,
   manifestTools: githubManifestTools

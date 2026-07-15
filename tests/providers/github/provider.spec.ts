@@ -45,16 +45,17 @@ describe("githubProvider", () => {
     expect(typeof result).toBe("string");
   });
 
-  it("registers exactly the three GitHub tool specs in order", () => {
+  it("registers exactly the four GitHub tool specs in order", () => {
     expect(githubProvider.tools.map((tool) => tool.name)).toEqual([
       "github_bot_whoami",
       "github_bot_create_pull_request",
-      "github_bot_push_branch"
+      "github_bot_push_branch",
+      "github_bot_submit_pull_request_review"
     ]);
   });
 
-  it("exposes three manifest tools and a contributeActions hook", () => {
-    expect(githubProvider.manifestTools).toHaveLength(3);
+  it("exposes four manifest tools and a contributeActions hook", () => {
+    expect(githubProvider.manifestTools).toHaveLength(4);
     expect(typeof githubProvider.contributeActions).toBe("function");
   });
 

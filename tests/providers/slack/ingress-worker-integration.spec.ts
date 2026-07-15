@@ -123,7 +123,7 @@ describe("Slack Events API ingress — manifest + worker wiring", () => {
     expect(invokeSpy).not.toHaveBeenCalled();
   });
 
-  it("rejects an invalid signature end-to-end without invoking any agent", async () => {
+  it("acks an invalid signature end-to-end without invoking any agent", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
     harness.seed({
       companies: [{ id: "company-1", name: "Acme" } as never],
@@ -159,7 +159,7 @@ describe("Slack Events API ingress — manifest + worker wiring", () => {
         rawBody,
         requestId: "req-3",
       })
-    ).rejects.toThrow(/rejected with status/i);
+    ).resolves.toBeUndefined();
 
     expect(invokeSpy).not.toHaveBeenCalled();
   });

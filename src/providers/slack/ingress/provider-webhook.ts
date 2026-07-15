@@ -141,13 +141,15 @@ export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx:
   // `result.body` computed above. That means Slack's `url_verification`
   // challenge, 401 (bad signature), and 429 (rate limited) responses
   // computed by `handleSlackWebhook` cannot reach Slack over HTTP today.
-  // This function still computes and logs the correct `{status, body}` (and,
-  // per the onAgentEvent failure paths above, throws instead of resolving on
-  // handoff failure, so the host's RPC-call try/catch at least surfaces a 502
-  // instead of a fabricated success) so that once DRO-1074 lands an extended
-  // `handleWebhook` result contract, wiring the real HTTP status/body through
-  // is a mechanical change confined to this function's return value.
+  //
+  // Given that host limitation, do NOT throw for these non-transient ingress
+  // rejections; throwing would only convert them into host-level 5xx failures
+  // and trigger Slack retries for requests that should not be retried.
+  // (Delivery-handoff failures inside `onAgentEvent` still throw so genuine
+  // transient processing errors surface to the host.)
   if (result.status >= 400) {
-    throw new Error(`Slack webhook: rejected with status ${result.status}`);
+    ctx.logger.warn("Slack webhook rejected; host cannot yet forward non-200 status/body", {
+      status: result.status,
+    });
   }
 }

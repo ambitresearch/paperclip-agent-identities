@@ -118,7 +118,7 @@ describe("handleSlackProviderWebhook", () => {
     );
   });
 
-  it("does not invoke any agent when the signature is invalid, and rejects instead of acking success", async () => {
+  it("does not invoke any agent when the signature is invalid, and returns without throwing", async () => {
     const payload = { type: "event_callback", team_id: "T111", api_app_id: "A111", event: {} };
     const rawBody = JSON.stringify(payload);
     const ctx = makeCtx();
@@ -133,9 +133,13 @@ describe("handleSlackProviderWebhook", () => {
         },
         ctx as never
       )
-    ).rejects.toThrow(/rejected with status/i);
+    ).resolves.toBeUndefined();
 
     expect(ctx.agents.invoke).not.toHaveBeenCalled();
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      "Slack webhook rejected; host cannot yet forward non-200 status/body",
+      expect.objectContaining({ status: 401 })
+    );
   });
 
   it("logs an error, does not invoke the agent, and rejects (so the host does not ack success) when companyId cannot be resolved", async () => {

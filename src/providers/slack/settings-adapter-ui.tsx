@@ -492,6 +492,11 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
           setSlackManifestFlow(null);
           deleteSlackManifestFlowState(companyId, targetAgentId);
           await refresh();
+          // The new identity is already persisted even though removing the
+          // previous identity failed. Re-check it now so the status panel
+          // does not keep the pre-save "identity unavailable" result while
+          // the operator uses the cleanup-only retry path.
+          await handleCheckSlackStatus();
           return;
         }
       }

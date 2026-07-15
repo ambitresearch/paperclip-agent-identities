@@ -618,6 +618,23 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
         { id: "agent-1", role: "Engineer", status: "active" },
       ],
     };
+    let targetAgentStatusChecks = 0;
+    actionFor("slack_bot_whoami").mockImplementation(async ({ agentId }: { agentId: string }) => {
+      if (agentId !== "agent-1") return { error: "No Slack identity bound for this agent." };
+      targetAgentStatusChecks += 1;
+      if (targetAgentStatusChecks === 1) {
+        return { error: "No Slack identity bound for this agent." };
+      }
+      return {
+        data: {
+          label: "Release Bot",
+          teamId: "T0123456789",
+          appId: "A0123456789",
+          botUserId: "U0123456789",
+          hasDefaultChannel: false,
+        },
+      };
+    });
 
     renderSettingsPage();
     const editButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Edit");
@@ -628,9 +645,15 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
       Array.from(s.options).some((o) => o.value === "agent-1"),
     );
     setValue(agentSelect ?? null, "agent-1");
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(targetAgentStatusChecks).toBe(1);
 
     const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
     click(nextButton ?? null);
+    expect(text()).toContain("Slack identity metadata unavailable");
 
     actionFor("create-slack-app-manifest").mockResolvedValue({
       agentId: "agent-1",
@@ -689,6 +712,10 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
       agentId: "agent-0",
       provider: SLACK_IDENTITY_PROVIDER_ID,
     });
+    expect(targetAgentStatusChecks).toBe(2);
+    expect(actionFor("slack_bot_whoami")).toHaveBeenLastCalledWith({ agentId: "agent-1", companyId: "" });
+    expect(text()).toContain("Configured Slack identity");
+    expect(text()).not.toContain("Slack identity metadata unavailable");
     expect(text()).toContain("Retry cleanup");
     expect(text()).not.toContain("Slack install metadata saved for team T0123456789.");
 

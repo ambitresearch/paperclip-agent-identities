@@ -1,6 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { createHmac } from "node:crypto";
-import { handleSlackWebhook } from "../../../src/providers/slack/ingress/webhook-handler.js";
+import {
+  handleSlackWebhook,
+  SLACK_WEBHOOK_MAX_BODY_BYTES,
+} from "../../../src/providers/slack/ingress/webhook-handler.js";
+import { resetSlackRateLimitState } from "../../../src/providers/slack/ingress/rate-limit.js";
 import type { SlackAgentIdentity } from "../../../src/providers/slack/config.js";
 
 const SIGNING_SECRET = "test-signing-secret-value";
@@ -48,6 +52,10 @@ function makeDeps(overrides: Partial<Parameters<typeof handleSlackWebhook>[0]> =
 }
 
 describe("handleSlackWebhook", () => {
+  beforeEach(() => {
+    resetSlackRateLimitState();
+  });
+
   it("responds to Slack's correctly-signed URL verification handshake, checked against a configured identity's secret", async () => {
     const rawBody = JSON.stringify({ type: "url_verification", challenge: "abc123", token: "x" });
     const timestamp = "1800000000";
@@ -167,6 +175,33 @@ describe("handleSlackWebhook", () => {
     expect(deps.onAgentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "agent-1", event: payload.event })
     );
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+    ["array", []],
+    ["missing type", {}],
+    ["blank type", { type: "   " }],
+  ])("acks but does not claim or dispatch an event_callback whose event is %s", async (_label, event) => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-invalid-event",
+      authorizations: authorizationsFor("T111"),
+      event,
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const deps = makeDeps({ rawBody, headers: baseHeaders(timestamp, rawBody) });
+
+    await expect(handleSlackWebhook(deps as never)).resolves.toEqual({
+      status: 200,
+      body: { ok: true, dispatched: false },
+    });
+    expect(deps.shouldProcessEvent).not.toHaveBeenCalled();
+    expect(deps.onAgentEvent).not.toHaveBeenCalled();
   });
 
   it("acks (200) but skips dispatch for a duplicate/retried event_id", async () => {
@@ -291,6 +326,38 @@ describe("handleSlackWebhook", () => {
     // step, not silently succeed with an empty/garbage event.
     const result = await handleSlackWebhook(deps as never);
     expect(result.status).toBe(400);
+  });
+
+  it("accepts a request body exactly at the byte limit", async () => {
+    const prefix = '{"type":"url_verification","challenge":"at-limit","padding":"';
+    const suffix = '"}';
+    const rawBody = `${prefix}${"x".repeat(SLACK_WEBHOOK_MAX_BODY_BYTES - prefix.length - suffix.length)}${suffix}`;
+    const timestamp = "1800000000";
+    const deps = makeDeps({ rawBody, headers: baseHeaders(timestamp, rawBody) });
+
+    expect(Buffer.byteLength(rawBody, "utf8")).toBe(SLACK_WEBHOOK_MAX_BODY_BYTES);
+    await expect(handleSlackWebhook(deps as never)).resolves.toEqual({
+      status: 200,
+      body: { challenge: "at-limit" },
+    });
+    expect(deps.resolveSigningSecret).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a body over the byte limit before identity or secret resolution", async () => {
+    const rawBody = "é".repeat(Math.floor(SLACK_WEBHOOK_MAX_BODY_BYTES / 2) + 1);
+    const deps = makeDeps({
+      rawBody,
+      headers: { "x-slack-request-timestamp": "1800000000", "x-slack-signature": "v0=unused" },
+    });
+
+    expect(rawBody.length).toBeLessThan(SLACK_WEBHOOK_MAX_BODY_BYTES);
+    expect(Buffer.byteLength(rawBody, "utf8")).toBeGreaterThan(SLACK_WEBHOOK_MAX_BODY_BYTES);
+    await expect(handleSlackWebhook(deps as never)).resolves.toEqual({
+      status: 413,
+      body: { error: "payload too large" },
+    });
+    expect(deps.getProjectedIdentities).not.toHaveBeenCalled();
+    expect(deps.resolveSigningSecret).not.toHaveBeenCalled();
   });
 
   it("never includes the signing secret or any token in the response body on failure", async () => {
@@ -425,6 +492,53 @@ describe("handleSlackWebhook", () => {
 
     expect(result.status).toBe(401);
     expect(deps.resolveSigningSecret).not.toHaveBeenCalled();
+  });
+
+  it("checks signing secrets in bounded parallel batches", async () => {
+    const identities = Object.fromEntries(
+      Array.from({ length: 12 }, (_, index) => [
+        `agent-${index}`,
+        {
+          label: `Agent ${index}`,
+          teamId: `T${index}`,
+          appId: `A${index}`,
+          botUserId: `U${index}`,
+        },
+      ]),
+    ) as Record<string, SlackAgentIdentity>;
+    const payload = {
+      type: "event_callback",
+      team_id: "T9",
+      api_app_id: "A9",
+      event_id: "Ev-batched-secret-check",
+      authorizations: authorizationsFor("T9"),
+      event: { type: "app_mention" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    let releaseFirstBatch!: () => void;
+    const firstBatchGate = new Promise<void>((resolve) => {
+      releaseFirstBatch = resolve;
+    });
+    const started: string[] = [];
+    const deps = makeDeps({
+      rawBody,
+      headers: baseHeaders(timestamp, rawBody),
+      getProjectedIdentities: vi.fn(async () => identities),
+      resolveSigningSecret: vi.fn(async (agentId: string) => {
+        started.push(agentId);
+        if (started.length <= 8) await firstBatchGate;
+        return agentId === "agent-9" ? SIGNING_SECRET : "non-matching-secret";
+      }),
+    });
+
+    const result = handleSlackWebhook(deps as never);
+    await vi.waitFor(() => expect(started).toHaveLength(8));
+    expect(started).toEqual(Object.keys(identities).slice(0, 8));
+    releaseFirstBatch();
+
+    await expect(result).resolves.toEqual({ status: 200, body: { ok: true } });
+    expect(started).toHaveLength(12);
   });
 });
 

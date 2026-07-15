@@ -10,7 +10,7 @@ import { CREDENTIAL_SIDECAR_PATH_ENV, upsertCredentialSidecarIdentity } from "..
 import { CONFIG_SCOPE } from "../../../src/config-source.js";
 import { BOT_IDENTITY_SETTINGS_VERSION } from "../../../src/core/identity-config.js";
 
-// End-to-end coverage that DRO-975's Slack HTTP Events API ingress is
+// End-to-end coverage that DRO-1005's Slack HTTP Events API ingress is
 // actually wired into the plugin's manifest + worker seams -- not just
 // unit-tested in isolation. Exercises the real `onWebhook` hook through the
 // generic provider-registry `webhooks()`/`handleWebhook` dispatch (see

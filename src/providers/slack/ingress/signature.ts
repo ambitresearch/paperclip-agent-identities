@@ -8,7 +8,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 //
 // This module verifies the signature and the replay window BEFORE any JSON
 // parsing happens (the caller must pass the untouched raw body string) — per
-// DRO-975's acceptance criteria and openwiki/domain/slack-provider-design.md
+// DRO-1005's acceptance criteria and openwiki/domain/slack-provider-design.md
 // §T5, an attacker who can reach the ingress endpoint without a valid
 // signature must never have the body parsed/trusted at all.
 

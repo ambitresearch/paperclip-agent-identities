@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { isWithinSlackRateLimit, resetSlackRateLimitState } from "../../../src/providers/slack/ingress/rate-limit.js";
+import {
+  isWithinSlackRateLimit,
+  isWithinSlackUnauthenticatedRateLimit,
+  resetSlackRateLimitState,
+} from "../../../src/providers/slack/ingress/rate-limit.js";
 
 describe("isWithinSlackRateLimit", () => {
   beforeEach(() => {
@@ -37,5 +41,12 @@ describe("isWithinSlackRateLimit", () => {
 
   it("uses a sane default config when none is supplied", () => {
     expect(isWithinSlackRateLimit("team-default", 0)).toBe(true);
+  });
+
+  it("caps unauthenticated ingress independently of any parsed team key", () => {
+    for (let index = 0; index < 120; index += 1) {
+      expect(isWithinSlackUnauthenticatedRateLimit(0)).toBe(true);
+    }
+    expect(isWithinSlackUnauthenticatedRateLimit(0)).toBe(false);
   });
 });

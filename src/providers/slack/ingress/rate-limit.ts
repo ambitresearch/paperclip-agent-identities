@@ -22,6 +22,12 @@ const DEFAULT_CONFIG: SlackRateLimitConfig = {
   windowMs: 10_000, // 30 requests / 10s per team — generous for normal traffic, bounds floods.
 };
 
+const UNAUTHENTICATED_CONFIG: SlackRateLimitConfig = {
+  limit: 120,
+  windowMs: 10_000,
+};
+const UNAUTHENTICATED_KEY = "slack-ingress:unauthenticated";
+
 interface WindowState {
   count: number;
   windowStartMs: number;
@@ -56,6 +62,15 @@ export function isWithinSlackRateLimit(
 
   existing.count += 1;
   return true;
+}
+
+/**
+ * Bounds public ingress work before body parsing reveals a trustworthy team
+ * key. This process-wide backstop is intentionally independent of untrusted
+ * request content; the per-team limiter still applies after authentication.
+ */
+export function isWithinSlackUnauthenticatedRateLimit(nowMs: number): boolean {
+  return isWithinSlackRateLimit(UNAUTHENTICATED_KEY, nowMs, UNAUTHENTICATED_CONFIG);
 }
 
 /** Test-only: clears all in-memory rate-limit state between test cases. */

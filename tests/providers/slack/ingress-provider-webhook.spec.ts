@@ -8,6 +8,7 @@ import {
   slackWebhookDeclarations,
   handleSlackProviderWebhook,
 } from "../../../src/providers/slack/ingress/provider-webhook.js";
+import { SLACK_WEBHOOK_MAX_BODY_BYTES } from "../../../src/providers/slack/ingress/webhook-handler.js";
 import { CONFIG_SCOPE } from "../../../src/config-source.js";
 import { BOT_IDENTITY_SETTINGS_VERSION } from "../../../src/core/identity-config.js";
 import { CREDENTIAL_SIDECAR_PATH_ENV, upsertCredentialSidecarIdentity } from "../../../src/credential-sidecar.js";
@@ -130,6 +131,25 @@ describe("handleSlackProviderWebhook", () => {
       "co-1",
       expect.objectContaining({ reason: "slack-inbound-event" })
     );
+  });
+
+  it("rejects an oversized body before reading identities or resolving a secret", async () => {
+    const ctx = makeCtx();
+
+    await handleSlackProviderWebhook(
+      {
+        endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+        headers: { "x-slack-request-timestamp": "1800000000", "x-slack-signature": "v0=unused" },
+        rawBody: "x".repeat(SLACK_WEBHOOK_MAX_BODY_BYTES + 1),
+        requestId: "req-oversized",
+      },
+      ctx as never,
+    );
+
+    expect(ctx.config.get).not.toHaveBeenCalled();
+    expect(ctx.state.get).not.toHaveBeenCalled();
+    expect(ctx.secrets.resolve).not.toHaveBeenCalled();
+    expect(ctx.agents.invoke).not.toHaveBeenCalled();
   });
 
   it("uses valid instance config ahead of stale settings state for both authentication and routing", async () => {

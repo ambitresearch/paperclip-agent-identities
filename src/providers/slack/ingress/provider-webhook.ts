@@ -2,7 +2,8 @@ import type { PluginContext, PluginWebhookInput } from "@paperclipai/plugin-sdk"
 import type { ProviderWebhookDeclaration } from "../../../core/provider-contract.js";
 import { CONFIG_SCOPE } from "../../../config-source.js";
 import { normalizeSettingsState } from "../../../core/identity-config.js";
-import { resolveSlackSigningSecret } from "../credentials.js";
+import { readCredentialSidecar, resolveCredentialSidecarPath } from "../../../credential-sidecar.js";
+import { getIdentityKey } from "../../../shared/types.js";
 import { projectSlackPluginConfig, validateSlackConfig, type SlackAgentIdentity } from "../config.js";
 import { handleSlackWebhook, type SlackWebhookHeaders } from "./webhook-handler.js";
 import {
@@ -112,19 +113,43 @@ function buildInvocationPrompt(dispatch: {
  * `PluginContext`-backed dependencies (state, secrets, agent invocation).
  */
 export async function handleSlackProviderWebhook(input: PluginWebhookInput, ctx: PluginContext): Promise<void> {
-  const identities = await buildSlackIdentitySnapshot(ctx);
+  let identitiesPromise: ReturnType<typeof buildSlackIdentitySnapshot> | undefined;
+  const getIdentities = () => identitiesPromise ??= buildSlackIdentitySnapshot(ctx);
+  let sidecarPromise: ReturnType<typeof readCredentialSidecar> | undefined;
+  const getSidecar = async () => {
+    if (!sidecarPromise) {
+      sidecarPromise = resolveCredentialSidecarPath().then((path) => readCredentialSidecar(path));
+    }
+    return sidecarPromise;
+  };
+  const signingSecrets = new Map<string, Promise<string>>();
+  const resolveSigningSecret = (agentId: string): Promise<string> => {
+    const existing = signingSecrets.get(agentId);
+    if (existing) return existing;
+    const resolved = (async () => {
+      const identities = await getIdentities();
+      if (!identities[agentId]) throw new Error(`No Slack identity configured for agent '${agentId}'.`);
+      const sidecar = await getSidecar();
+      const signingSecretId = sidecar.identities[getIdentityKey(agentId, "slack")]?.slackBotToken?.signingSecretId;
+      if (!signingSecretId) {
+        throw new Error(`Missing Slack signing secret credential for agent '${agentId}'.`);
+      }
+      return ctx.secrets.resolve(signingSecretId);
+    })();
+    signingSecrets.set(agentId, resolved);
+    return resolved;
+  };
+
   const result = await handleSlackWebhook({
     rawBody: input.rawBody,
     headers: input.headers as SlackWebhookHeaders,
     nowEpochSeconds: Math.floor(Date.now() / 1000),
     nowMs: Date.now(),
     async getProjectedIdentities() {
-      return identities;
+      return getIdentities();
     },
     async resolveSigningSecret(agentId) {
-      const identity = identities[agentId];
-      if (!identity) throw new Error(`No Slack identity configured for agent '${agentId}'.`);
-      return resolveSlackSigningSecret({ agentId, identity }, (secretRef) => ctx.secrets.resolve(secretRef));
+      return resolveSigningSecret(agentId);
     },
     async shouldProcessEvent(agentId, eventId) {
       return shouldProcessSlackEvent(ctx.state, agentId, eventId);

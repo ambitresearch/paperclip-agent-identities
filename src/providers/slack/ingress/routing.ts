@@ -1,7 +1,7 @@
 import type { SlackAgentIdentity } from "../config.js";
 
 // Routes an inbound Slack event to exactly one Paperclip agent, per
-// openwiki/domain/slack-provider-design.md's DRO-975 acceptance criteria:
+// openwiki/domain/slack-provider-design.md's DRO-1005 acceptance criteria:
 // "Route by app ID plus team ID to exactly one agent; ambiguity fails
 // closed." Both fields must match — matching only one is not sufficient,
 // since a single Slack app can (in a later multi-workspace world) install

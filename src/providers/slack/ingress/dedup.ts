@@ -10,7 +10,6 @@ export interface SlackDedupStateClient {
 }
 
 export const SLACK_EVENT_DEDUP_TTL_MS = 10 * 60 * 1_000;
-export const SLACK_EVENT_DEDUP_MAX_ENTRIES = 512;
 
 const DEDUP_NAMESPACE = "slack-ingress";
 const DEDUP_STATE_KEY = "event-ledger";
@@ -44,7 +43,9 @@ interface ClientBookkeeping {
 // overlapping writers whose writes both land before either confirmation,
 // but it is not atomic: a second process can still overwrite a claim after
 // the first process confirms ownership, allowing both to proceed. Exactly
-// once cross-process execution therefore remains a platform limitation.
+// once cross-process execution therefore remains a platform limitation. A
+// multi-worker deployment needs an SDK CAS/conditional-insert primitive (or
+// another shared atomic store) before it can claim exactly-once processing.
 //
 // Within one worker, PluginContext supplies one stable state client. The
 // WeakMap keeps concurrent duplicates for that client attached to the
@@ -218,14 +219,13 @@ export async function shouldProcessSlackEvent(
 
       if (existingPersistentClaim) {
         if (liveEntries.length !== ledger.entries.length) {
-          await persistLedger(state, agentId, liveEntries.slice(-SLACK_EVENT_DEDUP_MAX_ENTRIES));
+          await persistLedger(state, agentId, liveEntries);
         }
         return false;
       }
 
-      const retainedEntries = liveEntries.slice(-(SLACK_EVENT_DEDUP_MAX_ENTRIES - 1));
       const nextEntries: StoredClaim[] = [
-        ...retainedEntries,
+        ...liveEntries,
         { eventHash, token: claim.token, expiresAt: nowMs + SLACK_EVENT_DEDUP_TTL_MS },
       ];
       await persistLedger(state, agentId, nextEntries);
@@ -234,9 +234,17 @@ export async function shouldProcessSlackEvent(
       // This detects a competing write that landed before confirmation, but
       // cannot prevent a later overwrite without SDK-level CAS support.
       const confirmed = parseLedger(await state.get(stateKey(agentId)));
-      return confirmed.entries.some(
-        (entry) => entry.eventHash === eventHash && entry.token === claim.token && entry.expiresAt > nowMs,
+      const confirmedClaim = confirmed.entries.find(
+        (entry) => entry.eventHash === eventHash && entry.expiresAt > nowMs,
       );
+      if (!confirmedClaim) {
+        // A last-write-wins state race can remove this unique event while a
+        // different event is claimed by another worker. It is not a
+        // duplicate: fail retryably so the host does not acknowledge work
+        // that no worker owns.
+        throw new Error("Slack event deduplication state conflict; retry the delivery");
+      }
+      return confirmedClaim.token === claim.token;
     });
 
     if (!ownsPersistentClaim) {

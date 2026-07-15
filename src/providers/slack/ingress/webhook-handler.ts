@@ -1,7 +1,13 @@
 import { verifySlackSignature } from "./signature.js";
 import { routeSlackEventToAgent } from "./routing.js";
-import { isWithinSlackRateLimit } from "./rate-limit.js";
+import {
+  isWithinSlackRateLimit,
+  isWithinSlackUnauthenticatedRateLimit,
+} from "./rate-limit.js";
 import type { SlackAgentIdentity } from "../config.js";
+
+export const SLACK_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
+const SIGNATURE_CHECK_CONCURRENCY = 8;
 
 // Body shape read AFTER signature verification has already succeeded (see
 // `handleSlackWebhook` below). `JSON.parse` of the raw body is never invoked
@@ -19,6 +25,10 @@ interface RawSlackEnvelopeFields {
   readonly event_id?: string;
   readonly authorizations?: unknown;
   readonly event?: unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function parseEnvelope(rawBody: string): RawSlackEnvelopeFields | null {
@@ -40,6 +50,10 @@ function hasTeamAuthorization(authorizations: unknown, teamId: string): boolean 
       return typeof authorizationTeamId === "string" && authorizationTeamId.trim() === teamId;
     })
   );
+}
+
+function isValidSlackEvent(event: unknown): event is Record<string, unknown> {
+  return isRecord(event) && typeof event.type === "string" && event.type.trim().length > 0;
 }
 
 export interface SlackWebhookHeaders {
@@ -93,21 +107,24 @@ export interface HandleSlackWebhookDeps {
 }
 
 export interface SlackWebhookResponse {
-  readonly status: 200 | 400 | 401 | 429;
+  readonly status: 200 | 400 | 401 | 413 | 429;
   readonly body: unknown;
 }
 
 /**
  * Handles one inbound HTTP delivery from Slack (Events API), implementing
- * DRO-975's acceptance criteria:
+ * DRO-1005's acceptance criteria:
  *  - route by (api_app_id, team_id) to exactly one agent; ambiguity fails closed
  *  - require Slack's authorizations list to contain that routed team; the list
  *    proves event visibility but never fans one delivery out to more agents
  *  - verify the HMAC-SHA256 request signature (constant-time compare) and the
  *    5-minute timestamp window before any event is dispatched — and before
  *    any JSON.parse of the body happens at all, for every delivery kind
- *  - deduplicate retried event_ids with bounded retention and make concurrent
- *    retries in one worker share the original processing outcome
+ *  - deduplicate retried event_ids for the full TTL and make concurrent
+ *    retries in one worker share the original processing outcome; the SDK's
+ *    lack of CAS prevents an exactly-once cross-process guarantee
+ *  - reject oversized bodies and rate-limit unauthenticated work before
+ *    identity or signing-secret resolution
  *  - never log or return the signing secret / any token
  *
  * Always returns HTTP 200 for anything Slack itself needs acked (including
@@ -138,13 +155,35 @@ export interface SlackWebhookResponse {
 export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<SlackWebhookResponse> {
   const { rawBody, headers, nowEpochSeconds, logger } = deps;
 
+  if (Buffer.byteLength(rawBody, "utf8") > SLACK_WEBHOOK_MAX_BODY_BYTES) {
+    logger.warn("Slack webhook: rejected — request body exceeds byte limit");
+    return { status: 413, body: { error: "payload too large" } };
+  }
+
+  const timestampHeader = readHeader(headers, "x-slack-request-timestamp");
+  const signatureHeader = readHeader(headers, "x-slack-signature");
+
+  // Cheap, pre-secret-resolution rejection: a request missing (or with a
+  // blank) signature/timestamp header can never verify against any secret.
+  if (!timestampHeader || !timestampHeader.trim() || !signatureHeader || !signatureHeader.trim()) {
+    logger.warn("Slack webhook: rejected — missing signature or timestamp header");
+    return { status: 401, body: { error: "unauthorized" } };
+  }
+
+  const nowMs = deps.nowMs ?? nowEpochSeconds * 1000;
+  if (!isWithinSlackUnauthenticatedRateLimit(nowMs)) {
+    logger.warn("Slack webhook: unauthenticated ingress rate limit exceeded");
+    return { status: 429, body: { error: "rate limited" } };
+  }
+
   // Verify the raw-body HMAC-SHA256 signature (constant-time compare,
   // 5-minute replay window) BEFORE any JSON.parse of the body happens, for
   // every kind of delivery — not just the url_verification handshake. There
   // is no per-request team_id/api_app_id to pick a single candidate secret
   // ahead of parsing (that would itself require trusting parsed content), so
-  // every currently configured agent's signing secret is tried as a
-  // candidate; the request is authenticated the moment any one matches. This
+  // configured signing secrets are checked in bounded parallel batches and
+  // cached for this delivery; authentication succeeds when any one matches.
+  // The routed agent's cached result is checked again after parsing. This
   // closes the gap where a routed agentId (previously read from the parsed
   // body first) was used to pick "the" secret to check against — that order
   // let an attacker's unparsed-but-well-formed JSON pick which secret
@@ -158,50 +197,45 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
     return { status: 401, body: { error: "unauthorized" } };
   }
 
-  const timestampHeader = readHeader(headers, "x-slack-request-timestamp");
-  const signatureHeader = readHeader(headers, "x-slack-signature");
+  type SignatureCheck = "match" | "mismatch" | "unavailable";
+  const signatureChecks = new Map<string, Promise<SignatureCheck>>();
+  const checkSignature = (agentId: string): Promise<SignatureCheck> => {
+    const existing = signatureChecks.get(agentId);
+    if (existing) return existing;
+    const check = (async () => {
+      let candidateSecret: string;
+      try {
+        candidateSecret = await deps.resolveSigningSecret(agentId);
+      } catch {
+        return "unavailable";
+      }
+      return verifySlackSignature({
+        signingSecret: candidateSecret,
+        rawBody,
+        timestampHeader,
+        signatureHeader,
+        nowEpochSeconds,
+      }).ok ? "match" : "mismatch";
+    })();
+    signatureChecks.set(agentId, check);
+    return check;
+  };
 
-  // Cheap, pre-secret-resolution rejection: a request missing (or with a
-  // blank) signature/timestamp header can never verify against any secret
-  // (verifySlackSignature rejects it for every candidate), so resolving N
-  // agents' signing secrets first just to fail every one of them is wasted
-  // work an unauthenticated caller can force on demand. Fail closed here,
-  // before touching `resolveSigningSecret` at all.
-  if (!timestampHeader || !timestampHeader.trim() || !signatureHeader || !signatureHeader.trim()) {
-    logger.warn("Slack webhook: rejected — missing signature or timestamp header");
-    return { status: 401, body: { error: "unauthorized" } };
-  }
-
-  const matchedAgentIds: string[] = [];
+  let matchedAgentId: string | undefined;
   let signingSecretResolutionFailed = false;
-  for (const agentId of agentIds) {
-    let candidateSecret: string;
-    try {
-      candidateSecret = await deps.resolveSigningSecret(agentId);
-    } catch {
-      // Resolution failure for one configured agent should not block
-      // checking the rest. Remember the transient failure, though: if no
-      // other candidate verifies, acknowledging a permanent 401 would stop
-      // Slack from retrying a request that may have been valid for the
-      // temporarily unavailable secret.
-      signingSecretResolutionFailed = true;
-      continue;
-    }
-
-    const candidateResult = verifySlackSignature({
-      signingSecret: candidateSecret,
-      rawBody,
-      timestampHeader,
-      signatureHeader,
-      nowEpochSeconds,
-    });
-
-    if (candidateResult.ok) {
-      matchedAgentIds.push(agentId);
+  for (let offset = 0; offset < agentIds.length && !matchedAgentId; offset += SIGNATURE_CHECK_CONCURRENCY) {
+    const batchAgentIds = agentIds.slice(offset, offset + SIGNATURE_CHECK_CONCURRENCY);
+    const results = await Promise.all(batchAgentIds.map(async (agentId) => ({
+      agentId,
+      result: await checkSignature(agentId),
+    })));
+    for (const { agentId, result } of results) {
+      if (result === "unavailable") signingSecretResolutionFailed = true;
+      if (!matchedAgentId && result === "match") matchedAgentId = agentId;
     }
   }
 
-  if (matchedAgentIds.length === 0) {
+  if (!matchedAgentId) {
     if (signingSecretResolutionFailed) {
       logger.error("Slack webhook: signing secret resolution unavailable; delivery must be retried");
       // Deliberately generic: secret-store errors can contain provider IDs,
@@ -249,6 +283,11 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
     });
     return { status: 200, body: { ok: true, dispatched: false } };
   }
+  const event = envelope.event;
+  if (!isValidSlackEvent(event)) {
+    logger.warn("Slack webhook: ignored event_callback without a valid event type");
+    return { status: 200, body: { ok: true, dispatched: false } };
+  }
   if (!hasTeamAuthorization(envelope.authorizations, teamId.trim())) {
     logger.warn("Slack webhook: event authorizations do not include the routed team", { teamId });
     return { status: 200, body: { ok: true, dispatched: false } };
@@ -259,7 +298,7 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
   // flooding/misbehaving team. Best-effort/in-memory (see rate-limit.ts);
   // not a substitute for a distributed limiter, but closes the "genuinely
   // unimplemented" gap flagged in review rather than leaving it a TODO.
-  if (teamId && !isWithinSlackRateLimit(teamId, deps.nowMs ?? nowEpochSeconds * 1000)) {
+  if (teamId && !isWithinSlackRateLimit(teamId, nowMs)) {
     logger.warn("Slack webhook: rate limit exceeded", { teamId });
     return { status: 429, body: { error: "rate limited" } };
   }
@@ -283,7 +322,17 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
   // event (a cross-agent confused-deputy risk when more than one Slack
   // identity is configured). Fail closed if the routed agent isn't among the
   // agents whose secret verified this specific request.
-  if (!matchedAgentIds.includes(agentId)) {
+  if (agentId !== matchedAgentId) {
+    const routedSignatureCheck = await checkSignature(agentId);
+    if (routedSignatureCheck === "unavailable") {
+      logger.error("Slack webhook: routed agent signing secret is temporarily unavailable");
+      throw new Error("Slack webhook authentication is temporarily unavailable");
+    }
+    if (routedSignatureCheck === "match") {
+      matchedAgentId = agentId;
+    }
+  }
+  if (agentId !== matchedAgentId) {
     logger.warn("Slack webhook: routed agent's signing secret did not match this request's signature", {
       agentId,
     });
@@ -301,7 +350,7 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
     teamId,
     appId,
     eventId,
-    event: envelope.event,
+    event,
   });
 
   return { status: 200, body: { ok: true } };

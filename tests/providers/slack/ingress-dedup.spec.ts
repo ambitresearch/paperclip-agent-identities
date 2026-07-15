@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  SLACK_EVENT_DEDUP_MAX_ENTRIES,
   SLACK_EVENT_DEDUP_TTL_MS,
   completeSlackEventClaim,
   releaseSlackEventClaim,
@@ -114,16 +113,17 @@ describe("Slack ingress deduplication", () => {
     expect(await processEvent(state, "agent-1", "Ev-expiring", 1_000 + SLACK_EVENT_DEDUP_TTL_MS)).toBe(true);
   });
 
-  it("keeps one bounded persistent ledger per agent", async () => {
+  it("retains every live event ID for the full TTL instead of evicting at the old 512-entry cap", async () => {
     const state = makeState();
 
-    for (let index = 0; index <= SLACK_EVENT_DEDUP_MAX_ENTRIES; index += 1) {
+    for (let index = 0; index <= 512; index += 1) {
       expect(await processEvent(state, "agent-1", `Ev-${index}`, index)).toBe(true);
     }
 
     expect(state.store).toHaveLength(1);
     const ledger = [...state.store.values()][0] as { entries: unknown[] };
-    expect(ledger.entries).toHaveLength(SLACK_EVENT_DEDUP_MAX_ENTRIES);
+    expect(ledger.entries).toHaveLength(513);
+    expect(await processEvent(state, "agent-1", "Ev-0", SLACK_EVENT_DEDUP_TTL_MS - 1)).toBe(false);
   });
 
   it("hashes untrusted Slack event IDs before using persistent state", async () => {
@@ -192,5 +192,20 @@ describe("Slack ingress deduplication", () => {
     expect(results.filter(Boolean)).toHaveLength(1);
     if (results[0]) await completeSlackEventClaim(workerA, "agent-1", "Ev-cross-process");
     if (results[1]) await completeSlackEventClaim(workerB, "agent-1", "Ev-cross-process");
+  });
+
+  it("fails retryably when a competing write removes this unique event before read-back", async () => {
+    const store = new Map<string, unknown>();
+    const state = makeState(store);
+    state.set.mockImplementationOnce(async (key: StateKey) => {
+      store.set(mapKey(key), {
+        version: 1,
+        entries: [{ eventHash: "a".repeat(64), token: "other", expiresAt: 10_000 }],
+      });
+    });
+
+    await expect(shouldProcessSlackEvent(state, "agent-1", "Ev-lost-write", 1_000)).rejects.toThrow(
+      /state conflict.*retry/i,
+    );
   });
 });

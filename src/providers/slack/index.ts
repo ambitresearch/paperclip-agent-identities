@@ -62,7 +62,7 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
   ],
   contributeActions: contributeSlackAppManifestActions,
   manifestTools: [...slackManifestTools, slackBotPostMessageManifestTool],
-  // HTTP Events API ingress (DRO-975): the design decision record
+  // HTTP Events API ingress (DRO-1005): the design decision record
   // (openwiki/domain/slack-provisioning-decision.md) selects HTTP Events API
   // over Socket Mode as the default/only transport implemented here. Composed
   // through the generic `webhooks`/`handleWebhook` provider-contract seam --

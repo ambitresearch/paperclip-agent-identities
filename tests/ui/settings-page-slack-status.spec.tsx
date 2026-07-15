@@ -87,22 +87,25 @@ function baseBridgeData(identities: unknown[] = []) {
 }
 
 let container: HTMLDivElement;
-let root: Root;
+let root: Root | null;
 
 beforeEach(() => {
   bridgeData = baseBridgeData();
   actionHandlers.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
+  root = null;
   vi.stubGlobal("fetch", vi.fn(async () => {
     throw new Error("network access is not available in this test");
   }));
 });
 
 afterEach(() => {
-  act(() => {
-    root.unmount();
-  });
+  if (root) {
+    act(() => {
+      root?.unmount();
+    });
+  }
   container.remove();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();

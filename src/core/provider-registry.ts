@@ -63,6 +63,13 @@ export interface ProviderRegistry {
    * `ctx.tools.register`/`executeTool`. Kept as its own generic accessor
    * (rather than having `src/worker.ts` filter `liveTools()` itself) so the
    * "which tools also become actions" policy lives in one place.
+   *
+   * Restricted to `toolSpec.requiresCredential === false` tools. UI-invocable
+   * actions are exposed to the client outside the agent-scoped
+   * `executeTool`/`ctx.tools.register` path, so a credentialed tool exposed
+   * this way would let the Settings UI trigger credential resolution and a
+   * live provider action directly -- something `ProviderToolSpec`'s docs
+   * explicitly reserve for credential-free self-checks (e.g. whoami).
    */
   uiInvocableLiveTools(): readonly LiveProviderTool[];
   /**
@@ -118,7 +125,11 @@ export function buildProviderRegistry(providers: readonly IdentityProvider[]): P
         const toolsAreEnabled =
           (provider.definition.toolsStatus ?? provider.definition.status) === "enabled";
         for (const tool of provider.tools) {
-          if ((toolsAreEnabled || tool.live === true) && tool.uiActionInvocable === true) {
+          if (
+            (toolsAreEnabled || tool.live === true) &&
+            tool.uiActionInvocable === true &&
+            tool.requiresCredential === false
+          ) {
             live.push({
               provider: provider as IdentityProvider,
               tool: tool as ProviderToolSpec<unknown, ResourceReference>,

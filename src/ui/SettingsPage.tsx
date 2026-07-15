@@ -96,9 +96,12 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const getSlackAppManifestFlow = usePluginAction("get-slack-app-manifest-flow");
   const saveSlackInstallMetadata = usePluginAction("save-slack-install-metadata");
   // Credential-free identity self-check tool (DRO-972) invoked the same way
-  // as the plugin actions above -- `ctx.tools.register` handlers are called
-  // through the same `usePluginAction`-style bridge as `ctx.actions.register`
-  // handlers from the client's perspective, so no separate hook is needed.
+  // as the plugin actions above. `usePluginAction` only calls
+  // `ctx.actions.register` handlers, not `ctx.tools.register` handlers -- this
+  // works because the worker also registers `uiActionInvocable` live tools as
+  // actions under the same name (see the `uiInvocableLiveTools()` loop in
+  // src/worker.ts), reusing the same pipeline handler. No separate hook is
+  // needed from the client's perspective.
   const slackBotWhoami = usePluginAction(slackBotWhoamiToolName);
 
   const [formState, setFormState] = useState<IdentityFormState | null>(null);

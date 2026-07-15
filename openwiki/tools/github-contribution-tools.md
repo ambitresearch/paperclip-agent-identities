@@ -1,6 +1,6 @@
 # GitHub contribution tools
 
-The plugin exposes three GitHub-related agent tools. Tool metadata lives in shared definition files so `/src/manifest.ts` and `/src/worker.ts` use consistent names and schemas.
+The plugin exposes four GitHub-related agent tools. Tool metadata lives in shared definition files so `/src/manifest.ts` and `/src/worker.ts` use consistent names and schemas.
 
 ## Common safety pattern
 
@@ -117,6 +117,52 @@ Failure behavior intentionally stops before credential resolution for unsupporte
 
 Notable limitation from current source: branch validation is conservative but does not call `git check-ref-format`, so unusual invalid refs may still reach `git push` and fail there.
 
+## `github_bot_submit_pull_request_review`
+
+Source:
+
+- metadata: `/src/shared/github-bot-submit-pull-request-review-tool.ts`
+- implementation: `/src/providers/github/tools/submit-pull-request-review.ts`
+
+Purpose: submit a real GitHub App pull request review (`APPROVE`, `REQUEST_CHANGES`, or `COMMENT`) using the
+calling agent's configured identity. This is the sanctioned path for routine PR review policy -- reviewers
+must not bypass it with GitHub Sync, raw GitHub API calls, `gh`, or a stored personal token.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `pullNumber`: the pull request number to review.
+- `event`: one of `APPROVE`, `REQUEST_CHANGES`, `COMMENT`.
+
+Optional parameters:
+
+- `body`: overall review summary. Required unless `comments` is non-empty.
+- `comments`: array of `{ path, line, body }` inline review comments anchored to the diff.
+- `paperclipIssueId` for activity metadata.
+
+Runtime behavior:
+
+1. validates parameter types, including that each inline comment has a `path`, positive integer `line`, and `body`, and that `body` or at least one inline comment is present;
+2. resolves the agent identity from instance config or settings state fallback;
+3. normalizes `repository` to canonical GitHub owner/repo form before any credential is resolved;
+4. resolves credentials just in time through `/src/credential-sidecar.ts`, minting a fresh per-agent GitHub App installation token for this call;
+5. calls `POST https://api.github.com/repos/{owner}/{repo}/pulls/{pullNumber}/reviews` with `event`, optional `body`, and optional `comments`;
+6. logs a `pull_request_review` activity containing repository, PR number, review ID, review URL, event, inline comment count, agent ID, and optional Paperclip issue ID;
+7. returns the review ID, URL, state, and event.
+
+Failure behavior:
+
+- malformed params (missing repository/pullNumber/event, invalid event, malformed inline comments, missing body when no comments) return direct validation errors before any credential is resolved;
+- malformed repository inputs fail before secret resolution;
+- credential resolution failures are logged internally and returned as a generic authentication error;
+- network failures return a generic connectivity error without leaking the token;
+- GitHub API non-OK responses return GitHub's message/errors when parseable;
+- repository access is scoped by the GitHub App installation's permissions -- a repository outside the installation's scope is rejected by the GitHub API itself.
+
+`/tests/providers/github/submit-pull-request-review-tool.spec.ts` covers identity attribution (activity log
+includes `agentId`, never the token), validation, repository-format fail-closed behavior, and GitHub API
+success/failure paths.
+
 ## Shared redaction and helper utilities
 
 `/src/lib/redaction.ts` provides recursive redaction for strings, arrays, and objects, plus safe error conversion.
@@ -128,6 +174,7 @@ Notable limitation from current source: branch validation is conservative but do
 ## Test map
 
 - `/tests/create-pull-request.spec.ts`: PR validation, malformed repo before secrets, success path, draft flag, activity logging, canonical API URL, credential/API/fetch error behavior, no token leakage.
+- `/tests/providers/github/submit-pull-request-review-tool.spec.ts`: review event/param validation, malformed inline comments, repository normalization before credentials, fail-closed on missing token, APPROVE/REQUEST_CHANGES/COMMENT success paths, activity logging with agent attribution and no token leakage, network/API failure handling.
 - `/tests/plugin.spec.ts`: `whoami`, push success and denial paths, dry-run behavior, sidecar integration, redaction on push failure.
 - `/tests/security.spec.ts`: generic redaction, PR helper redaction, push helper token handling and cleanup.
 - `/tests/identity-policy.spec.ts`: identity and credential resolution used by all tools.

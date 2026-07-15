@@ -9,7 +9,7 @@ describe("worker provider registration", () => {
     const register = vi.spyOn(harness.ctx.tools, "register");
     await plugin.definition.setup(harness.ctx);
 
-    // github (enabled) contributes all three of its tools. slack is still
+    // github (enabled) contributes all four of its tools. slack is still
     // "coming-soon" as a PROVIDER, but its whoami tool spec sets `live: true`
     // (DRO-972), so it registers too -- through the generic `liveTools()`
     // seam, not a provider-id branch. example is coming-soon with no `live`
@@ -18,6 +18,7 @@ describe("worker provider registration", () => {
       "github_bot_whoami",
       "github_bot_create_pull_request",
       "github_bot_push_branch",
+      "github_bot_submit_pull_request_review",
       "slack_bot_whoami",
       "slack_bot_post_message",
       "slack_bot_add_reaction",

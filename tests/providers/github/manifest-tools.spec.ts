@@ -3,13 +3,15 @@ import { githubManifestTools } from "../../../src/providers/github/manifest-tool
 import { githubBotWhoamiToolName } from "../../../src/shared/github-bot-whoami-tool.js";
 import { githubBotCreatePullRequestToolName } from "../../../src/shared/github-bot-create-pull-request-tool.js";
 import { GITHUB_BOT_PUSH_BRANCH_TOOL_NAME } from "../../../src/shared/github-bot-push-branch-tool-definition.js";
+import { githubBotSubmitPullRequestReviewToolName } from "../../../src/shared/github-bot-submit-pull-request-review-tool.js";
 
 describe("githubManifestTools", () => {
-  it("lists the three GitHub manifest fragments in registration order", () => {
+  it("lists the four GitHub manifest fragments in registration order", () => {
     expect(githubManifestTools.map((tool) => tool.name)).toEqual([
       githubBotWhoamiToolName,
       githubBotCreatePullRequestToolName,
       GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
+      githubBotSubmitPullRequestReviewToolName,
     ]);
   });
 

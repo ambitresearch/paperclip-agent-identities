@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
+import { slackBotWhoamiToolName } from "../shared/slack-bot-whoami-tool.js";
 import { buildProviderSettingsRegistry } from "../core/provider-settings-contract.js";
 import { ALL_SETTINGS_ADAPTERS } from "../providers/settings-index.js";
 import { providerSettingsUIRegistry } from "../providers/settings-ui-index.js";
@@ -94,6 +95,14 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const createSlackAppManifest = usePluginAction("create-slack-app-manifest");
   const getSlackAppManifestFlow = usePluginAction("get-slack-app-manifest-flow");
   const saveSlackInstallMetadata = usePluginAction("save-slack-install-metadata");
+  // Credential-free identity self-check tool (DRO-972) invoked the same way
+  // as the plugin actions above. `usePluginAction` only calls
+  // `ctx.actions.register` handlers, not `ctx.tools.register` handlers -- this
+  // works because the worker also registers `uiActionInvocable` live tools as
+  // actions under the same name (see the `uiInvocableLiveTools()` loop in
+  // src/worker.ts), reusing the same pipeline handler. No separate hook is
+  // needed from the client's perspective.
+  const slackBotWhoami = usePluginAction(slackBotWhoamiToolName);
 
   const [formState, setFormState] = useState<IdentityFormState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -145,6 +154,12 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   const hasAgentOptions = agentOptions.length > 0;
   const config = formState;
+  const persistedAgentId = config?.previousAgentId || config?.agentId;
+  const isEditingExistingIdentity = Boolean(
+    config && identities.some(
+      (entry) => entry.agentId === persistedAgentId && entry.provider === config.provider,
+    ),
+  );
 
   // Slack's and GitHub's credential-step local state (manifest flow, busy
   // flags, errors, restore-on-mount effects, and the save/rebind handlers)
@@ -157,6 +172,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   // from startCreate/startEdit/agentId-or-label edits below).
   const slackUIState = providerSettingsUIRegistry.get(SLACK_IDENTITY_PROVIDER_ID)!.useCredentialStep({
     config: config as unknown as import("../providers/slack/settings-adapter-ui.js").SlackSettingsUIFormConfig | null,
+    hasPersistedIdentity: isEditingExistingIdentity,
     updateField: (field: string, value: string) => updateField(field as keyof IdentityFormState, value),
     refresh,
     deleteConfig,
@@ -168,10 +184,12 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     createSlackAppManifest,
     getSlackAppManifestFlow,
     saveSlackInstallMetadata,
+    slackBotWhoami,
   });
 
   const githubUIState = providerSettingsUIRegistry.get(GITHUB_IDENTITY_PROVIDER_ID)!.useCredentialStep({
     config: config as unknown as import("../providers/github/settings-adapter-ui.js").GitHubSettingsUIFormConfig | null,
+    hasPersistedIdentity: isEditingExistingIdentity,
     updateField: (field: string, value: string) => updateField(field as keyof IdentityFormState, value),
     refresh,
     deleteConfig,
@@ -225,7 +243,6 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const hasSavedAgentOutsideOptions = Boolean(
     config?.agentId && !agentOptions.some((agent) => agent.id === config.agentId)
   );
-  const isEditingExistingIdentity = Boolean(config && identities.some((entry) => entry.agentId === config.agentId && entry.provider === config.provider));
   const duplicateIdentity = config ? identities.find((entry) => entry.agentId === config.agentId && entry.provider === config.provider && !(config.previousAgentId === entry.agentId && config.provider === entry.provider)) : undefined;
   const formValidation = config
     ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy)
@@ -392,7 +409,15 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   }
 
   async function handleDelete(entry: BotIdentitySettingsEntry) {
-    const confirmed = window.confirm(`Delete agent identity mapping for ${entry.label}?`);
+    // Per-provider recovery-guidance copy is composed through the UI
+    // registry's optional getRemovalConfirmation (see
+    // provider-settings-ui-contract.ts) rather than a `provider === "slack"`
+    // branch here; providers that don't implement it fall back to this
+    // generic message.
+    const confirmationMessage =
+      providerSettingsUIRegistry.get(entry.provider)?.getRemovalConfirmation?.(entry) ??
+      `Delete agent identity mapping for ${entry.label}?`;
+    const confirmed = window.confirm(confirmationMessage);
     if (!confirmed) return;
     setDeletingAgentId(entry.agentId);
     setSaveError(null);

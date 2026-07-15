@@ -4,11 +4,17 @@ import { buildProviderRegistry } from "../src/core/provider-registry.js";
 import type { IdentityProvider, ProviderToolSpec } from "../src/core/provider-contract.js";
 import type { ResourceReference } from "../src/core/resource-reference.js";
 
-function makeTool(name: string, live?: boolean): ProviderToolSpec<unknown, ResourceReference> {
+function makeTool(
+  name: string,
+  live?: boolean,
+  options: { uiActionInvocable?: boolean; requiresCredential?: boolean } = {},
+): ProviderToolSpec<unknown, ResourceReference> {
   return {
     name,
     metadata: {},
     ...(live !== undefined ? { live } : {}),
+    ...(options.uiActionInvocable !== undefined ? { uiActionInvocable: options.uiActionInvocable } : {}),
+    ...(options.requiresCredential !== undefined ? { requiresCredential: options.requiresCredential } : {}),
     validateParams: (raw: unknown) => ({ ok: true, params: raw }),
     perform: async () => ({})
   };
@@ -87,6 +93,20 @@ describe("buildProviderRegistry", () => {
     const registry = buildProviderRegistry([example]);
     const liveNames = registry.liveTools().map(({ tool }) => tool.name);
     expect(liveNames).toContain("example_whoami");
+  });
+
+  it("uiInvocableLiveTools() uses toolsStatus rather than the settings UI status", () => {
+    const slack = makeProvider("slack", "coming-soon", "enabled", [
+      makeTool("slack_bot_whoami", undefined, {
+        uiActionInvocable: true,
+        requiresCredential: false,
+      }),
+    ]);
+    const registry = buildProviderRegistry([slack]);
+
+    expect(registry.uiInvocableLiveTools().map(({ tool }) => tool.name)).toEqual([
+      "slack_bot_whoami",
+    ]);
   });
 
   it("get() resolves a provider by id, including coming-soon ones", () => {

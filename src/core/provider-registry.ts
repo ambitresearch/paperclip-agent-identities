@@ -57,6 +57,22 @@ export interface ProviderRegistry {
    */
   liveTools(): readonly LiveProviderTool[];
   /**
+   * The subset of `liveTools()` that also opts in via
+   * `toolSpec.uiActionInvocable: true` -- i.e. tools the Settings UI needs to
+   * invoke via `usePluginAction`/`ctx.actions.register`, not just an agent via
+   * `ctx.tools.register`/`executeTool`. Kept as its own generic accessor
+   * (rather than having `src/worker.ts` filter `liveTools()` itself) so the
+   * "which tools also become actions" policy lives in one place.
+   *
+   * Restricted to `toolSpec.requiresCredential === false` tools. UI-invocable
+   * actions are exposed to the client outside the agent-scoped
+   * `executeTool`/`ctx.tools.register` path, so a credentialed tool exposed
+   * this way would let the Settings UI trigger credential resolution and a
+   * live provider action directly -- something `ProviderToolSpec`'s docs
+   * explicitly reserve for credential-free self-checks (e.g. whoami).
+   */
+  uiInvocableLiveTools(): readonly LiveProviderTool[];
+  /**
    * Every webhook endpoint declared by any registered provider (regardless
    * of provider `status` -- a "coming-soon" provider can still ship inbound
    * ingress ahead of its tool surface, same precedent as `live` tools). The
@@ -94,6 +110,32 @@ export function buildProviderRegistry(providers: readonly IdentityProvider[]): P
           (provider.definition.toolsStatus ?? provider.definition.status) === "enabled";
         for (const tool of provider.tools) {
           if (toolsAreEnabled || tool.live === true) {
+            live.push({
+              provider: provider as IdentityProvider,
+              tool: tool as ProviderToolSpec<unknown, ResourceReference>,
+            });
+          }
+        }
+      }
+      return live;
+    },
+    uiInvocableLiveTools(): readonly LiveProviderTool[] {
+      const live: LiveProviderTool[] = [];
+      for (const provider of ordered) {
+        // Use the same "tools are live" gate as liveTools() (toolsStatus,
+        // falling back to status), not the provider UI status. A provider
+        // can be UI status: "coming-soon" while its tools are already
+        // toolsStatus: "enabled" — this is a subset of liveTools(), so it
+        // must use the same tool-surface gate to avoid silently omitting an
+        // opted-in tool that lacks redundant `live: true`.
+        const toolsAreEnabled =
+          (provider.definition.toolsStatus ?? provider.definition.status) === "enabled";
+        for (const tool of provider.tools) {
+          if (
+            (toolsAreEnabled || tool.live === true) &&
+            tool.uiActionInvocable === true &&
+            tool.requiresCredential === false
+          ) {
             live.push({
               provider: provider as IdentityProvider,
               tool: tool as ProviderToolSpec<unknown, ResourceReference>,

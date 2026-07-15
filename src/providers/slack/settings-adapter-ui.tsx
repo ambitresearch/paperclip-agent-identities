@@ -70,11 +70,35 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
   slackCleanupBusy: boolean;
   slackCleanupError: string | null;
   handleRetrySlackCleanup: () => Promise<void>;
+  // Capability/identity status readout via the credential-free
+  // `slack_bot_whoami` tool (DRO-972). Never surfaces the bot token or any
+  // other secret -- only the public id/name/status fields the tool itself
+  // returns (see src/providers/slack/tools/whoami.ts).
+  slackStatus: SlackBotWhoamiData | null;
+  slackStatusLoading: boolean;
+  slackStatusError: string | null;
+  handleCheckSlackStatus: () => Promise<void>;
+  hasPersistedIdentity: boolean;
+  // Reinstall: re-runs the manifest-assisted setup flow against an existing
+  // identity row, confirmation-gated. Reuses handleCreateSlackAppManifest;
+  // mirrors GitHub's "Replace this GitHub App" collapsed-details pattern.
+  handleReinstallSlackApp: () => Promise<void>;
   updateField: (field: keyof SlackSettingsUIFormConfig & string, value: string) => void;
   secretOptions: ReadonlyArray<{ id: string; name: string; key?: string; description?: string; provider?: string; status?: string }>;
   secretsLoading: boolean;
   secretsError: string | null;
   companyId: string;
+}
+
+// Only the non-secret identity/status fields `slack_bot_whoami` returns (see
+// src/providers/slack/tools/whoami.ts's `perform`) -- deliberately excludes
+// anything resembling a bot token, signing secret, or other credential.
+export interface SlackBotWhoamiData {
+  label?: string;
+  teamId?: string;
+  appId?: string;
+  botUserId?: string;
+  hasDefaultChannel?: boolean;
 }
 
 const SLACK_MANIFEST_STATE_STORAGE_PREFIX = "paperclip-agent-identities:slack-app-manifest-state:";
@@ -143,7 +167,7 @@ async function copyTextToClipboard(value: string): Promise<void> {
 type SlackCredentialStepInput = ProviderSettingsUIHookInput<SlackSettingsUIFormConfig> & SlackSettingsUIActionsInput;
 
 function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsUIHookResult {
-  const { config, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, saveSlackInstallMetadata, companyId } = input;
+  const { config, hasPersistedIdentity, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, saveSlackInstallMetadata, slackBotWhoami, companyId } = input;
 
   const [slackManifestFlow, setSlackManifestFlow] = useState<CreateSlackAppManifestResult | null>(null);
   const [slackManifestBusy, setSlackManifestBusy] = useState(false);
@@ -154,6 +178,10 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
   const [slackResumeStateInput, setSlackResumeStateInput] = useState("");
   const [slackResumeBusy, setSlackResumeBusy] = useState(false);
   const [slackResumeError, setSlackResumeError] = useState<string | null>(null);
+  const [slackStatus, setSlackStatus] = useState<SlackBotWhoamiData | null>(null);
+  const [slackStatusLoading, setSlackStatusLoading] = useState(false);
+  const [slackStatusError, setSlackStatusError] = useState<string | null>(null);
+  const slackStatusGenerationRef = useRef(0);
   // Finding #2: when the post-save rebind cleanup (deleteConfig(previousAgentId))
   // fails, the new identity is already saved and the flow already
   // consumed/deleted -- there is no "state" to retry the save itself. Track
@@ -213,6 +241,10 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     setSlackCleanupError(null);
     setSlackCleanupBusy(false);
     slackCleanupPendingResultRef.current = null;
+    setSlackStatus(null);
+    setSlackStatusError(null);
+    setSlackStatusLoading(false);
+    slackStatusGenerationRef.current += 1;
   }
 
   // Any edit to the Slack install fields invalidates a prior successful
@@ -237,6 +269,27 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slackFieldsSignature]);
+
+  // Check the Slack capability/identity status via slack_bot_whoami whenever
+  // this credential step mounts for a saved Slack identity (i.e. there's
+  // something to check). Only runs for an already-configured identity --
+  // there's nothing to look up yet for a brand-new one still being set up.
+  useEffect(() => {
+    if (!config || config.provider !== SLACK_IDENTITY_PROVIDER_ID) return;
+    if (!hasPersistedIdentity || !config.agentId.trim()) {
+      slackStatusGenerationRef.current += 1;
+      setSlackStatus(null);
+      setSlackStatusError(null);
+      setSlackStatusLoading(false);
+      return;
+    }
+    void handleCheckSlackStatus();
+    // Re-check when a just-saved identity appears in refreshed settings, when
+    // switching to a different persisted agent, or after a label edit resets
+    // the provider-owned state. Form-field presence is not evidence that a
+    // new wizard row has been saved yet.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config?.agentId, config?.label, config?.provider, hasPersistedIdentity]);
 
   // Restore an in-progress Slack manifest flow after a reload or editor
   // reopen. Unlike GitHub, Slack has no redirect callback to carry state
@@ -439,6 +492,11 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
           setSlackManifestFlow(null);
           deleteSlackManifestFlowState(companyId, targetAgentId);
           await refresh();
+          // The new identity is already persisted even though removing the
+          // previous identity failed. Re-check it now so the status panel
+          // does not keep the pre-save "identity unavailable" result while
+          // the operator uses the cleanup-only retry path.
+          await handleCheckSlackStatus();
           return;
         }
       }
@@ -458,6 +516,15 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
       // the footer's "Save agent" button.
       patchFormState((prev) => ({ ...prev, previousAgentId: result.agentId }));
       await refresh();
+      // For an identity that was already persisted, hasPersistedIdentity
+      // stays true across this save, so the mount/identity effect above has
+      // no dependency transition to trigger a new lookup. Re-read the
+      // configured metadata explicitly after the successful update. New
+      // identities still use the false -> true persisted-state transition
+      // after refresh, avoiding a duplicate lookup on their first save.
+      if (hasPersistedIdentity) {
+        await handleCheckSlackStatus();
+      }
     } catch (err) {
       if (slackSaveGenerationRef.current !== generation) return;
       setSlackManifestError(err instanceof Error ? err.message : "Failed to save Slack install metadata");
@@ -511,6 +578,63 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     }
   }
 
+  // Capability/identity status readout (DRO-976 increment #2): calls the
+  // credential-free `slack_bot_whoami` tool the exact same way SettingsPage
+  // obtains any other plugin action (usePluginAction), threaded in here as
+  // `slackBotWhoami`. Only ever reads back the non-secret identity/status
+  // fields the tool itself returns (see tools/whoami.ts's `perform`) -- the
+  // bot token never leaves the credential sidecar, let alone this response.
+  async function handleCheckSlackStatus() {
+    const agentId = config?.agentId?.trim();
+    if (!agentId) return;
+    const generation = ++slackStatusGenerationRef.current;
+    setSlackStatusLoading(true);
+    setSlackStatusError(null);
+    try {
+      const result = (await slackBotWhoami({ agentId, companyId })) as
+        | { data?: SlackBotWhoamiData; error?: string }
+        | SlackBotWhoamiData;
+      if (slackStatusGenerationRef.current !== generation) return;
+      // The action can *resolve* (not reject) with a `{ error }` shape when
+      // the tool itself reports a handled failure (e.g. no bound identity).
+      // Treat that the same as a thrown error -- never let a resolved
+      // `{ error }` fall through to the configured-metadata render.
+      const resultError = (result as { error?: unknown })?.error;
+      if (resultError) {
+        setSlackStatus(null);
+        setSlackStatusError(typeof resultError === "string" ? resultError : "Identity metadata unavailable");
+        return;
+      }
+      const data = (result as { data?: SlackBotWhoamiData })?.data ?? (result as SlackBotWhoamiData);
+      setSlackStatus(data ?? null);
+    } catch (err) {
+      if (slackStatusGenerationRef.current !== generation) return;
+      setSlackStatus(null);
+      // Deliberately surface only the error message (never the raw
+      // rejection payload/response), and fall back to a secret-free generic
+      // "Identity metadata unavailable" message if the tool didn't provide one.
+      setSlackStatusError(err instanceof Error ? err.message : "Identity metadata unavailable");
+    } finally {
+      if (slackStatusGenerationRef.current === generation) {
+        setSlackStatusLoading(false);
+      }
+    }
+  }
+
+  // Confirmation-gated reinstall: re-runs the same manifest-assisted setup
+  // flow as "Create Slack App manifest" (handleCreateSlackAppManifest),
+  // against an already-configured identity row. Mirrors GitHub's "Replace
+  // this GitHub App with a new manifest-created app" collapsed-details
+  // pattern (settings-adapter-ui.tsx:467-480 in the GitHub adapter).
+  async function handleReinstallSlackApp() {
+    if (!config) return;
+    const confirmed = window.confirm(
+      "Reinstall the Slack App for this identity? This creates a new Slack App manifest flow; you'll need to re-create/reinstall the app on Slack and paste back the resulting IDs and bot token secret.",
+    );
+    if (!confirmed) return;
+    await handleCreateSlackAppManifest();
+  }
+
   return {
     validationExtra: { slackSaveResult, slackSaveBusy },
     reset,
@@ -533,6 +657,12 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     slackCleanupBusy,
     slackCleanupError,
     handleRetrySlackCleanup,
+    slackStatus,
+    slackStatusLoading,
+    slackStatusError,
+    handleCheckSlackStatus,
+    hasPersistedIdentity,
+    handleReinstallSlackApp,
     updateField,
     secretOptions: input.secretOptions,
     secretsLoading: input.secretsLoading,
@@ -551,6 +681,9 @@ export interface SlackSettingsUIActionsInput {
   createSlackAppManifest: (input: Record<string, unknown>) => Promise<unknown>;
   getSlackAppManifestFlow: (input: Record<string, unknown>) => Promise<unknown>;
   saveSlackInstallMetadata: (input: Record<string, unknown>) => Promise<unknown>;
+  // The credential-free `slack_bot_whoami` tool (DRO-972), invoked identically
+  // to the actions above via `usePluginAction` in SettingsPage.
+  slackBotWhoami: (input: Record<string, unknown>) => Promise<unknown>;
 }
 
 function getSecretFieldHint(input: {
@@ -604,6 +737,11 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     slackCleanupBusy,
     slackCleanupError,
     handleRetrySlackCleanup,
+    slackStatus,
+    slackStatusLoading,
+    slackStatusError,
+    handleReinstallSlackApp,
+    hasPersistedIdentity,
     validationExtra,
     updateField,
     secretOptions,
@@ -625,6 +763,15 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
   return (
     <fieldset style={fieldsetStyle}>
       <legend style={legendStyle}>Slack App setup</legend>
+      {hasPersistedIdentity && (
+        <SlackStatusPanel
+          agentId={config.agentId}
+          label={config.label}
+          loading={slackStatusLoading}
+          status={slackStatus}
+          error={slackStatusError}
+        />
+      )}
       {!credentialComplete && (
         <div style={validationNoticeStyle}>
           Create the Slack App manifest, install it, and paste back the team/app/bot IDs and bot token secret, then save
@@ -638,16 +785,18 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         where you paste it in via "From an app manifest".
       </div>
 
-      <div style={formActionsStyle}>
-        <button
-          type="button"
-          onClick={() => void handleCreateSlackAppManifest()}
-          disabled={slackManifestBusy || slackSaveBusy || slackResumeBusy || !config.agentId || !config.label}
-          style={secondaryButtonStyle}
-        >
-          {slackManifestBusy ? "Working..." : "Create Slack App manifest"}
-        </button>
-      </div>
+      {!hasPersistedIdentity && (
+        <div style={formActionsStyle}>
+          <button
+            type="button"
+            onClick={() => void handleCreateSlackAppManifest()}
+            disabled={slackManifestBusy || slackSaveBusy || slackResumeBusy || !config.agentId || !config.label}
+            style={secondaryButtonStyle}
+          >
+            {slackManifestBusy ? "Working..." : "Create Slack App manifest"}
+          </button>
+        </div>
+      )}
 
       {!slackManifestFlow && (
         <div style={formActionsStyle}>
@@ -848,7 +997,65 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
       )}
 
       {slackSaveResult && <span style={successStyle}>Slack install metadata saved for team {slackSaveResult.teamId}.</span>}
+
+      {hasPersistedIdentity && (
+        <details>
+          <summary>Reinstall the Slack App for this identity</summary>
+          <div style={{ display: "grid", gap: "0.75rem", marginTop: "0.75rem" }}>
+            <div style={inlineNoticeStyle}>
+              <strong>Reinstall from a manifest.</strong> This re-runs Slack App setup for this identity -- creating a
+              new manifest flow, requiring you to reinstall the app on Slack and paste back the resulting IDs and bot
+              token secret. It does not remove the currently saved install metadata unless you save over it.
+            </div>
+            <div style={formActionsStyle}>
+              <button
+                type="button"
+                onClick={() => void handleReinstallSlackApp()}
+                disabled={slackManifestBusy || slackSaveBusy || slackResumeBusy}
+                style={secondaryButtonStyle}
+              >
+                {slackManifestBusy ? "Working..." : "Reinstall"}
+              </button>
+            </div>
+          </div>
+        </details>
+      )}
     </fieldset>
+  );
+}
+
+function SlackStatusPanel(props: {
+  agentId: string;
+  label: string;
+  loading: boolean;
+  status: SlackBotWhoamiData | null;
+  error: string | null;
+}) {
+  const { agentId, label, loading, status, error } = props;
+  if (loading) {
+    return <div style={inlineNoticeStyle}>Loading configured Slack identity metadata for {label || agentId}...</div>;
+  }
+  if (error) {
+    // Deliberately renders only the (already-sanitized) error message, never
+    // a raw payload -- see handleCheckSlackStatus's catch branch.
+    return (
+      <div style={validationNoticeStyle}>
+        Slack identity metadata unavailable for agent <strong>{label || agentId}</strong> ({error}).
+      </div>
+    );
+  }
+  if (!status) {
+    return null;
+  }
+  return (
+    <div style={inlineNoticeStyle}>
+      <strong>Configured Slack identity.</strong>{" "}
+      Saved metadata for agent <strong>{label || agentId}</strong>: workspace {status.teamId ?? "unknown"}, app {status.appId ?? "unknown"},
+      bot user {status.botUserId ?? "unknown"}
+      {status.hasDefaultChannel ? ", default channel configured" : ", no default channel configured"}.
+      {" "}This reflects saved install metadata only -- it does not verify the bot token is still valid; a revoked or
+      stale token is not detected here.
+    </div>
   );
 }
 
@@ -856,4 +1063,7 @@ export const slackSettingsUIAdapter: ProviderSettingsUIAdapter<SlackSettingsUIFo
   providerId: SLACK_IDENTITY_PROVIDER_ID,
   useCredentialStep: useSlackCredentialStep,
   CredentialStep: SlackCredentialStep,
+  getRemovalConfirmation(entry) {
+    return `Delete agent identity mapping for ${entry.label}? This clears saved Slack install metadata; your Slack app and bot token are not deleted, only unlinked from this agent. To reconnect later, create a new Slack mapping with "New identity".`;
+  },
 };

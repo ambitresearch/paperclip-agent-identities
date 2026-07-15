@@ -101,6 +101,21 @@ export interface ProviderToolSpec<TIdentity, TRef extends ResourceReference> {
   // This keeps `src/worker.ts`/`src/manifest.ts` provider-agnostic: they ask
   // the registry for "live tools", never for a named provider's status.
   readonly live?: boolean;
+  // When `true`, this tool is ALSO composed into the plugin's `ctx.actions`
+  // surface (same name, same pipeline handler) so the Settings UI can invoke
+  // it via `usePluginAction`. `ctx.tools.register` handlers are reachable
+  // only through the agent-facing `executeTool` RPC method, never through
+  // `performAction`/`usePluginAction` (PLUGIN_SPEC.md §13.9 vs §13.10) -- a
+  // UI-facing capability check needs its own action registration even though
+  // an identical handler already exists as a tool. Reserved for
+  // credential-free tools (`requiresCredential: false`) whose `perform` only
+  // reads already-validated public identity fields: `performAction` callers
+  // come from a Settings UI page, not an authenticated agent run, so this
+  // must never be set on a tool that resolves a credential. This is a
+  // generic, provider-agnostic seam (see `ProviderRegistry.liveTools()` in
+  // `src/core/provider-registry.ts` and its use in `src/worker.ts`) -- no
+  // provider-specific branch is added to register it.
+  readonly uiActionInvocable?: boolean;
   validateParams(raw: unknown): ParamsValidation;
   resolveResourceRef?(
     input: ResourceRefResolverInput<TIdentity>,

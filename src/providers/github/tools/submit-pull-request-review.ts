@@ -147,6 +147,7 @@ export const githubSubmitPullRequestReviewToolSpec: ProviderToolSpec<GitHubAgent
         headers: {
           "Accept": "application/vnd.github+json",
           "Authorization": `Bearer ${token}`,
+          "User-Agent": "paperclip-agent-identities/github-api",
           "X-GitHub-Api-Version": "2022-11-28",
           "Content-Type": "application/json"
         },

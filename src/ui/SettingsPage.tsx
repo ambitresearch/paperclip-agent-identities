@@ -154,9 +154,10 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   const hasAgentOptions = agentOptions.length > 0;
   const config = formState;
+  const persistedAgentId = config?.previousAgentId || config?.agentId;
   const isEditingExistingIdentity = Boolean(
     config && identities.some(
-      (entry) => entry.agentId === config.agentId && entry.provider === config.provider,
+      (entry) => entry.agentId === persistedAgentId && entry.provider === config.provider,
     ),
   );
 

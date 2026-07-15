@@ -640,11 +640,16 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
       createAppUrl: "https://api.slack.com/apps?new_app=1",
       label: "Release Bot",
     });
-    const createButton = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent === "Create Slack App manifest",
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const reinstallSummary = Array.from(container.querySelectorAll("summary")).find(
+      (summary) => summary.textContent?.match(/reinstall/i),
+    );
+    click(reinstallSummary ?? null);
+    const reinstallButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Reinstall",
     );
     await act(async () => {
-      click(createButton ?? null);
+      click(reinstallButton ?? null);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -748,11 +753,16 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
       createAppUrl: "https://api.slack.com/apps?new_app=1",
       label: "Release Bot",
     });
-    const createButton = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent === "Create Slack App manifest",
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const reinstallSummary = Array.from(container.querySelectorAll("summary")).find(
+      (summary) => summary.textContent?.match(/reinstall/i),
+    );
+    click(reinstallSummary ?? null);
+    const reinstallButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Reinstall",
     );
     await act(async () => {
-      click(createButton ?? null);
+      click(reinstallButton ?? null);
       await Promise.resolve();
       await Promise.resolve();
     });

@@ -381,6 +381,53 @@ describe("Slack status panel (slack_bot_whoami)", () => {
 });
 
 describe("Slack reinstall action", () => {
+  it("keeps an existing identity on the confirmation-gated reinstall path after rebinding its agent", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({ error: "No Slack identity bound for this agent." });
+    bridgeData = baseBridgeData([slackIdentityEntry()]);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    renderSettingsPage();
+    const editButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "Edit",
+    );
+    click(editButton ?? null);
+
+    const agentSelect = Array.from(container.querySelectorAll("select")).find((select) =>
+      select.querySelector('option[value="agent-1"]'),
+    );
+    change(agentSelect ?? null, "agent-1");
+    expect(text()).toContain("Edit agent identity");
+
+    const nextButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "Next",
+    );
+    click(nextButton ?? null);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(Array.from(container.querySelectorAll("button")).some((button) =>
+      button.textContent === "Create Slack App manifest",
+    )).toBe(false);
+    const reinstallSummary = Array.from(container.querySelectorAll("summary")).find((summary) =>
+      summary.textContent?.match(/reinstall/i),
+    );
+    expect(reinstallSummary).not.toBeUndefined();
+    click(reinstallSummary ?? null);
+
+    const reinstallButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "Reinstall",
+    );
+    await act(async () => {
+      click(reinstallButton ?? null);
+      await Promise.resolve();
+    });
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    expect(actionFor("create-slack-app-manifest")).not.toHaveBeenCalled();
+  });
+
   it("is confirmation-gated and launches the manifest flow (create-slack-app-manifest) only after confirming", async () => {
     actionFor("slack_bot_whoami").mockResolvedValue({
       content: "ok",

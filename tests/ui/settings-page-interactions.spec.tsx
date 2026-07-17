@@ -158,7 +158,7 @@ function text(): string {
 }
 
 function openNewIdentityDialog() {
-  const newButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "New identity");
+  const newButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Add identity");
   click(newButton ?? null);
 }
 
@@ -171,6 +171,8 @@ describe("SettingsPage interactions: setup launch", () => {
     expect(text()).not.toContain("GitHub App setup");
     expect(text()).not.toContain("Environment propagation");
     expect(container.querySelector('nav[aria-label="Agent identity settings sections"]')).toBeNull();
+    expect(Array.from(container.querySelectorAll("button")).filter((button) => button.textContent === "Add identity")).toHaveLength(1);
+    expect(text()).not.toContain("New identity");
   });
 
   it("opens the wizard on the first ('Identity') step when starting a new identity", () => {

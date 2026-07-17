@@ -465,14 +465,6 @@ export function SettingsPage(props: PluginSettingsPageProps) {
             Connect agents in {companyDisplayName || "this company"} to GitHub and Slack identities.
           </p>
         </div>
-        <button
-          onClick={startCreate}
-          style={primaryButtonStyle}
-          title="Add identity"
-          aria-label="Add identity"
-        >
-          New identity
-        </button>
       </div>
 
       <div className="agent-identities-summary-grid" style={summaryGridStyle}>
@@ -507,7 +499,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
           <div style={listStyle}>
             <div className="agent-identities-list-header" style={listHeaderStyle}>
               <span>Agent</span>
-              <span>Provider identity</span>
+              <span>Provider</span>
               <span>Status</span>
               <span />
             </div>
@@ -517,7 +509,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                   <div style={rowTitleStyle}>{entry.label}</div>
                   <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
                 </div>
-                <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : entry.provider === "slack" ? `Team ${entry.slack.teamId}` : ""}</div>
+                <div style={rowMetaStyle}>{getProviderDisplayName(entry.provider, data?.providers)}</div>
                 <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
                 <div className="agent-identities-row-actions" style={rowActionsStyle}>
                   <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
@@ -1328,9 +1320,14 @@ const responsiveSettingsStyle = `
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.agent-identities-list {
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(90px, auto) auto;
+}
+
 .agent-identities-list-header,
 .agent-identities-list-row {
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(90px, auto) auto;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
 }
 
 .agent-identities-row-actions {
@@ -1343,7 +1340,8 @@ const responsiveSettingsStyle = `
 
 @container (max-width: 520px) {
   .agent-identities-summary-grid,
-  .agent-identities-wizard-steps {
+  .agent-identities-wizard-steps,
+  .agent-identities-list {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -1352,6 +1350,7 @@ const responsiveSettingsStyle = `
   }
 
   .agent-identities-list-row {
+    grid-column: 1;
     grid-template-columns: minmax(0, 1fr) auto;
   }
 

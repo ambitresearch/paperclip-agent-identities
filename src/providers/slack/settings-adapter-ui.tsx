@@ -1276,6 +1276,6 @@ export const slackSettingsUIAdapter: ProviderSettingsUIAdapter<SlackSettingsUIFo
   useCredentialStep: useSlackCredentialStep,
   CredentialStep: SlackCredentialStep,
   getRemovalConfirmation(entry) {
-    return `Delete agent identity mapping for ${entry.label}? This clears saved Slack install metadata; your Slack app and bot token are not deleted, only unlinked from this agent. To reconnect later, create a new Slack mapping with "New identity".`;
+    return `Delete agent identity mapping for ${entry.label}? This clears saved Slack install metadata; your Slack app and bot token are not deleted, only unlinked from this agent. To reconnect later, create a new Slack mapping with "Add identity".`;
   },
 };

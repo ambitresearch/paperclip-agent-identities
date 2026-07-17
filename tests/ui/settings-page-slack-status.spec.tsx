@@ -178,7 +178,7 @@ function rerenderSettingsPage() {
 function openNewSlackCredentialStep() {
   renderSettingsPage();
   const addButton = Array.from(container.querySelectorAll("button")).find((button) =>
-    button.textContent?.match(/New identity|Add identity/),
+    button.textContent === "Add identity",
   );
   click(addButton ?? null);
 
@@ -197,6 +197,17 @@ function openNewSlackCredentialStep() {
   );
   click(nextButton ?? null);
 }
+
+describe("Configured identity rows", () => {
+  it("shows the provider type instead of its account identifier", () => {
+    bridgeData = baseBridgeData([slackIdentityEntry()]);
+    renderSettingsPage();
+
+    const row = container.querySelector(".agent-identities-list-row");
+    expect(row?.children[1]?.textContent).toBe("Slack");
+    expect(row?.textContent).not.toContain("T0123456789");
+  });
+});
 
 describe("Slack status panel (slack_bot_whoami)", () => {
   it("shows a loading state while slack_bot_whoami is in flight", async () => {
@@ -531,7 +542,7 @@ describe("Slack removal confirmation copy", () => {
     const confirmMessage = confirmSpy.mock.calls[0]?.[0] as string;
     expect(confirmMessage).toMatch(/Slack install metadata/i);
     expect(confirmMessage).toMatch(/not.*deleted|are not deleted/i);
-    expect(confirmMessage).toMatch(/New identity/i);
+    expect(confirmMessage).toMatch(/Add identity/i);
     expect(actionFor("delete-bot-identity-config")).not.toHaveBeenCalled();
 
     confirmSpy.mockReturnValue(true);
@@ -577,7 +588,7 @@ describe("Slack removal confirmation copy", () => {
 
     const confirmMessage = confirmSpy.mock.calls[0]?.[0] as string;
     expect(confirmMessage).toMatch(/GitHub App/i);
-    expect(confirmMessage).toMatch(/New identity/i);
+    expect(confirmMessage).toMatch(/Add identity/i);
     expect(confirmMessage).not.toMatch(/Slack/i);
   });
 });

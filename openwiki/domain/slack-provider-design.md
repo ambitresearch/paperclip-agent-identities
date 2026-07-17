@@ -94,6 +94,13 @@ the human composer typing indicator to bots through its official Web API. The
 receiver uses `assistant.threads.setStatus` for supported assistant threads and
 does not simulate typing by posting and later editing a placeholder message.
 
+Ingress reuses one Paperclip agent session for each Slack conversation so later
+messages retain the model's prior context. Top-level messages in one DM share a
+session. A thread uses a separate session keyed by its root `thread_ts`, and
+different channels or thread roots never share context. The session mapping is
+stored in plugin state and is replaced if Paperclip reports that the saved
+session is no longer active.
+
 ## 2. Identity shape
 
 Following the GitHub precedent (`src/providers/github/config.ts`), the Slack

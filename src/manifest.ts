@@ -107,6 +107,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.tools.register",
     "agents.read",
     "agent.sessions.create",
+    "agent.sessions.list",
     "agent.sessions.send",
     "agent.sessions.close",
     "companies.read",

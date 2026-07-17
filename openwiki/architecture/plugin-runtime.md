@@ -29,7 +29,7 @@ Important capabilities include:
 - `instance.settings.register` and `ui.dashboardWidget.register` for the UI slots
 - `agent.tools.register` for the GitHub tools
 - `agents.read` for populating the settings-page agent dropdown
-- `agent.sessions.create`, `agent.sessions.send`, and `agent.sessions.close` for the Slack inbound
+- `agent.sessions.create`, `agent.sessions.list`, `agent.sessions.send`, and `agent.sessions.close` for the Slack inbound
   message reply lifecycle
 - `http.outbound` for GitHub API and host REST calls
 - `secrets.read-ref` for Paperclip secret resolution
@@ -91,8 +91,10 @@ Concretely, GitHub's tools (`github_bot_whoami`, `github_bot_create_pull_request
 The manifest declares provider webhook endpoints from `registry.webhooks()`, and the worker routes
 each delivery to the matching provider handler. Slack's `slack-events` handler verifies the request,
 deduplicates it, and routes it by app ID plus team ID. It then uses the SDK's plugin session methods
-to create a short-lived conversation, send a bounded event prompt, collect response chunks, and
-close the session after a terminal event.
+to reuse one durable agent conversation per Slack DM or thread, send a bounded event prompt, and
+collect response chunks. The plugin-state mapping survives worker reloads, while the host session
+list lets ingress replace a mapping whose session no longer exists. Different Slack threads and
+channels remain isolated from each other.
 
 The agent returns plain text and does not call Slack tools for this path. The provider callback posts
 that text through `createProviderTool(slack_bot_post_message)`, preserving the standard validation,

@@ -71,6 +71,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
   it("declares webhook and agent-session capabilities required for ingress", () => {
     expect(manifest.capabilities).toContain("webhooks.receive");
     expect(manifest.capabilities).toContain("agent.sessions.create");
+    expect(manifest.capabilities).toContain("agent.sessions.list");
     expect(manifest.capabilities).toContain("agent.sessions.send");
     expect(manifest.capabilities).toContain("agent.sessions.close");
     expect(manifest.capabilities).not.toContain("agents.invoke");
@@ -263,7 +264,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
           configPath: "identities.agent-1.credentials.botToken",
         },
       );
-      await vi.waitFor(() => expect(closeSpy).toHaveBeenCalledWith(sessionId, "company-1"));
+      expect(closeSpy).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }

@@ -50,21 +50,40 @@ function sign(timestamp: string, rawBody: string): string {
 }
 
 function makeAgents(sessionOverrides: Record<string, unknown> = {}) {
+  const activeSessions = new Map<string, {
+    sessionId: string;
+    agentId: string;
+    companyId: string;
+    status: "active";
+    createdAt: string;
+  }>();
+  let sessionNumber = 0;
   return {
     list: vi.fn(async () => []),
     get: vi.fn(async (agentId: string, companyId: string) =>
       agentId === "agent-1" && companyId === "co-1" ? { id: agentId, companyId } : null
     ),
     sessions: {
-      create: vi.fn(async (agentId: string, companyId: string) => ({
-        sessionId: "session-1",
-        agentId,
-        companyId,
-        status: "active" as const,
-        createdAt: "2026-07-16T00:00:00.000Z",
-      })),
+      create: vi.fn(async (agentId: string, companyId: string) => {
+        const session = {
+          sessionId: `session-${++sessionNumber}`,
+          agentId,
+          companyId,
+          status: "active" as const,
+          createdAt: "2026-07-16T00:00:00.000Z",
+        };
+        activeSessions.set(session.sessionId, session);
+        return session;
+      }),
+      list: vi.fn(async (agentId: string, companyId: string) =>
+        [...activeSessions.values()].filter(
+          (session) => session.agentId === agentId && session.companyId === companyId,
+        )
+      ),
       sendMessage: vi.fn(async () => ({ runId: "run-1" })),
-      close: vi.fn(async () => undefined),
+      close: vi.fn(async (sessionId: string) => {
+        activeSessions.delete(sessionId);
+      }),
       ...sessionOverrides,
     },
   };
@@ -293,7 +312,138 @@ describe("handleSlackProviderWebhook", () => {
     expect(replyStream.start).toHaveBeenCalledOnce();
   });
 
-  it("posts streamed non-stderr response text and closes the session on done", async () => {
+  it("reuses one Paperclip session for consecutive top-level messages in the same DM", async () => {
+    const ctx = makeCtx();
+    const timestamp = String(Math.floor(Date.now() / 1000));
+
+    for (const [eventId, text] of [["Ev-dm-1", "first"], ["Ev-dm-2", "second"]]) {
+      const rawBody = JSON.stringify({
+        type: "event_callback",
+        team_id: "T111",
+        api_app_id: "A111",
+        event_id: eventId,
+        authorizations: [{ team_id: "T111" }],
+        event: {
+          type: "message",
+          channel_type: "im",
+          channel: "D0123456789",
+          user: "U222",
+          text,
+        },
+      });
+      await runSlackWebhook({
+        endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+        companyId: "co-1",
+        headers: {
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": sign(timestamp, rawBody),
+        },
+        rawBody,
+        requestId: `req-${eventId}`,
+      }, ctx);
+    }
+
+    expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(1);
+    expect(ctx.agents.sessions.list).toHaveBeenCalledTimes(1);
+    expect(ctx.agents.sessions.sendMessage.mock.calls.map((call: unknown[]) => call[0]))
+      .toEqual(["session-1", "session-1"]);
+  });
+
+  it("reuses one Paperclip session for a public mention and later replies in its Slack thread", async () => {
+    const ctx = makeCtx();
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const rootTs = "1719000000.123456";
+    const events = [
+      {
+        event_id: "Ev-thread-root",
+        event: {
+          type: "app_mention",
+          channel: "C0123456789",
+          user: "U222",
+          text: "<@U111> first",
+          ts: rootTs,
+        },
+      },
+      {
+        event_id: "Ev-thread-reply",
+        event: {
+          type: "app_mention",
+          channel: "C0123456789",
+          user: "U222",
+          text: "<@U111> second",
+          ts: "1719000001.123456",
+          thread_ts: rootTs,
+        },
+      },
+    ];
+
+    for (const item of events) {
+      const rawBody = JSON.stringify({
+        type: "event_callback",
+        team_id: "T111",
+        api_app_id: "A111",
+        authorizations: [{ team_id: "T111" }],
+        ...item,
+      });
+      await runSlackWebhook({
+        endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+        companyId: "co-1",
+        headers: {
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": sign(timestamp, rawBody),
+        },
+        rawBody,
+        requestId: `req-${item.event_id}`,
+      }, ctx);
+    }
+
+    expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(1);
+    expect(ctx.agents.sessions.sendMessage.mock.calls.map((call: unknown[]) => call[0]))
+      .toEqual(["session-1", "session-1"]);
+  });
+
+  it("keeps different Slack threads and channels in separate Paperclip sessions", async () => {
+    const ctx = makeCtx();
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const events = [
+      { eventId: "Ev-thread-a", channel: "C0123456789", ts: "1719000000.111111" },
+      { eventId: "Ev-thread-b", channel: "C0123456789", ts: "1719000000.222222" },
+      { eventId: "Ev-channel-b", channel: "C9876543210", ts: "1719000000.111111" },
+    ];
+
+    for (const item of events) {
+      const rawBody = JSON.stringify({
+        type: "event_callback",
+        team_id: "T111",
+        api_app_id: "A111",
+        event_id: item.eventId,
+        authorizations: [{ team_id: "T111" }],
+        event: {
+          type: "app_mention",
+          channel: item.channel,
+          user: "U222",
+          text: "<@U111> hello",
+          ts: item.ts,
+        },
+      });
+      await runSlackWebhook({
+        endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+        companyId: "co-1",
+        headers: {
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": sign(timestamp, rawBody),
+        },
+        rawBody,
+        requestId: `req-${item.eventId}`,
+      }, ctx);
+    }
+
+    expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(3);
+    expect(ctx.agents.sessions.sendMessage.mock.calls.map((call: unknown[]) => call[0]))
+      .toEqual(["session-1", "session-2", "session-3"]);
+  });
+
+  it("posts streamed non-stderr response text and keeps the conversation session active", async () => {
     const payload = {
       type: "event_callback",
       team_id: "T111",
@@ -353,9 +503,7 @@ describe("handleSlackProviderWebhook", () => {
       threadTs: "1719000000.123456",
       text: "Hello there",
     }));
-    await vi.waitFor(() => {
-      expect(ctx.agents.sessions.close).toHaveBeenCalledWith("session-1", "co-1");
-    });
+    expect(ctx.agents.sessions.close).not.toHaveBeenCalled();
   });
 
   it("keeps a top-level DM unthreaded and posts one final fallback reply", async () => {
@@ -440,12 +588,10 @@ describe("handleSlackProviderWebhook", () => {
       text: "Streaming reply",
     })));
     expect(postReply.mock.calls[0][0]).not.toHaveProperty("threadTs");
-    await vi.waitFor(() => {
-      expect(ctx.agents.sessions.close).toHaveBeenCalledWith("session-1", "co-1");
-    });
+    expect(ctx.agents.sessions.close).not.toHaveBeenCalled();
   });
 
-  it("closes the session when terminal logging unexpectedly throws", async () => {
+  it("keeps the conversation session active when terminal logging unexpectedly throws", async () => {
     const payload = {
       type: "event_callback",
       team_id: "T111",
@@ -495,9 +641,8 @@ describe("handleSlackProviderWebhook", () => {
       payload: null,
     });
 
-    await vi.waitFor(() => {
-      expect(ctx.agents.sessions.close).toHaveBeenCalledWith("session-1", "co-1");
-    });
+    await Promise.resolve();
+    expect(ctx.agents.sessions.close).not.toHaveBeenCalled();
   });
 
   it("rejects an oversized body before reading identities or resolving a secret", async () => {
@@ -633,7 +778,7 @@ describe("handleSlackProviderWebhook", () => {
     expect(ctx.companies.list).not.toHaveBeenCalled();
   });
 
-  it("rejects and closes the session when the routed agent run cannot start", async () => {
+  it("rejects but retains the conversation session when the routed agent run cannot start", async () => {
     const payload = {
       type: "event_callback",
       team_id: "T111",
@@ -670,7 +815,7 @@ describe("handleSlackProviderWebhook", () => {
       "Slack webhook: failed to start routed agent session",
       expect.objectContaining({ agentId: "agent-1", reason: sendError.message })
     );
-    expect(ctx.agents.sessions.close).toHaveBeenCalledWith("session-1", "co-1");
+    expect(ctx.agents.sessions.close).not.toHaveBeenCalled();
   });
 
   it("rejects retryably with a sanitized error when signing-secret resolution is transiently unavailable", async () => {
@@ -764,7 +909,7 @@ describe("handleSlackProviderWebhook", () => {
 
     ctx.agents.sessions.sendMessage.mockResolvedValueOnce({ runId: "run-retry" });
     await runSlackWebhook(input("req-concurrent-retry"), ctx);
-    expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(2);
+    expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(1);
     expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledTimes(2);
   });
 

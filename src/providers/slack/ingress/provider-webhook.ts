@@ -14,6 +14,12 @@ import {
   releaseSlackEventClaim,
   shouldProcessSlackEvent,
 } from "./dedup.js";
+import {
+  forgetSlackConversationSession,
+  getOrCreateSlackConversationSession,
+  isMissingAgentSessionError,
+  type SlackConversationTarget,
+} from "./conversation-session.js";
 import { SlackSessionReplyAccumulator } from "./session-reply.js";
 
 // Stable endpoint key this Slack ingress route registers under. Referenced
@@ -140,27 +146,6 @@ function readReplyDestination(event: unknown): { channel: string; threadTs?: str
   return threadTs ? { channel, threadTs } : { channel };
 }
 
-async function closeAgentSession(
-  ctx: PluginContext,
-  sessionId: string,
-  companyId: string,
-  agentId: string,
-): Promise<void> {
-  try {
-    await ctx.agents.sessions.close(sessionId, companyId);
-  } catch (error) {
-    try {
-      ctx.logger.error("Slack webhook: failed to close routed agent session", {
-        agentId,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    } catch {
-      // Cleanup has already been attempted. A logger failure must not create
-      // an unhandled rejection in the asynchronous session callback.
-    }
-  }
-}
-
 /**
  * Handles one inbound HTTP delivery routed to the `slack-events` endpoint
  * key. Delegates all signature/timestamp/routing/dedup logic to
@@ -225,16 +210,27 @@ export async function handleSlackProviderWebhook(
       // otherwise the failure is
       // permanent (a genuine Slack retry of the same event_id would be
       // silently deduplicated forever and this work would never run).
-      let sessionId: string | undefined;
       let replyStream: SlackAgentReplyStream | undefined;
       try {
-        const session = await ctx.agents.sessions.create(dispatch.agentId, companyId);
-        sessionId = session.sessionId;
         const identity = (await getSnapshot()).identities[dispatch.agentId];
         if (!identity) {
           throw new Error(`No Slack identity configured for agent '${dispatch.agentId}'.`);
         }
         const destination = readReplyDestination(dispatch.event);
+        const conversation: SlackConversationTarget = {
+          teamId: dispatch.teamId,
+          appId: dispatch.appId,
+          channel: destination.channel,
+          ...(destination.threadTs ? { threadTs: destination.threadTs } : {}),
+        };
+        const sessionInput = {
+          state: ctx.state,
+          sessions: ctx.agents.sessions,
+          agentId: dispatch.agentId,
+          companyId,
+          conversation,
+        };
+        let session = await getOrCreateSlackConversationSession(sessionInput);
         const response = new SlackSessionReplyAccumulator();
         let terminalEventHandled = false;
 
@@ -303,14 +299,12 @@ export async function handleSlackProviderWebhook(
               });
             }
           } catch {
-            // Posting and logging are best-effort terminal work. Session
-            // cleanup below is mandatory and must still run if either throws.
-          } finally {
-            await closeAgentSession(ctx, session.sessionId, companyId, dispatch.agentId);
+            // Posting and logging are best-effort terminal work. The
+            // conversation session remains active for the next Slack turn.
           }
         };
 
-        await ctx.agents.sessions.sendMessage(session.sessionId, companyId, {
+        const sendOptions = {
           prompt: buildInvocationPrompt(dispatch),
           reason: "slack-inbound-event",
           onEvent(event) {
@@ -323,16 +317,22 @@ export async function handleSlackProviderWebhook(
               void finishSession(event);
             }
           },
-        });
+        } satisfies Parameters<typeof ctx.agents.sessions.sendMessage>[2];
+
+        try {
+          await ctx.agents.sessions.sendMessage(session.sessionId, companyId, sendOptions);
+        } catch (error) {
+          if (!isMissingAgentSessionError(error)) throw error;
+          await forgetSlackConversationSession(sessionInput, session.sessionId);
+          session = await getOrCreateSlackConversationSession(sessionInput);
+          await ctx.agents.sessions.sendMessage(session.sessionId, companyId, sendOptions);
+        }
       } catch (error) {
         const failure = error instanceof Error ? error : new Error(String(error));
         ctx.logger.error("Slack webhook: failed to start routed agent session", {
           agentId: dispatch.agentId,
           reason: failure.message,
         });
-        if (sessionId) {
-          await closeAgentSession(ctx, sessionId, companyId, dispatch.agentId);
-        }
         await replyStream?.fail();
         await releaseSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId, failure);
         // Propagate the failure so the host does not acknowledge work that

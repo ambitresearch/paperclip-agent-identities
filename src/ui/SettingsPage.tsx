@@ -13,7 +13,6 @@ import {
   uiDanger,
   uiInput,
   uiLink,
-  uiMutedPanel,
   uiMutedText,
   uiOverlay,
   uiPanel,
@@ -71,7 +70,6 @@ export type IdentityFormState = {
   slackSigningSecretId: string;
 };
 
-type SettingsSection = "identities" | "setup" | "environment";
 type IdentityFormSection = "identity" | "github" | "slack" | "commit";
 type IdentityFormValidation = {
   identityComplete: boolean;
@@ -115,7 +113,6 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [secretOptions, setSecretOptions] = useState<PaperclipSecretOption[]>([]);
   const [secretsLoading, setSecretsLoading] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSection>("identities");
   const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
   const agentOptions = agentsData?.agents ?? [];
@@ -480,7 +477,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
       <div className="agent-identities-summary-grid" style={summaryGridStyle}>
         <SummaryTile label="Identities" value={summary.total} />
-        <SummaryTile label="GitHub Apps" value={summary.githubApps} tone="good" />
+        <SummaryTile label="Ready" value={summary.ready} tone="good" />
         <SummaryTile label="Need setup" value={summary.needsSetup} tone={summary.needsSetup > 0 ? "warn" : "good"} />
       </div>
 
@@ -490,106 +487,53 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         </div>
       )}
 
-      <div className="agent-identities-settings-shell" style={settingsShellStyle}>
-        <nav className="agent-identities-sidebar" style={sidebarStyle} aria-label="Agent identity settings sections">
-          <SidebarButton
-            active={activeSection === "identities"}
-            title="Identities"
-            detail={`${identities.length} configured`}
-            onClick={() => setActiveSection("identities")}
-          />
-          <SidebarButton
-            active={activeSection === "setup"}
-            title="GitHub App setup"
-            detail="Create and install apps"
-            onClick={() => setActiveSection("setup")}
-          />
-          <SidebarButton
-            active={activeSection === "environment"}
-            title="Environment"
-            detail="Credential propagation"
-            onClick={() => setActiveSection("environment")}
-          />
-        </nav>
-
-        <main style={workspaceStyle}>
-          {activeSection === "identities" && (
-            <section style={sectionStyle}>
-              <div className="agent-identities-section-header" style={sectionHeaderStyle}>
-                <div>
-                  <h3 style={sectionTitleStyle}>Configured identities</h3>
-                  <p style={sectionDescriptionStyle}>Each row maps one Paperclip agent to a provider account and credential source.</p>
+      <section style={sectionStyle}>
+        <div className="agent-identities-section-header" style={sectionHeaderStyle}>
+          <div>
+            <h3 style={sectionTitleStyle}>Configured identities</h3>
+            <p style={sectionDescriptionStyle}>Each row maps one Paperclip agent to a provider account and credential source.</p>
+          </div>
+          <button onClick={startCreate} style={secondaryButtonStyle}>Add identity</button>
+        </div>
+        {saveError && !formState && <div style={errorStyle}>{saveError}</div>}
+        {saveSuccess && !formState && <div style={successStyle}>Saved successfully.</div>}
+        {identities.length === 0 ? (
+          <div style={emptyStateStyle}>
+            <strong>No identities configured</strong>
+            <span>Pick an agent, connect its first provider account, then save. Defaults are filled from the selected agent and company.</span>
+            <button onClick={startCreate} style={primaryButtonStyle}>Create first identity</button>
+          </div>
+        ) : (
+          <div style={listStyle}>
+            <div className="agent-identities-list-header" style={listHeaderStyle}>
+              <span>Agent</span>
+              <span>Provider identity</span>
+              <span>Status</span>
+              <span />
+            </div>
+            {identities.map((entry) => (
+              <div key={entry.id} className="agent-identities-list-row" style={rowStyle}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={rowTitleStyle}>{entry.label}</div>
+                  <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
                 </div>
-                <button onClick={startCreate} style={secondaryButtonStyle}>Add identity</button>
-              </div>
-              {saveError && !formState && <div style={errorStyle}>{saveError}</div>}
-              {saveSuccess && !formState && <div style={successStyle}>Saved successfully.</div>}
-              {identities.length === 0 ? (
-                <div style={emptyStateStyle}>
-                  <strong>No identities configured</strong>
-                  <span>Pick an agent, connect its first provider account, then save. Defaults are filled from the selected agent and company.</span>
-                  <button onClick={startCreate} style={primaryButtonStyle}>Create first identity</button>
+                <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : entry.provider === "slack" ? `Team ${entry.slack.teamId}` : ""}</div>
+                <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
+                <div className="agent-identities-row-actions" style={rowActionsStyle}>
+                  <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
+                  <button
+                    onClick={() => void handleDelete(entry)}
+                    disabled={deletingAgentId === entry.agentId}
+                    style={dangerButtonStyle}
+                  >
+                    {deletingAgentId === entry.agentId ? "Deleting..." : "Delete"}
+                  </button>
                 </div>
-              ) : (
-                <div style={listStyle}>
-                  <div className="agent-identities-list-header" style={listHeaderStyle}>
-                    <span>Agent</span>
-                    <span>Provider identity</span>
-                    <span>Status</span>
-                    <span />
-                  </div>
-                  {identities.map((entry) => (
-                    <div key={entry.id} className="agent-identities-list-row" style={rowStyle}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={rowTitleStyle}>{entry.label}</div>
-                        <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
-                      </div>
-                      <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : entry.provider === "slack" ? `Team ${entry.slack.teamId}` : ""}</div>
-                      <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
-                      <div className="agent-identities-row-actions" style={rowActionsStyle}>
-                        <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
-                        <button
-                          onClick={() => void handleDelete(entry)}
-                          disabled={deletingAgentId === entry.agentId}
-                          style={dangerButtonStyle}
-                        >
-                          {deletingAgentId === entry.agentId ? "Deleting..." : "Delete"}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-
-          {activeSection === "setup" && (
-            <section style={sectionStyle}>
-              <h3 style={sectionTitleStyle}>GitHub App setup</h3>
-              <div style={setupStepsStyle}>
-                <SetupStep index="1" title="Select the Paperclip agent" text="The label, GitHub login, commit name, and private-key file path are prefilled from the agent and company." />
-                <SetupStep index="2" title="Create the GitHub App" text="Paperclip opens GitHub with the required permissions and stores the generated private key in the sidecar path." />
-                <SetupStep index="3" title="Install, return, save" text="GitHub redirects back with the installation ID. Save the identity to propagate the environment values." />
               </div>
-              <button onClick={startCreate} style={primaryButtonStyle}>Start setup</button>
-            </section>
-          )}
-
-          {activeSection === "environment" && (
-            <section style={sectionStyle}>
-              <h3 style={sectionTitleStyle}>Environment propagation</h3>
-              <div style={inlineNoticeStyle}>
-                Saving an identity updates the selected agent environment with <code>GITHUB_APP_ID</code>, <code>GITHUB_INSTALLATION_ID</code>, and either <code>GITHUB_APP_PRIVATE_KEY</code> or <code>GITHUB_APP_PRIVATE_KEY_FILE</code>.
-              </div>
-              <div style={setupStepsStyle}>
-                <SetupStep index="A" title="Secret first" text="When a Paperclip secret is selected, the agent gets a secret reference instead of a raw private key." />
-                <SetupStep index="B" title="File fallback" text="If secrets are not available, the generated private-key file path keeps the tools working." />
-                <SetupStep index="C" title="Safe removal" text="Deleting an identity removes only matching GitHub App values from that agent." />
-              </div>
-            </section>
-          )}
-        </main>
-      </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {config && (
         <div style={dialogBackdropStyle} role="presentation">
@@ -798,27 +742,6 @@ function SummaryTile(props: { label: string; value: number; tone?: IdentityTone 
     <div style={summaryTileStyle(props.tone ?? "neutral")}>
       <span style={summaryValueStyle}>{props.value}</span>
       <span style={summaryLabelStyle}>{props.label}</span>
-    </div>
-  );
-}
-
-function SidebarButton(props: { active: boolean; title: string; detail: string; onClick: () => void }) {
-  return (
-    <button type="button" onClick={props.onClick} style={sidebarButtonStyle(props.active)}>
-      <span style={sidebarTitleStyle}>{props.title}</span>
-      <span style={sidebarDetailStyle}>{props.detail}</span>
-    </button>
-  );
-}
-
-function SetupStep(props: { index: string; title: string; text: string }) {
-  return (
-    <div style={setupStepStyle}>
-      <span style={setupStepIndexStyle}>{props.index}</span>
-      <div>
-        <strong>{props.title}</strong>
-        <p style={setupStepTextStyle}>{props.text}</p>
-      </div>
     </div>
   );
 }
@@ -1129,13 +1052,10 @@ function getIdentityTone(entry: BotIdentitySettingsEntry): IdentityTone {
 }
 
 function summarizeIdentitySettings(identities: BotIdentitySettingsEntry[], sidecarUnavailable: boolean) {
-  const githubApps = identities.filter((identity) => {
-    const githubApp = identity.credential?.githubApp;
-    return Boolean(githubApp?.appId && githubApp.installationId && (githubApp.privateKeySecretId || githubApp.privateKeyFile));
-  }).length;
+  const ready = sidecarUnavailable ? 0 : identities.filter((identity) => identity.credentialStatus === "configured").length;
   return {
     total: identities.length,
-    githubApps,
+    ready,
     needsSetup: sidecarUnavailable ? identities.length : identities.filter((identity) => identity.credentialStatus !== "configured").length,
   };
 }
@@ -1408,10 +1328,6 @@ const responsiveSettingsStyle = `
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.agent-identities-settings-shell {
-  grid-template-columns: 220px minmax(0, 1fr);
-}
-
 .agent-identities-list-header,
 .agent-identities-list-row {
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(90px, auto) auto;
@@ -1425,19 +1341,8 @@ const responsiveSettingsStyle = `
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-@container (max-width: 720px) {
-  .agent-identities-settings-shell {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .agent-identities-sidebar {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
 @container (max-width: 520px) {
   .agent-identities-summary-grid,
-  .agent-identities-sidebar,
   .agent-identities-wizard-steps {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1541,52 +1446,6 @@ const credentialErrorStyle: CSSProperties = {
   fontSize: "0.875rem",
 };
 
-const settingsShellStyle: CSSProperties = {
-  display: "grid",
-  gap: "1rem",
-  alignItems: "start",
-  minWidth: 0,
-};
-
-const sidebarStyle: CSSProperties = {
-  display: "grid",
-  gap: "0.35rem",
-  padding: "0.5rem",
-  border: `1px solid ${uiBorder}`,
-  borderRadius: 14,
-  backgroundColor: uiPanel,
-};
-
-function sidebarButtonStyle(active: boolean): CSSProperties {
-  return {
-    display: "grid",
-    gap: "0.15rem",
-    width: "100%",
-    minHeight: 54,
-    padding: "0.65rem 0.75rem",
-    border: `1px solid ${active ? uiBorderStrong : "transparent"}`,
-    borderRadius: 10,
-    backgroundColor: active ? uiSurface : "transparent",
-    color: uiText,
-    textAlign: "left",
-    cursor: "pointer",
-  };
-}
-
-const sidebarTitleStyle: CSSProperties = {
-  fontWeight: 650,
-  fontSize: "0.875rem",
-};
-
-const sidebarDetailStyle: CSSProperties = {
-  color: uiMutedText,
-  fontSize: "0.8125rem",
-};
-
-const workspaceStyle: CSSProperties = {
-  minWidth: 0,
-};
-
 const sectionStyle: CSSProperties = {
   minWidth: 0,
   border: `1px solid ${uiBorder}`,
@@ -1668,40 +1527,6 @@ const emptyStateStyle: CSSProperties = {
   borderRadius: 12,
   color: uiMutedText,
   backgroundColor: uiPanel,
-};
-
-const setupStepsStyle: CSSProperties = {
-  display: "grid",
-  gap: "0.5rem",
-};
-
-const setupStepStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "2rem minmax(0, 1fr)",
-  gap: "0.75rem",
-  alignItems: "start",
-  padding: "0.75rem",
-  border: `1px solid ${uiBorder}`,
-  borderRadius: 10,
-  backgroundColor: uiPanel,
-};
-
-const setupStepIndexStyle: CSSProperties = {
-  display: "inline-grid",
-  placeItems: "center",
-  width: "2rem",
-  height: "2rem",
-  borderRadius: 999,
-  backgroundColor: uiMutedPanel,
-  color: uiMutedText,
-  fontWeight: 700,
-  fontSize: "0.8125rem",
-};
-
-const setupStepTextStyle: CSSProperties = {
-  margin: "0.2rem 0 0",
-  color: uiMutedText,
-  fontSize: "0.875rem",
 };
 
 const dialogBackdropStyle: CSSProperties = {

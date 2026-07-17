@@ -57,8 +57,8 @@ function splitStreamText(value: string): string[] {
 }
 
 /**
- * Serializes Slack's status and streaming APIs for one inbound agent reply.
- * The caller supplies only filtered user-facing text. This class never sees
+ * Serializes Slack's status and final-message APIs for one inbound agent reply.
+ * The caller supplies only the completed user-facing text. This class never sees
  * raw model events, reasoning records, tool arguments, or tool results.
  */
 export class SlackResponseStream {
@@ -76,13 +76,6 @@ export class SlackResponseStream {
     if (!this.options.threadTs) return;
     void this.serialize(async () => {
       await this.setStatus(DEFAULT_STATUS, DEFAULT_LOADING_MESSAGES);
-    }).catch(() => undefined);
-  }
-
-  append(text: string): void {
-    if (!text || !this.options.threadTs) return;
-    void this.serialize(async () => {
-      await this.appendInternal(text);
     }).catch(() => undefined);
   }
 

@@ -27,7 +27,6 @@ describe("SlackResponseStream", () => {
     });
 
     stream.start();
-    stream.append("Draft text");
     await expect(stream.finish("Final answer")).resolves.toBe(false);
     await expect(stream.fail()).resolves.toBeUndefined();
 
@@ -35,14 +34,11 @@ describe("SlackResponseStream", () => {
     expect(resolveToken).not.toHaveBeenCalled();
   });
 
-  it("sets native activity, streams answer chunks in order, stops, and clears status", async () => {
+  it("sets native activity, posts the final answer, stops, and clears status", async () => {
     const delivered = vi.fn(async () => undefined);
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith("/assistant.threads.setStatus")) return jsonResponse({ ok: true });
       if (url.endsWith("/chat.startStream")) {
-        return jsonResponse({ ok: true, channel: "D0123456789", ts: "1719000001.123456" });
-      }
-      if (url.endsWith("/chat.appendStream")) {
         return jsonResponse({ ok: true, channel: "D0123456789", ts: "1719000001.123456" });
       }
       if (url.endsWith("/chat.stopStream")) {
@@ -60,14 +56,11 @@ describe("SlackResponseStream", () => {
     });
 
     stream.start();
-    stream.append("Hello ");
-    stream.append("world");
     await expect(stream.finish("Hello world")).resolves.toBe(true);
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "https://slack.com/api/assistant.threads.setStatus",
       "https://slack.com/api/chat.startStream",
-      "https://slack.com/api/chat.appendStream",
       "https://slack.com/api/chat.stopStream",
       "https://slack.com/api/assistant.threads.setStatus",
     ]);
@@ -84,14 +77,9 @@ describe("SlackResponseStream", () => {
     expect(requestBody(fetchMock.mock.calls[1])).toEqual({
       channel: "D0123456789",
       thread_ts: "1719000000.123456",
-      markdown_text: "Hello ",
+      markdown_text: "Hello world",
     });
-    expect(requestBody(fetchMock.mock.calls[2])).toEqual({
-      channel: "D0123456789",
-      ts: "1719000001.123456",
-      markdown_text: "world",
-    });
-    expect(requestBody(fetchMock.mock.calls[4])).toEqual({
+    expect(requestBody(fetchMock.mock.calls[3])).toEqual({
       channel_id: "D0123456789",
       thread_ts: "1719000000.123456",
       status: "",
@@ -114,11 +102,11 @@ describe("SlackResponseStream", () => {
     });
 
     stream.start();
-    stream.append("Hello");
     await expect(stream.finish("Hello")).resolves.toBe(false);
   });
 
-  it("replaces a partial stream when the final answer is not a monotonic continuation", async () => {
+  it("repairs a long final answer when Slack rejects a later chunk", async () => {
+    const finalAnswer = "A".repeat(12_001);
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith("/assistant.threads.setStatus")) return jsonResponse({ ok: true });
       if (url.endsWith("/chat.startStream")) {
@@ -126,6 +114,9 @@ describe("SlackResponseStream", () => {
       }
       if (url.endsWith("/chat.stopStream")) {
         return jsonResponse({ ok: true, channel: "D0123456789", ts: "1719000001.123456" });
+      }
+      if (url.endsWith("/chat.appendStream")) {
+        return jsonResponse({ ok: false, error: "internal_error" });
       }
       if (url.endsWith("/chat.update")) {
         return jsonResponse({ ok: true, channel: "D0123456789", ts: "1719000001.123456" });
@@ -141,15 +132,14 @@ describe("SlackResponseStream", () => {
     });
 
     stream.start();
-    stream.append("Draft text");
-    await expect(stream.finish("Final answer")).resolves.toBe(true);
+    await expect(stream.finish(finalAnswer)).resolves.toBe(true);
 
     const updateCall = fetchMock.mock.calls.find(([url]) => url.endsWith("/chat.update"));
     expect(updateCall).toBeDefined();
     expect(requestBody(updateCall as unknown[])).toEqual({
       channel: "D0123456789",
       ts: "1719000001.123456",
-      text: "Final answer",
+      text: finalAnswer,
     });
   });
 });

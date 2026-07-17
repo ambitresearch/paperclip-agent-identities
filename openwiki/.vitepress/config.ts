@@ -26,6 +26,7 @@ export default defineConfig({
         items: [
           { text: "Overview", link: "/" },
           { text: "Quickstart", link: "/quickstart" },
+          { text: "Set Up Agent Identities", link: "/guides/agent-identities-setup" },
         ],
       },
       {

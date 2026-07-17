@@ -163,6 +163,16 @@ function openNewIdentityDialog() {
 }
 
 describe("SettingsPage interactions: setup launch", () => {
+  it("keeps the settings page focused on configured identities", () => {
+    renderSettingsPage();
+
+    expect(text()).toContain("Configured identities");
+    expect(text()).not.toContain("GitHub Apps");
+    expect(text()).not.toContain("GitHub App setup");
+    expect(text()).not.toContain("Environment propagation");
+    expect(container.querySelector('nav[aria-label="Agent identity settings sections"]')).toBeNull();
+  });
+
   it("opens the wizard on the first ('Identity') step when starting a new identity", () => {
     renderSettingsPage();
     openNewIdentityDialog();

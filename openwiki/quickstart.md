@@ -2,7 +2,7 @@
 
 ## What this repository is
 
-This repository contains **Agent Identities**, a TypeScript Paperclip plugin that connects each Paperclip agent to service-specific identity providers and contribution tools. GitHub is the first identity provider. The plugin lets operators map Paperclip agent IDs to GitHub usernames, GitHub App credentials, and optional commit author metadata.
+This repository contains **Agent Identities**, a TypeScript Paperclip plugin that connects each Paperclip agent to service-specific identity providers and contribution tools. GitHub and Slack are supported. The plugin lets operators map Paperclip agents to provider accounts and the credentials those agents need.
 
 Primary product capabilities are described in `/README.md` and implemented through the Paperclip plugin manifest and worker:
 
@@ -19,6 +19,7 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
 
 | Task | Start with | Then inspect |
 | --- | --- | --- |
+| Set up or manage agent identities | [Set up agent identities](guides/agent-identities-setup.md) | The Agent Identities settings page in Paperclip |
 | Understand plugin registration and runtime shape | [Plugin runtime architecture](architecture/plugin-runtime.md) | `/src/manifest.ts`, `/src/worker.ts` |
 | Change identity config, provider projection, or credential resolution | [Agent identity domain](domain/agent-identities.md) | `/src/shared/types.ts`, `/src/identity-policy.ts`, `/src/config-source.ts`, `/src/credential-sidecar.ts` |
 | Change GitHub App setup or settings UI behavior | [Agent identity domain](domain/agent-identities.md) | `/src/ui/SettingsPage.tsx`, `/src/worker.ts` manifest-flow actions |

@@ -258,4 +258,102 @@ describe("tool pipeline security ordering — real Slack provider regression", (
     expect(resolveCredentialSpy).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
   });
+
+  it("uses the run company scope and bound bot-token object ref on a real Slack happy path", async () => {
+    const companyId = "co-1";
+    const botToken = "xoxb-resolved-test-token";
+    const botTokenRef = {
+      type: "secret_ref",
+      secretId: "00000000-0000-4000-8000-000000000010",
+      version: "latest",
+    } as const;
+    const slackIdentity: SlackAgentIdentity = {
+      label: "Bot",
+      teamId: "T0123456789",
+      appId: "A0123456789",
+      botUserId: "U0123456789",
+    };
+    const getConfig = vi.fn(async () => ({
+      identities: {
+        "agent-1": {
+          ...slackIdentity,
+          credentials: { botToken: botTokenRef },
+        },
+      },
+    }));
+    const resolveSecret = vi.fn(async () => botToken);
+    const slackApiFetch = vi.fn(async (input: string) => {
+      const path = new URL(input).pathname;
+      if (path.endsWith("/chat.postMessage")) {
+        return new Response(
+          JSON.stringify({ ok: true, ts: "1719000001.000100", channel: "C0123456789" }),
+          { status: 200 },
+        );
+      }
+      if (path.endsWith("/chat.getPermalink")) {
+        return new Response(
+          JSON.stringify({ ok: true, permalink: "https://acme.slack.com/archives/C0123456789/p1719000001000100" }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected Slack API URL: ${input}`);
+    });
+    const authTestFetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          team_id: slackIdentity.teamId,
+          user_id: slackIdentity.botUserId,
+          bot_id: "B0123456789",
+        }),
+        { status: 200 },
+      ),
+    );
+    const provider = {
+      id: "slack",
+      definition: { id: "slack", name: "Slack", status: "coming-soon", description: "" },
+      validateConfig: () => ({}),
+      projectPluginConfig: () => ({}),
+      resolveCredential: resolveSlackCredential,
+      tools: [slackBotPostMessageToolSpec],
+      manifestTools: [],
+    } as unknown as IdentityProvider<SlackAgentIdentity, ResourceReference>;
+    const ctx = {
+      activity: { log: vi.fn().mockResolvedValue(undefined) },
+      logger: { error: vi.fn(), info: vi.fn() },
+      http: { fetch: slackApiFetch },
+      config: { get: getConfig },
+      secrets: { resolve: resolveSecret },
+    } as never;
+    const tool = createProviderTool(
+      provider,
+      slackBotPostMessageToolSpec as unknown as ProviderToolSpec<SlackAgentIdentity, ResourceReference>,
+      ctx,
+      {
+        resolveIdentity: async () => ({ agentId: "agent-1", identity: slackIdentity }),
+        redactSecrets: <T,>(value: T): T => value,
+      },
+    );
+
+    try {
+      const result = await tool.handler(
+        { channel: "C0123456789", text: "hello", teamId: slackIdentity.teamId },
+        { agentId: "agent-1", companyId, projectId: "proj-1", runId: "run-1" } as never,
+      );
+
+      expect(result).toMatchObject({
+        content: "Posted message to C0123456789",
+        data: { team: slackIdentity.teamId, conversation: "C0123456789" },
+      });
+      expect(getConfig).toHaveBeenCalledOnce();
+      expect(getConfig).toHaveBeenCalledWith(companyId);
+      expect(resolveSecret).toHaveBeenCalledOnce();
+      expect(resolveSecret).toHaveBeenCalledWith(botTokenRef, {
+        companyId,
+        configPath: "identities.agent-1.credentials.botToken",
+      });
+    } finally {
+      authTestFetch.mockRestore();
+    }
+  });
 });

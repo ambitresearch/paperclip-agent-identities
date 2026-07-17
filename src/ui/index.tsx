@@ -10,15 +10,17 @@ import {
 } from "./theme.js";
 import type { BotIdentitySettingsData, BotIdentitySettingsEntry } from "../shared/types.js";
 
-export function DashboardWidget(_props: PluginWidgetProps) {
+export function DashboardWidget({ context }: PluginWidgetProps) {
   const themeMode = usePaperclipThemeMode();
-  const { data, loading, error } = usePluginData<BotIdentitySettingsData>("bot-identity-config");
+  const { data, loading, error } = usePluginData<BotIdentitySettingsData>("bot-identity-config", {
+    companyId: context.companyId,
+  });
 
   if (loading) return <div>Loading agent identities...</div>;
   if (error) return <div>Agent identities unavailable: {error.message}</div>;
 
   const identities = data?.identities ?? [];
-  const summary = summarizeIdentities(identities, Boolean(data?.credentialSidecarError));
+  const summary = summarizeIdentities(identities);
 
   return (
     <div style={{ ...createPaperclipThemeStyle(themeMode), ...widgetStyle }} data-agent-identities-theme={themeMode}>
@@ -57,14 +59,12 @@ export function DashboardWidget(_props: PluginWidgetProps) {
 
 export { SettingsPage } from "./SettingsPage.js";
 
-function summarizeIdentities(identities: BotIdentitySettingsEntry[], sidecarUnavailable: boolean) {
+function summarizeIdentities(identities: BotIdentitySettingsEntry[]) {
   const githubApps = identities.filter((identity) => hasCompleteGitHubApp(identity)).length;
-  const configuredFallbacks = identities.filter((identity) => !hasCompleteGitHubApp(identity) && hasFallbackCredential(identity)).length;
   return {
     total: identities.length,
     githubApps,
-    configuredFallbacks,
-    needsSetup: sidecarUnavailable ? identities.length : identities.length - githubApps - configuredFallbacks,
+    needsSetup: identities.filter((identity) => identity.credentialStatus !== "configured").length,
   };
 }
 
@@ -78,14 +78,15 @@ function hasFallbackCredential(identity: BotIdentitySettingsEntry): boolean {
 }
 
 function formatProviderIdentity(identity: BotIdentitySettingsEntry): string {
-  const provider = identity.provider === "github" ? "GitHub" : identity.provider;
-  const username = identity.provider === "github" ? identity.github.username : "";
-  return `${provider}: ${username}`;
+  if (identity.provider === "github") return `GitHub: ${identity.github.username}`;
+  if (identity.provider === "slack") return `Slack: ${identity.slack.teamId}`;
+  return identity.provider;
 }
 
 function formatIdentityCredential(identity: BotIdentitySettingsEntry): string {
   if (hasCompleteGitHubApp(identity)) return "GitHub App";
   if (hasFallbackCredential(identity)) return "Fallback";
+  if (identity.credentialStatus === "configured") return "Configured";
   if (identity.credentialStatus === "sidecar-unavailable") return "Unavailable";
   return "Missing";
 }
@@ -93,6 +94,7 @@ function formatIdentityCredential(identity: BotIdentitySettingsEntry): string {
 function identityTone(identity: BotIdentitySettingsEntry): MetricTone {
   if (hasCompleteGitHubApp(identity)) return "good";
   if (hasFallbackCredential(identity)) return "neutral";
+  if (identity.credentialStatus === "configured") return "good";
   return "warn";
 }
 

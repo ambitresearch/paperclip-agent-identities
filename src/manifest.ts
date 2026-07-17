@@ -3,10 +3,21 @@ import { createProviderRegistry } from "./providers/index.js";
 
 const registry = createProviderRegistry();
 
+const slackSecretRefConfigSchema = {
+  type: "object",
+  properties: {
+    type: { const: "secret_ref" },
+    secretId: { type: "string", format: "uuid" },
+    version: { const: "latest" },
+  },
+  required: ["type", "secretId", "version"],
+  additionalProperties: false,
+} as const;
+
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-agent-identities",
   apiVersion: 1,
-  version: "0.1.8",
+  version: "0.2.0",
   displayName: "Agent Identities",
   description: "Per-agent identity providers and contribution tools for Paperclip",
   author: "Roshan Gautam",
@@ -18,18 +29,71 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "object",
         patternProperties: {
           "^.+$": {
+            oneOf: [
+              {
+                type: "object",
+                properties: {
+                  label: { type: "string" },
+                  githubUsername: { type: "string" },
+                  commitName: { type: "string" },
+                  commitEmail: { type: "string" },
+                },
+                required: ["label", "githubUsername"],
+                additionalProperties: false,
+              },
+              {
+                type: "object",
+                properties: {
+                  label: { type: "string" },
+                  teamId: { type: "string" },
+                  appId: { type: "string" },
+                  botUserId: { type: "string" },
+                  defaultChannel: { type: "string" },
+                  eventsRequestUrl: { type: "string", format: "uri", pattern: "^https://.+/events$" },
+                  credentials: {
+                    type: "object",
+                    properties: {
+                      botToken: slackSecretRefConfigSchema,
+                      signingSecret: slackSecretRefConfigSchema,
+                    },
+                    required: ["botToken", "signingSecret"],
+                    additionalProperties: false,
+                  },
+                },
+                required: ["label", "teamId", "appId", "botUserId", "credentials"],
+                additionalProperties: false,
+              },
+            ],
+          },
+        },
+        additionalProperties: false,
+      },
+      setup: {
+        type: "object",
+        properties: {
+          slack: {
             type: "object",
             properties: {
-              label: { type: "string" },
-              githubUsername: { type: "string" },
-              commitName: { type: "string" },
-              commitEmail: { type: "string" }
+              metadata: {
+                type: "object",
+                patternProperties: {
+                  "^[0-9a-f]{32}$": {
+                    type: "object",
+                    properties: {
+                      botToken: slackSecretRefConfigSchema,
+                    },
+                    required: ["botToken"],
+                    additionalProperties: false,
+                  },
+                },
+                additionalProperties: false,
+              },
             },
-            required: ["label", "githubUsername"],
-            additionalProperties: false
-          }
-        }
-      }
+            additionalProperties: false,
+          },
+        },
+        additionalProperties: false,
+      },
     },
     additionalProperties: false
   },
@@ -42,7 +106,9 @@ const manifest: PaperclipPluginManifestV1 = {
     "project.workspaces.read",
     "agent.tools.register",
     "agents.read",
-    "agents.invoke",
+    "agent.sessions.create",
+    "agent.sessions.send",
+    "agent.sessions.close",
     "companies.read",
     "http.outbound",
     "secrets.read-ref",

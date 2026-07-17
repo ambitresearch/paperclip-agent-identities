@@ -56,6 +56,10 @@ const providers = [
   { id: SLACK_IDENTITY_PROVIDER_ID, name: "Slack", status: "coming-soon", description: "Slack" },
 ];
 
+const EVENTS_REQUEST_URL = "https://paperclip-test.trycloudflare.com/events";
+const BOT_TOKEN_SECRET_ID = "11111111-1111-4111-8111-111111111111";
+const SIGNING_SECRET_ID = "22222222-2222-4222-8222-222222222222";
+
 function slackIdentityEntry() {
   return {
     id: "id-1",
@@ -282,7 +286,7 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     openNewSlackCredentialStep();
 
     change(container.querySelector('input[placeholder="e.g. T0123456789"]'), "T0123456789");
-    change(container.querySelector('input[placeholder="e.g. A0123456789"]'), "A0123456789");
+    change(container.querySelector('input[placeholder^="A0123456789"]'), "A0123456789");
     await act(async () => {
       await Promise.resolve();
     });
@@ -327,6 +331,7 @@ describe("Slack status panel (slack_bot_whoami)", () => {
       manifest: '{"name":"slack-demo"}',
       createAppUrl: "https://api.slack.com/apps?new_app=1",
       label: "Release Bot",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
     });
     actionFor("save-slack-install-metadata").mockResolvedValue({
       agentId: "agent-0",
@@ -334,7 +339,8 @@ describe("Slack status panel (slack_bot_whoami)", () => {
       teamId: "T0123456789",
       appId: "A0123456789",
       botUserId: "U0123456789",
-      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      botTokenSecretId: BOT_TOKEN_SECRET_ID,
+      signingSecretId: SIGNING_SECRET_ID,
       status: "saved",
     });
 
@@ -348,6 +354,10 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     expect(Array.from(container.querySelectorAll("button")).some((button) =>
       button.textContent === "Create Slack App manifest",
     )).toBe(false);
+    change(
+      container.querySelector('input[placeholder="https://your-public-tunnel.example/events"]'),
+      EVENTS_REQUEST_URL,
+    );
     const reinstallSummary = Array.from(container.querySelectorAll("summary")).find((summary) =>
       summary.textContent?.match(/reinstall/i),
     );
@@ -362,7 +372,11 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     });
     change(
       container.querySelector('input[placeholder="Company secret UUID containing the Slack bot token"]'),
-      "11111111-1111-4111-8111-111111111111",
+      BOT_TOKEN_SECRET_ID,
+    );
+    change(
+      container.querySelector('input[placeholder="Company secret UUID containing the Slack signing secret"]'),
+      SIGNING_SECRET_ID,
     );
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
@@ -402,6 +416,10 @@ describe("Slack reinstall action", () => {
       button.textContent === "Next",
     );
     click(nextButton ?? null);
+    change(
+      container.querySelector('input[placeholder="https://your-public-tunnel.example/events"]'),
+      EVENTS_REQUEST_URL,
+    );
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -440,6 +458,7 @@ describe("Slack reinstall action", () => {
       manifest: '{"name":"slack-demo"}',
       createAppUrl: "https://api.slack.com/apps?new_app=1",
       label: "Release Bot",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
     });
 
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -449,6 +468,10 @@ describe("Slack reinstall action", () => {
     expect(Array.from(container.querySelectorAll("button")).some((button) =>
       button.textContent === "Create Slack App manifest",
     )).toBe(false);
+    change(
+      container.querySelector('input[placeholder="https://your-public-tunnel.example/events"]'),
+      EVENTS_REQUEST_URL,
+    );
 
     const detailsSummary = Array.from(container.querySelectorAll("summary")).find((s) =>
       s.textContent?.match(/reinstall/i),
@@ -478,6 +501,9 @@ describe("Slack reinstall action", () => {
       await Promise.resolve();
     });
     expect(actionFor("create-slack-app-manifest")).toHaveBeenCalled();
+    expect(actionFor("create-slack-app-manifest")).toHaveBeenCalledWith(expect.objectContaining({
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+    }));
   });
 });
 

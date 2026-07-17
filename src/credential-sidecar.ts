@@ -23,21 +23,15 @@ const githubAppCredentialSchema = z.object({
   message: "Expected either privateKeySecretId or privateKeyFile for GitHub App credentials"
 });
 
-// Slack MVP credential source: a Paperclip-secret-backed bot token, with an
-// optional signing secret. No tokenFile fallback — see
-// openwiki/domain/slack-provider-mvp.md §2: the signing secret is used for
-// per-request HMAC verification, not bearer auth, so it must not be written
-// to a file the way a GitHub PEM is. Rotation is deliberately unimplemented
-// (design decision) — see that same section.
-// Exported so callers that must validate a `botTokenSecretId` up front (e.g.
-// before persisting any state, so a bad reference fails atomically rather
-// than after other mutations) can reuse the exact same UUID format check
-// that `upsertCredentialSidecarIdentity` enforces later.
+// Legacy Slack entries remain parseable so an upgrade does not invalidate a
+// sidecar that also contains active GitHub credentials. Slack runtime code no
+// longer reads from or writes to this shape.
 export const slackBotTokenSecretIdSchema = z.string().trim().uuid();
+export const slackSigningSecretIdSchema = z.string().trim().uuid();
 
 const slackBotTokenCredentialSchema = z.object({
   botTokenSecretId: slackBotTokenSecretIdSchema,
-  signingSecretId: z.string().trim().uuid().optional(),
+  signingSecretId: slackSigningSecretIdSchema.optional(),
 });
 
 const sidecarIdentitySchema = z.object({

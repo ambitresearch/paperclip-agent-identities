@@ -1,45 +1,58 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../../../src/manifest.js";
 import plugin from "../../../src/worker.js";
-import { CREDENTIAL_SIDECAR_PATH_ENV } from "../../../src/credential-sidecar.js";
+import { CONFIG_SCOPE } from "../../../src/config-source.js";
+import { BOT_IDENTITY_SETTINGS_VERSION } from "../../../src/core/identity-config.js";
 import type {
   BotIdentitySettingsData,
   CreateSlackAppManifestResult,
+  DiscoverSlackInstallMetadataResult,
   GetSlackAppManifestFlowResult,
   SaveSlackInstallMetadataResult,
 } from "../../../src/shared/types.js";
 
 const COMPANY_A = "00000000-0000-4000-8000-0000000000a1";
 const COMPANY_B = "00000000-0000-4000-8000-0000000000b1";
+const EVENTS_REQUEST_URL = "https://paperclip-test.trycloudflare.com/events";
 const FAKE_SECRET_ID = "00000000-0000-4000-8000-000000000010";
 const FAKE_SECRET_ID_2 = "00000000-0000-4000-8000-000000000011";
+const FAKE_SIGNING_SECRET_ID = "00000000-0000-4000-8000-000000000012";
 
-let credentialSidecarDir: string | null = null;
-const originalCredentialSidecarPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
-
-beforeEach(async () => {
-  credentialSidecarDir = await mkdtemp(join(tmpdir(), "agent-identities-slack-manifest-test-"));
-  process.env[CREDENTIAL_SIDECAR_PATH_ENV] = join(credentialSidecarDir, "credentials.json");
-});
-
-afterEach(async () => {
-  if (originalCredentialSidecarPath === undefined) {
-    delete process.env[CREDENTIAL_SIDECAR_PATH_ENV];
-  } else {
-    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = originalCredentialSidecarPath;
-  }
-  if (credentialSidecarDir) {
-    await rm(credentialSidecarDir, { recursive: true, force: true });
-    credentialSidecarDir = null;
-  }
-});
+const PRESERVED_COMPANY_IDENTITY = {
+  label: "Preserved GitHub identity",
+  githubUsername: "preserved-user",
+};
 
 function harnessWithSetup() {
   const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+  let companyConfig: Record<string, unknown> = {
+    identities: { "agent-preserved": PRESERVED_COMPANY_IDENTITY },
+  };
+  const getCompanyConfig = () => structuredClone(companyConfig);
+  const getConfig = vi.fn(async (companyId?: string) =>
+    companyId === COMPANY_A ? getCompanyConfig() : { identities: {} }
+  );
+  const patchSecretRefs = vi.fn(async (input: {
+    companyId?: string;
+    path: string[];
+    value: Record<string, unknown> | null;
+  }) => {
+    if (input.companyId !== COMPANY_A) throw new Error("Unexpected company scope.");
+    if (input.path.length !== 2 || input.path[0] !== "identities" || !input.path[1]) {
+      throw new Error("Test harness only supports identity-subtree config patches.");
+    }
+    const currentIdentities = typeof companyConfig.identities === "object" && companyConfig.identities !== null
+      ? { ...companyConfig.identities as Record<string, unknown> }
+      : {};
+    if (input.value === null) {
+      delete currentIdentities[input.path[1]];
+    } else {
+      currentIdentities[input.path[1]] = structuredClone(input.value);
+    }
+    companyConfig = { ...companyConfig, identities: currentIdentities };
+  });
+  Object.assign(harness.ctx.config, { get: getConfig, patchSecretRefs });
   harness.seed({
     agents: [
       ...[
@@ -50,11 +63,11 @@ function harnessWithSetup() {
         "agent-other",
         "agent-cross-company",
         "agent-log-check",
-      ].map((id) => ({ id, companyId: COMPANY_A } as never)),
-      { id: "agent-in-other-company", companyId: COMPANY_B } as never,
+      ].map((id) => ({ id, name: id, companyId: COMPANY_A } as never)),
+      { id: "agent-in-other-company", name: "agent-in-other-company", companyId: COMPANY_B } as never,
     ],
   });
-  return harness;
+  return Object.assign(harness, { getCompanyConfig, getConfig, patchSecretRefs });
 }
 
 describe("Slack manifest-assisted app setup actions", () => {
@@ -64,7 +77,7 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-slack-1", label: "Sterling Hale" },
+      { agentId: "agent-slack-1", label: "Sterling Hale", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
@@ -72,9 +85,30 @@ describe("Slack manifest-assisted app setup actions", () => {
     expect(created.provider).toBe("slack");
     expect(created.createAppUrl).toBe("https://api.slack.com/apps?new_app=1");
     expect(created.createAppUrl).not.toContain("manifest_json");
+    expect(created.eventsRequestUrl).toBe(EVENTS_REQUEST_URL);
     const manifestBody = JSON.parse(created.manifest);
-    expect(manifestBody.settings.event_subscriptions).toBeUndefined();
-    expect(manifestBody.oauth_config.scopes.bot).toEqual(["chat:write", "channels:read", "groups:read", "reactions:write"]);
+    expect(manifestBody.features.app_home).toEqual({
+      messages_tab_enabled: true,
+      messages_tab_read_only_enabled: false,
+    });
+    expect(manifestBody.features.agent_view).toEqual({
+      agent_description: "Paperclip agent identity for Sterling Hale",
+    });
+    expect(manifestBody.features.assistant_view).toBeUndefined();
+    expect(manifestBody.settings.event_subscriptions).toEqual({
+      request_url: EVENTS_REQUEST_URL,
+      bot_events: ["app_home_opened", "app_mention", "message.im"],
+    });
+    expect(manifestBody.oauth_config.scopes.bot).toEqual([
+      "assistant:write",
+      "app_mentions:read",
+      "chat:write",
+      "channels:read",
+      "groups:read",
+      "im:history",
+      "reactions:write",
+      "users:read",
+    ]);
 
     const fetched = await harness.performAction<GetSlackAppManifestFlowResult>(
       "get-slack-app-manifest-flow",
@@ -91,8 +125,9 @@ describe("Slack manifest-assisted app setup actions", () => {
         teamId: "T0123ABCD",
         appId: "A0123ABCD",
         botUserId: "U0123ABCD",
-        defaultChannel: "C0123ABCD",
+        defaultChannel: "D0123ABCD",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     );
@@ -104,29 +139,68 @@ describe("Slack manifest-assisted app setup actions", () => {
       appId: "A0123ABCD",
       botUserId: "U0123ABCD",
       botTokenSecretId: FAKE_SECRET_ID,
-      defaultChannel: "C0123ABCD",
+      signingSecretId: FAKE_SIGNING_SECRET_ID,
+      defaultChannel: "D0123ABCD",
       status: "saved",
     });
 
     // Public identity config persisted (shareable fields only).
-    const settings = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    const settings = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: COMPANY_A });
     const entry = settings.identities.find((identity) => identity.agentId === "agent-slack-1");
     expect(entry?.provider === "slack" && entry.slack).toEqual({
       teamId: "T0123ABCD",
       appId: "A0123ABCD",
       botUserId: "U0123ABCD",
-      defaultChannel: "C0123ABCD",
+      defaultChannel: "D0123ABCD",
     });
     expect(entry?.credentialStatus).toBe("configured");
+    expect(entry?.slackSetup).toEqual({
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+      botTokenSecretId: FAKE_SECRET_ID,
+      signingSecretId: FAKE_SIGNING_SECRET_ID,
+    });
 
-    // Credential sidecar stores only the secret reference, never a resolved token.
-    const sidecar = JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"));
-    expect(sidecar.identities["agent-slack-1:slack"]).toEqual({
-      slackBotToken: { botTokenSecretId: FAKE_SECRET_ID },
+    const expectedIdentityConfig = {
+      label: "Sterling Hale",
+      teamId: "T0123ABCD",
+      appId: "A0123ABCD",
+      botUserId: "U0123ABCD",
+      defaultChannel: "D0123ABCD",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+      credentials: {
+        botToken: {
+          type: "secret_ref",
+          secretId: FAKE_SECRET_ID,
+          version: "latest",
+        },
+        signingSecret: {
+          type: "secret_ref",
+          secretId: FAKE_SIGNING_SECRET_ID,
+          version: "latest",
+        },
+      },
+    };
+    expect(harness.patchSecretRefs).toHaveBeenCalledOnce();
+    expect(harness.patchSecretRefs).toHaveBeenCalledWith({
+      companyId: COMPANY_A,
+      path: ["identities", "agent-slack-1"],
+      value: expectedIdentityConfig,
+    });
+    expect(harness.getCompanyConfig()).toEqual({
+      identities: {
+        "agent-preserved": PRESERVED_COMPANY_IDENTITY,
+        "agent-slack-1": expectedIdentityConfig,
+      },
     });
 
     // No secret-shaped value anywhere in the returned payloads.
-    const serializedPayloads = JSON.stringify({ created, fetched, saved, settings, sidecar });
+    const serializedPayloads = JSON.stringify({
+      created,
+      fetched,
+      saved,
+      settings,
+      companyConfig: harness.getCompanyConfig(),
+    });
     expect(serializedPayloads).not.toMatch(/xox[bp]-/);
     expect(serializedPayloads).not.toContain("resolved:");
 
@@ -138,13 +212,86 @@ describe("Slack manifest-assisted app setup actions", () => {
     )).rejects.toThrow(/expired|used|Unknown/);
   });
 
+  it("discovers workspace, app, and bot IDs through a temporary exact secret binding and always removes it", async () => {
+    const harness = harnessWithSetup();
+    const patchSecretRefs = vi.fn(async (_input: {
+      companyId?: string;
+      path: string[];
+      value: Record<string, unknown> | null;
+    }) => undefined);
+    const resolve = vi.fn(async (_ref: unknown, _options: unknown) => "xoxb-test-secret-value");
+    Object.assign(harness.ctx.config, { patchSecretRefs });
+    Object.assign(harness.ctx.secrets, { resolve });
+    const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/auth.test")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          team_id: "T0123ABCD",
+          user_id: "U0123ABCD",
+          bot_id: "B0123ABCD",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.endsWith("/bots.info")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          bot: { app_id: "A0123ABCD" },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      throw new Error(`Unexpected Slack API URL: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await plugin.definition.setup(harness.ctx);
+      const result = await harness.performAction<DiscoverSlackInstallMetadataResult>(
+        "discover-slack-install-metadata",
+        { botTokenSecretId: FAKE_SECRET_ID },
+        { companyId: COMPANY_A },
+      );
+
+      expect(result).toEqual({ teamId: "T0123ABCD", appId: "A0123ABCD", botUserId: "U0123ABCD" });
+      expect(JSON.stringify(result)).not.toContain("xoxb-");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1]?.[0]).toBe("https://slack.com/api/bots.info");
+      const botsInfoInit = fetchMock.mock.calls[1]?.[1] as RequestInit;
+      expect(botsInfoInit.headers).toEqual({
+        Authorization: "Bearer xoxb-test-secret-value",
+        "Content-Type": "application/x-www-form-urlencoded",
+      });
+      expect(String(botsInfoInit.body)).toBe("bot=B0123ABCD");
+      expect(patchSecretRefs).toHaveBeenCalledTimes(2);
+      const setupCall = patchSecretRefs.mock.calls[0]?.[0] as {
+        companyId: string;
+        path: string[];
+        value: { botToken: { type: string; secretId: string; version: string } };
+      };
+      expect(setupCall.companyId).toBe(COMPANY_A);
+      expect(setupCall.path).toEqual(["setup", "slack", "metadata", expect.stringMatching(/^[0-9a-f]{32}$/)]);
+      expect(setupCall.value).toEqual({
+        botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID, version: "latest" },
+      });
+      expect(resolve).toHaveBeenCalledWith(setupCall.value.botToken, {
+        companyId: COMPANY_A,
+        configPath: `${setupCall.path.join(".")}.botToken`,
+      });
+      expect(patchSecretRefs.mock.calls[1]?.[0]).toEqual({
+        companyId: COMPANY_A,
+        path: setupCall.path,
+        value: null,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("never persists anything when the flow is only created and never saved (cancellation)", async () => {
     const harness = harnessWithSetup();
     await plugin.definition.setup(harness.ctx);
 
     await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-cancelled", label: "Cancelled Bot" },
+      { agentId: "agent-cancelled", label: "Cancelled Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
@@ -165,6 +312,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     )).rejects.toThrow(/Unknown or expired/);
@@ -176,7 +324,7 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-expiring", label: "Expiring Bot" },
+      { agentId: "agent-expiring", label: "Expiring Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
@@ -200,6 +348,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     )).rejects.toThrow(/expired/);
@@ -211,7 +360,7 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-original", label: "Original Bot" },
+      { agentId: "agent-original", label: "Original Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
@@ -224,6 +373,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     );
@@ -242,6 +392,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A2",
         botUserId: "U2",
         botTokenSecretId: FAKE_SECRET_ID_2,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     )).rejects.toThrow(/unknown|expired/i);
@@ -250,7 +401,7 @@ describe("Slack manifest-assisted app setup actions", () => {
     // overwrite that other agent's identity.
     const createdOther = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-other", label: "Other Bot" },
+      { agentId: "agent-other", label: "Other Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
     await expect(harness.performAction<SaveSlackInstallMetadataResult>(
@@ -262,6 +413,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A3",
         botUserId: "U3",
         botTokenSecretId: FAKE_SECRET_ID_2,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     )).rejects.toThrow(/does not match/);
@@ -279,7 +431,7 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-cross-company", label: "Cross Company Bot" },
+      { agentId: "agent-cross-company", label: "Cross Company Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
@@ -298,6 +450,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_B },
     )).rejects.toThrow(/Unknown or expired/);
@@ -309,7 +462,7 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     await expect(harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-no-company", label: "No Company Bot" },
+      { agentId: "agent-no-company", label: "No Company Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
     )).rejects.toThrow(/companyId/);
   });
 
@@ -319,7 +472,7 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-log-check", label: "Log Check Bot" },
+      { agentId: "agent-log-check", label: "Log Check Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
     await harness.performAction<SaveSlackInstallMetadataResult>(
@@ -331,6 +484,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     );
@@ -358,7 +512,7 @@ describe("Slack manifest-assisted app setup actions", () => {
     // cross-company "does not belong" error.
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-slack-1", label: "Spoofed Bot", companyId: COMPANY_B },
+      { agentId: "agent-slack-1", label: "Spoofed Bot", eventsRequestUrl: EVENTS_REQUEST_URL, companyId: COMPANY_B },
       { companyId: COMPANY_A },
     );
     expect(created.agentId).toBe("agent-slack-1");
@@ -370,7 +524,7 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     await expect(harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-in-other-company", label: "Foreign Bot" },
+      { agentId: "agent-in-other-company", label: "Foreign Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     )).rejects.toThrow(/does not belong/);
   });
@@ -381,7 +535,7 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-slack-1", label: "Bad Secret Bot" },
+      { agentId: "agent-slack-1", label: "Bad Secret Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
@@ -394,6 +548,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: "not-a-uuid",
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     )).rejects.toThrow(/UUID/);
@@ -412,6 +567,50 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
+      },
+      { companyId: COMPANY_A },
+    );
+    expect(retried.status).toBe("saved");
+  });
+
+  it("rejects a non-UUID signingSecretId atomically, before any state mutation", async () => {
+    const harness = harnessWithSetup();
+    await plugin.definition.setup(harness.ctx);
+
+    const created = await harness.performAction<CreateSlackAppManifestResult>(
+      "create-slack-app-manifest",
+      { agentId: "agent-slack-1", label: "Bad Signing Secret Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
+      { companyId: COMPANY_A },
+    );
+
+    await expect(harness.performAction<SaveSlackInstallMetadataResult>(
+      "save-slack-install-metadata",
+      {
+        state: created.state,
+        agentId: "agent-slack-1",
+        teamId: "T1",
+        appId: "A1",
+        botUserId: "U1",
+        botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: "not-a-uuid",
+      },
+      { companyId: COMPANY_A },
+    )).rejects.toThrow(/signingSecretId.*UUID/);
+
+    const settings = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
+    expect(settings.identities.find((identity) => identity.agentId === "agent-slack-1")).toBeUndefined();
+
+    const retried = await harness.performAction<SaveSlackInstallMetadataResult>(
+      "save-slack-install-metadata",
+      {
+        state: created.state,
+        agentId: "agent-slack-1",
+        teamId: "T1",
+        appId: "A1",
+        botUserId: "U1",
+        botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     );
@@ -425,16 +624,17 @@ describe("Slack manifest-assisted app setup actions", () => {
     const longLabel = "A".repeat(200);
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-slack-1", label: longLabel },
+      { agentId: "agent-slack-1", label: longLabel, eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
     // The full label is retained in flow state...
     expect(created.label).toBe(longLabel);
     // ...but the manifest's Slack-facing display fields are truncated to
-    // Slack's documented limits (80 chars for name, 100 for description).
+    // their documented limits.
     const manifestBody = JSON.parse(created.manifest);
-    expect(manifestBody.display_information.name.length).toBeLessThanOrEqual(80);
+    expect(manifestBody.display_information.name.length).toBeLessThanOrEqual(35);
+    expect(manifestBody.features.bot_user.display_name.length).toBeLessThanOrEqual(80);
     expect(manifestBody.display_information.description.length).toBeLessThanOrEqual(100);
   });
 
@@ -444,7 +644,7 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-slack-1", label: "Bad Channel Bot" },
+      { agentId: "agent-slack-1", label: "Bad Channel Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
@@ -458,6 +658,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         botUserId: "U1",
         defaultChannel: "general",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     )).rejects.toThrow(/defaultChannel/);
@@ -474,13 +675,13 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-slack-1", label: "Moving Bot" },
+      { agentId: "agent-slack-1", label: "Moving Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
     // Simulate the agent moving to another company during the flow's TTL
     // window (membership was valid at create time, but not anymore).
-    harness.seed({ agents: [{ id: "agent-slack-1", companyId: COMPANY_B } as never] });
+    harness.seed({ agents: [{ id: "agent-slack-1", name: "agent-slack-1", companyId: COMPANY_B } as never] });
 
     await expect(harness.performAction<SaveSlackInstallMetadataResult>(
       "save-slack-install-metadata",
@@ -491,6 +692,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     )).rejects.toThrow(/does not belong/);
@@ -501,29 +703,39 @@ describe("Slack manifest-assisted app setup actions", () => {
     expect(settings.identities.find((identity) => identity.agentId === "agent-slack-1")).toBeUndefined();
   });
 
-  it("rolls back CONFIG_SCOPE and un-consumes the flow when the credential sidecar write fails, so the save is safely retryable", async () => {
+  it("rolls back only the selected CONFIG_SCOPE identity and un-consumes the flow when the atomic config patch fails", async () => {
     const harness = harnessWithSetup();
     await plugin.definition.setup(harness.ctx);
 
+    const previousSelectedIdentity = {
+      provider: "slack" as const,
+      id: "agent-slack-1:slack",
+      agentId: "agent-slack-1",
+      label: "Previous Slack identity",
+      slack: { teamId: "TOLD", appId: "AOLD", botUserId: "UOLD" },
+    };
+    const unrelatedIdentity = {
+      provider: "slack" as const,
+      id: "agent-other:slack",
+      agentId: "agent-other",
+      label: "Unrelated Slack identity",
+      slack: { teamId: "TOTHER", appId: "AOTHER", botUserId: "UOTHER" },
+    };
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: BOT_IDENTITY_SETTINGS_VERSION,
+      identities: {
+        [previousSelectedIdentity.id]: previousSelectedIdentity,
+        [unrelatedIdentity.id]: unrelatedIdentity,
+      },
+    });
+
     const created = await harness.performAction<CreateSlackAppManifestResult>(
       "create-slack-app-manifest",
-      { agentId: "agent-slack-1", label: "Sidecar Failure Bot" },
+      { agentId: "agent-slack-1", label: "Config Patch Failure Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
       { companyId: COMPANY_A },
     );
 
-    // Force the credential sidecar write to fail by pointing its path at a
-    // location that cannot be written to (a directory, not a file). Use a
-    // directory *inside* the already-tracked `credentialSidecarDir` (removed
-    // wholesale by `afterEach`), not `credentialSidecarDir` itself: writing
-    // fails when `rename(tempPath, path)` targets a directory, but the
-    // `${path}.tmp-*` sibling temp file that `writeCredentialSidecar` creates
-    // first still succeeds and would otherwise leak next to the tracked temp
-    // dir (a `credentialSidecarDir` sibling is outside what `afterEach`
-    // removes).
-    const originalPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
-    const unwritableTargetDir = join(credentialSidecarDir!, "unwritable-target");
-    await mkdir(unwritableTargetDir, { recursive: true });
-    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = unwritableTargetDir;
+    harness.patchSecretRefs.mockRejectedValueOnce(new Error("atomic config patch failed"));
 
     await expect(harness.performAction<SaveSlackInstallMetadataResult>(
       "save-slack-install-metadata",
@@ -534,18 +746,25 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     )).rejects.toThrow();
 
-    // CONFIG_SCOPE must have been rolled back: no orphaned identity metadata
-    // with no usable credential.
-    const settingsAfterFailure = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
-    expect(settingsAfterFailure.identities.find((identity) => identity.agentId === "agent-slack-1")).toBeUndefined();
+    expect(harness.getState(CONFIG_SCOPE)).toEqual({
+      version: BOT_IDENTITY_SETTINGS_VERSION,
+      identities: {
+        [previousSelectedIdentity.id]: previousSelectedIdentity,
+        [unrelatedIdentity.id]: unrelatedIdentity,
+      },
+    });
+    expect(harness.getCompanyConfig()).toEqual({
+      identities: { "agent-preserved": PRESERVED_COMPANY_IDENTITY },
+    });
 
-    // Restore a writable sidecar path and retry the exact same state: it
-    // must succeed, proving the flow was un-consumed by the rollback.
-    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = originalPath;
+    // Retry the exact same state after the one-shot host failure. Success
+    // proves the flow was reopened, and the unrelated settings identity must
+    // remain untouched.
     const retried = await harness.performAction<SaveSlackInstallMetadataResult>(
       "save-slack-install-metadata",
       {
@@ -555,9 +774,15 @@ describe("Slack manifest-assisted app setup actions", () => {
         appId: "A1",
         botUserId: "U1",
         botTokenSecretId: FAKE_SECRET_ID,
+        signingSecretId: FAKE_SIGNING_SECRET_ID,
       },
       { companyId: COMPANY_A },
     );
     expect(retried.status).toBe("saved");
+    const settingsAfterRetry = harness.getState(CONFIG_SCOPE) as {
+      identities: Record<string, { label: string }>;
+    };
+    expect(settingsAfterRetry.identities["agent-slack-1:slack"].label).toBe("Config Patch Failure Bot");
+    expect(settingsAfterRetry.identities["agent-other:slack"]).toEqual(unrelatedIdentity);
   });
 });

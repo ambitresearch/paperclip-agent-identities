@@ -1,16 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, writeFile, stat } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { CREDENTIAL_SIDECAR_PATH_ENV } from "../src/credential-sidecar.js";
-import { upsertCredentialSidecarIdentity } from "../src/credential-sidecar.js";
+import { describe, expect, it, vi } from "vitest";
 import {
+  discoverSlackAppId,
   resolveSlackBotToken,
   resolveSlackSigningSecret,
   assertSlackWorkspaceMatch,
 } from "../src/providers/slack/credentials.js";
 import type { ResolvedAgentIdentity } from "../src/core/agent-identity.js";
-import type { SlackAgentIdentity } from "../src/providers/slack/config.js";
+import type { SlackAgentIdentity, SlackSecretRef } from "../src/providers/slack/config.js";
+
+const COMPANY_ID = "00000000-0000-4000-8000-0000000000c1";
+const BOT_TOKEN_REF = {
+  type: "secret_ref",
+  secretId: "00000000-0000-4000-8000-000000000010",
+  version: "latest",
+} as const satisfies SlackSecretRef;
+const SIGNING_SECRET_REF = {
+  type: "secret_ref",
+  secretId: "00000000-0000-4000-8000-000000000011",
+  version: "latest",
+} as const satisfies SlackSecretRef;
 
 function fakeIdentity(agentId = "agent-1"): ResolvedAgentIdentity<SlackAgentIdentity> {
   return {
@@ -24,257 +32,211 @@ function fakeIdentity(agentId = "agent-1"): ResolvedAgentIdentity<SlackAgentIden
   };
 }
 
-// Stub for the injectable verification step: a fake `auth.test` that reports
-// the resolved token really does belong to the expected team, without any
-// live network call.
+function slackConfig(agentId = "agent-1"): Record<string, unknown> {
+  return {
+    identities: {
+      [agentId]: {
+        label: "Bot",
+        teamId: "T123",
+        appId: "A123",
+        botUserId: "U123",
+        credentials: {
+          botToken: BOT_TOKEN_REF,
+          signingSecret: SIGNING_SECRET_REF,
+        },
+      },
+    },
+  };
+}
+
+describe("discoverSlackAppId", () => {
+  it("explains how to recover when the installed token is missing users:read", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ ok: false, error: "missing_scope" }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+
+    await expect(discoverSlackAppId("xoxb-test", "B123", fetchImpl as never)).rejects.toThrow(
+      /latest generated manifest.*reinstall.*users:read/i,
+    );
+  });
+});
+
 const verifyMatchingWorkspace = async (_token: string) => ({ teamId: "T123", userId: "U123", botId: "B123" });
 const verifyWrongWorkspace = async (_token: string) => ({ teamId: "T999", userId: "U123", botId: "B123" });
-// Same-workspace user token: team_id matches but this is a human OAuth token
-// (no bot_id) whose user_id also happens to differ from the bot identity.
-const verifyUserTokenNoBotId = async (_token: string) => ({ teamId: "T123", userId: "U999", botId: undefined });
-// Another bot's token: correct workspace and has a bot_id, but the user_id
-// belongs to a different bot than the configured identity's botUserId.
+const verifyUserTokenNoBotId = async (_token: string) => ({ teamId: "T123", userId: "U123", botId: undefined });
 const verifyWrongBotUser = async (_token: string) => ({ teamId: "T123", userId: "U999", botId: "B999" });
 
 describe("resolveSlackBotToken", () => {
-  const originalPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
-  let directory: string;
-  let sidecarPath: string;
+  it("resolves only the exact company-scoped bot-token object ref and registers the token for redaction", async () => {
+    const resolveSecret = vi.fn(async (ref: SlackSecretRef) => `resolved:${ref.secretId}`);
 
-  beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "slack-credential-sidecar-"));
-    sidecarPath = join(directory, "credentials.json");
-    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
-  });
-
-  afterEach(async () => {
-    if (originalPath === undefined) delete process.env[CREDENTIAL_SIDECAR_PATH_ENV];
-    else process.env[CREDENTIAL_SIDECAR_PATH_ENV] = originalPath;
-    await rm(directory, { recursive: true, force: true });
-  });
-
-  it("resolves the bot token secret and registers it for redaction, without resolving the signing secret", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: {
-        botTokenSecretId: "00000000-0000-4000-8000-000000000010",
-        signingSecretId: "00000000-0000-4000-8000-000000000011",
-      },
-    });
-
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
-    const result = await resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyMatchingWorkspace);
-
-    // Outbound/tool credential resolution only needs the bot token — the
-    // signing secret is deferred to inbound Events API verification (see
-    // resolveSlackSigningSecret below) and must NOT be resolved here.
-    expect(result.token).toBe("resolved:00000000-0000-4000-8000-000000000010");
-    expect(result.secrets).toEqual(["resolved:00000000-0000-4000-8000-000000000010"]);
-  });
-
-  it("resolves without a signing secret when none is configured", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: {
-        botTokenSecretId: "00000000-0000-4000-8000-000000000012",
-      },
-    });
-
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
-    const result = await resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyMatchingWorkspace);
-
-    expect(result.token).toBe("resolved:00000000-0000-4000-8000-000000000012");
-    expect(result.secrets).toEqual(["resolved:00000000-0000-4000-8000-000000000012"]);
-  });
-
-  it("writes the sidecar file atomically with 0600 permissions", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000013" },
-    });
-
-    const stats = await stat(sidecarPath);
-    expect(stats.mode & 0o777).toBe(0o600);
-  });
-
-  it("fails closed with no operator-identity fallback when the sidecar file is missing entirely", async () => {
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
-    await expect(
-      resolveSlackBotToken(fakeIdentity("missing-agent"), resolveSecret, verifyMatchingWorkspace)
-    ).rejects.toThrow(/Unable to read agent identity credential sidecar/);
-  });
-
-  it("fails closed with no operator-identity fallback when the sidecar exists but has no entry for this agent", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000099" },
-    });
-
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
-    await expect(
-      resolveSlackBotToken(fakeIdentity("other-agent"), resolveSecret, verifyMatchingWorkspace)
-    ).rejects.toThrow(/Missing agent identity credential sidecar entry/);
-  });
-
-  it("fails closed on a malformed sidecar entry (fails schema validation)", async () => {
-    await writeFile(
-      sidecarPath,
-      JSON.stringify({
-        version: 1,
-        identities: { "agent-1:slack": { slackBotToken: {} } },
-      }),
-      { encoding: "utf8", mode: 0o600 }
+    const result = await resolveSlackBotToken(
+      fakeIdentity(),
+      slackConfig(),
+      COMPANY_ID,
+      resolveSecret,
+      verifyMatchingWorkspace,
     );
 
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
-    await expect(
-      resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyMatchingWorkspace)
-    ).rejects.toThrow();
+    expect(resolveSecret).toHaveBeenCalledOnce();
+    expect(resolveSecret).toHaveBeenCalledWith(BOT_TOKEN_REF, {
+      companyId: COMPANY_ID,
+      configPath: "identities.agent-1.credentials.botToken",
+    });
+    expect(result).toEqual({
+      token: `resolved:${BOT_TOKEN_REF.secretId}`,
+      secrets: [`resolved:${BOT_TOKEN_REF.secretId}`],
+    });
   });
 
-  it("propagates a revoked/failed secret resolution without silently falling back", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000014" },
-    });
-
-    const resolveSecret = async () => {
-      throw new Error("secret revoked");
-    };
+  it("fails closed before secret resolution without a host-authorized company", async () => {
+    const resolveSecret = vi.fn(async () => "unused");
 
     await expect(
-      resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyMatchingWorkspace)
+      resolveSlackBotToken(fakeIdentity(), slackConfig(), "", resolveSecret, verifyMatchingWorkspace),
+    ).rejects.toThrow(/host-authorized companyId/);
+    expect(resolveSecret).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the company-scoped config has no matching identity", async () => {
+    const resolveSecret = vi.fn(async () => "unused");
+
+    await expect(
+      resolveSlackBotToken(fakeIdentity("other-agent"), slackConfig(), COMPANY_ID, resolveSecret, verifyMatchingWorkspace),
+    ).rejects.toThrow(/botToken secret reference/);
+    expect(resolveSecret).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bare UUID instead of resolving it outside a bound config path", async () => {
+    const config = slackConfig();
+    const identity = (config.identities as Record<string, Record<string, unknown>>)["agent-1"];
+    identity.credentials = {
+      botToken: BOT_TOKEN_REF.secretId,
+      signingSecret: SIGNING_SECRET_REF,
+    };
+    const resolveSecret = vi.fn(async () => "unused");
+
+    await expect(
+      resolveSlackBotToken(fakeIdentity(), config, COMPANY_ID, resolveSecret, verifyMatchingWorkspace),
+    ).rejects.toThrow(/botToken secret reference/);
+    expect(resolveSecret).not.toHaveBeenCalled();
+  });
+
+  it("propagates a revoked secret resolution without a fallback", async () => {
+    const resolveSecret = vi.fn(async () => {
+      throw new Error("secret revoked");
+    });
+
+    await expect(
+      resolveSlackBotToken(fakeIdentity(), slackConfig(), COMPANY_ID, resolveSecret, verifyMatchingWorkspace),
     ).rejects.toThrow(/secret revoked/);
   });
 
-  it("rejects a resolved bot token whose real workspace does not match the configured identity (fail closed, no fallback)", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000016" },
-    });
+  it("rejects a token for the wrong workspace without leaking the resolved token", async () => {
+    const token = "resolved:fake-bot-token-zzz";
+    const resolveSecret = vi.fn(async () => token);
 
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
-
-    await expect(
-      resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyWrongWorkspace)
-    ).rejects.toThrow(/workspace mismatch/i);
-  });
-
-  it("does not leak the resolved token value in a thrown error message (post-resolution workspace-mismatch failure)", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000015" },
-    });
-
-    const fakeResolvedToken = "resolved:fake-bot-token-zzz";
-    const resolveSecret = async () => fakeResolvedToken;
-    // Simulate a resolved token that actually belongs to a different
-    // workspace than the one configured for this agent's identity — this
-    // failure happens strictly AFTER `resolveSecret` returns the token, so
-    // this test actually exercises the post-resolution code path.
     let thrown: unknown;
     try {
-      await resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyWrongWorkspace);
+      await resolveSlackBotToken(fakeIdentity(), slackConfig(), COMPANY_ID, resolveSecret, verifyWrongWorkspace);
     } catch (error) {
       thrown = error;
     }
 
     expect(thrown).toBeInstanceOf(Error);
     const message = thrown instanceof Error ? thrown.message : String(thrown);
-    expect(message).not.toContain(fakeResolvedToken);
     expect(message).toMatch(/workspace mismatch/i);
+    expect(message).not.toContain(token);
   });
 
-  it("rejects a same-workspace user OAuth token that lacks bot_id, even if user_id happened to match (T2)", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000021" },
-    });
+  it("rejects a same-workspace human OAuth token with no bot_id", async () => {
+    const resolveSecret = vi.fn(async () => "resolved-token");
 
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
     await expect(
-      resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyUserTokenNoBotId)
+      resolveSlackBotToken(fakeIdentity(), slackConfig(), COMPANY_ID, resolveSecret, verifyUserTokenNoBotId),
     ).rejects.toThrow(/bot_id/);
   });
 
-  it("rejects another bot's token whose user_id does not match this identity's botUserId (T2)", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000022" },
-    });
+  it("rejects another bot whose user_id does not match botUserId", async () => {
+    const resolveSecret = vi.fn(async () => "resolved-token");
 
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
     await expect(
-      resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyWrongBotUser)
+      resolveSlackBotToken(fakeIdentity(), slackConfig(), COMPANY_ID, resolveSecret, verifyWrongBotUser),
     ).rejects.toThrow(/botUserId/);
   });
 
-  it("does not leak the resolved token value when the verification call itself throws", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000020" },
-    });
-
-    const fakeResolvedToken = "resolved:another-fake-token-zzz";
-    const resolveSecret = async () => fakeResolvedToken;
-    const verifyThrows = async (_token: string): ReturnType<typeof verifyMatchingWorkspace> => {
+  it("does not leak the resolved token when auth verification throws", async () => {
+    const token = "resolved:another-fake-token-zzz";
+    const resolveSecret = vi.fn(async () => token);
+    const verifyThrows = async () => {
       throw new Error("network error while verifying");
     };
 
     let thrown: unknown;
     try {
-      await resolveSlackBotToken(fakeIdentity(), resolveSecret, verifyThrows);
+      await resolveSlackBotToken(fakeIdentity(), slackConfig(), COMPANY_ID, resolveSecret, verifyThrows);
     } catch (error) {
       thrown = error;
     }
 
     expect(thrown).toBeInstanceOf(Error);
-    const message = thrown instanceof Error ? thrown.message : String(thrown);
-    expect(message).not.toContain(fakeResolvedToken);
+    expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain(token);
   });
 });
 
 describe("resolveSlackSigningSecret", () => {
-  const originalPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
-  let directory: string;
-  let sidecarPath: string;
+  it("resolves the distinct signing-secret object ref at its exact company-scoped path", async () => {
+    const resolveSecret = vi.fn(async (ref: SlackSecretRef) => `resolved:${ref.secretId}`);
 
-  beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "slack-credential-sidecar-"));
-    sidecarPath = join(directory, "credentials.json");
-    process.env[CREDENTIAL_SIDECAR_PATH_ENV] = sidecarPath;
-  });
-
-  afterEach(async () => {
-    if (originalPath === undefined) delete process.env[CREDENTIAL_SIDECAR_PATH_ENV];
-    else process.env[CREDENTIAL_SIDECAR_PATH_ENV] = originalPath;
-    await rm(directory, { recursive: true, force: true });
-  });
-
-  it("resolves the signing secret separately, for future inbound Events API verification", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: {
-        botTokenSecretId: "00000000-0000-4000-8000-000000000017",
-        signingSecretId: "00000000-0000-4000-8000-000000000018",
-      },
-    });
-
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
-    const signingSecret = await resolveSlackSigningSecret(fakeIdentity(), resolveSecret);
-
-    expect(signingSecret).toBe("resolved:00000000-0000-4000-8000-000000000018");
-  });
-
-  it("fails closed when no signing secret is configured (no fallback)", async () => {
-    await upsertCredentialSidecarIdentity("agent-1", "slack", {
-      slackBotToken: { botTokenSecretId: "00000000-0000-4000-8000-000000000019" },
-    });
-
-    const resolveSecret = async (ref: string) => `resolved:${ref}`;
-    await expect(resolveSlackSigningSecret(fakeIdentity(), resolveSecret)).rejects.toThrow(
-      /signing secret/i
+    const signingSecret = await resolveSlackSigningSecret(
+      fakeIdentity(),
+      slackConfig(),
+      COMPANY_ID,
+      resolveSecret,
     );
+
+    expect(signingSecret).toBe(`resolved:${SIGNING_SECRET_REF.secretId}`);
+    expect(resolveSecret).toHaveBeenCalledWith(SIGNING_SECRET_REF, {
+      companyId: COMPANY_ID,
+      configPath: "identities.agent-1.credentials.signingSecret",
+    });
+  });
+
+  it("fails closed when the signing-secret binding is absent", async () => {
+    const config = slackConfig();
+    const identity = (config.identities as Record<string, Record<string, unknown>>)["agent-1"];
+    identity.credentials = { botToken: BOT_TOKEN_REF };
+    const resolveSecret = vi.fn(async () => "unused");
+
+    await expect(
+      resolveSlackSigningSecret(fakeIdentity(), config, COMPANY_ID, resolveSecret),
+    ).rejects.toThrow(/signingSecret secret reference/);
+    expect(resolveSecret).not.toHaveBeenCalled();
+  });
+
+  it("rejects a bare UUID instead of resolving it outside a bound config path", async () => {
+    const config = slackConfig();
+    const identity = (config.identities as Record<string, Record<string, unknown>>)["agent-1"];
+    identity.credentials = {
+      botToken: BOT_TOKEN_REF,
+      signingSecret: SIGNING_SECRET_REF.secretId,
+    };
+    const resolveSecret = vi.fn(async () => "unused");
+
+    await expect(
+      resolveSlackSigningSecret(fakeIdentity(), config, COMPANY_ID, resolveSecret),
+    ).rejects.toThrow(/signingSecret secret reference/);
+    expect(resolveSecret).not.toHaveBeenCalled();
   });
 });
 
 describe("assertSlackWorkspaceMatch", () => {
-  it("passes when the identity's teamId matches the expected teamId", () => {
+  it("passes when the identity team matches", () => {
     expect(() => assertSlackWorkspaceMatch(fakeIdentity().identity, "T123")).not.toThrow();
   });
 
-  it("fails closed on a wrong-workspace teamId mismatch", () => {
-    expect(() => assertSlackWorkspaceMatch(fakeIdentity().identity, "T999")).toThrow(
-      /workspace mismatch/i
-    );
+  it("fails closed on a workspace mismatch", () => {
+    expect(() => assertSlackWorkspaceMatch(fakeIdentity().identity, "T999")).toThrow(/workspace mismatch/i);
   });
 });

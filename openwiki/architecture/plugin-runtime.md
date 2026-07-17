@@ -29,6 +29,8 @@ Important capabilities include:
 - `instance.settings.register` and `ui.dashboardWidget.register` for the UI slots
 - `agent.tools.register` for the GitHub tools
 - `agents.read` for populating the settings-page agent dropdown
+- `agent.sessions.create`, `agent.sessions.send`, and `agent.sessions.close` for the Slack inbound
+  message reply lifecycle
 - `http.outbound` for GitHub API and host REST calls
 - `secrets.read-ref` for Paperclip secret resolution
 - `activity.log.write` for PR/push audit events
@@ -83,6 +85,19 @@ This is scaffold-like behavior but is covered by `/tests/plugin.spec.ts`.
 - for **every registered provider, enabled or not** (`registry.all()`), calls the provider's optional `contributeActions(ctx)` hook. This is how the GitHub provider registers its GitHub App manifest actions (`create-github-app-manifest`, `get-github-app-manifest-flow`, `convert-github-app-manifest`) without `/src/worker.ts` importing GitHub-specific action code directly, and it's also why a "coming-soon" provider with no tool surface yet (e.g. Slack) can still ship setup/bootstrap actions ahead of `tools` landing — `contributeActions` is intentionally not gated on `enabled()`.
 
 Concretely, GitHub's tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`) live in `/src/providers/github/tools/*.ts` and are exposed through `githubProvider.tools` in `/src/providers/github/index.ts` — the worker loop is provider-agnostic and would pick up a new provider's tools/actions the same way once it's added to the registry.
+
+### Provider webhooks and Slack sessions
+
+The manifest declares provider webhook endpoints from `registry.webhooks()`, and the worker routes
+each delivery to the matching provider handler. Slack's `slack-events` handler verifies the request,
+deduplicates it, and routes it by app ID plus team ID. It then uses the SDK's plugin session methods
+to create a short-lived conversation, send a bounded event prompt, collect response chunks, and
+close the session after a terminal event.
+
+The agent returns plain text and does not call Slack tools for this path. The provider callback posts
+that text through `createProviderTool(slack_bot_post_message)`, preserving the standard validation,
+identity, resource, credential, perform, and redaction pipeline. This keeps the integration inside
+the plugin SDK boundary and requires no Paperclip core changes.
 
 ## Config and state sources
 

@@ -1,2 +1,5 @@
 allowBuilds:
   esbuild: true
+
+patchedDependencies:
+  '@paperclipai/plugin-sdk@2026.707.0': patches/@paperclipai__plugin-sdk@2026.707.0.patch

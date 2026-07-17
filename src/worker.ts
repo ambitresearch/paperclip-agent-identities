@@ -22,6 +22,7 @@ import type { ResourceReference } from "./core/resource-reference.js";
 import { createProviderTool, type ProviderToolPipelineDeps } from "./core/tool-pipeline.js";
 import { redactSecrets } from "./lib/redaction.js";
 import { createProviderRegistry } from "./providers/index.js";
+import { readSlackSecretRef, slackIdentityConfigPath } from "./providers/slack/config.js";
 import {
   deleteCredentialSidecarIdentity,
   readCredentialSidecarIfExists,
@@ -182,7 +183,7 @@ const plugin = definePlugin({
       return (await buildSettingsData(ctx, nextState)).identities.find((entry) => entry.id === identity.id) ?? identity;
     });
 
-    ctx.actions.register("delete-bot-identity-config", async (params) => {
+    ctx.actions.register("delete-bot-identity-config", async (params, context) => {
       const input = params as DeleteBotIdentityConfigInput;
       const agentId = typeof input.agentId === "string" ? input.agentId.trim() : "";
       const provider = normalizeProviderInput(input.provider);
@@ -190,12 +191,52 @@ const plugin = definePlugin({
         throw new Error("agentId is required");
       }
       const identityKey = getIdentityKey(agentId, provider);
-
       const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
       const { [identityKey]: _removed, ...identities } = previousState.identities;
       const nextState: AgentIdentitySettingsState = { version: BOT_IDENTITY_SETTINGS_VERSION, identities };
-      await ctx.state.set(CONFIG_SCOPE, nextState);
-      await deleteCredentialSidecarIdentity(agentId, provider);
+      let slackConfigRollback: { companyId: string; identity: Record<string, unknown> } | undefined;
+
+      if (provider === "slack") {
+        const companyId = typeof context.companyId === "string" ? context.companyId.trim() : "";
+        if (!companyId) throw new Error("Deleting a Slack identity requires a host-authorized companyId.");
+        const companyAgents = await listCompanyAgentOptions(ctx, companyId);
+        if (!companyAgents.some((agent) => agent.id === agentId)) {
+          throw new Error("agentId does not belong to the host-authorized company.");
+        }
+        const companyConfig = await ctx.config.get(companyId);
+        const existingIdentity = readInstanceIdentity(companyConfig, agentId);
+        if (isRecord(existingIdentity)) {
+          slackConfigRollback = { companyId, identity: existingIdentity };
+        }
+        await ctx.config.patchSecretRefs({
+          companyId,
+          path: slackIdentityConfigPath(agentId),
+          value: null,
+        });
+      }
+
+      try {
+        await ctx.state.set(CONFIG_SCOPE, nextState);
+      } catch (error) {
+        if (slackConfigRollback) {
+          try {
+            await ctx.config.patchSecretRefs({
+              companyId: slackConfigRollback.companyId,
+              path: slackIdentityConfigPath(agentId),
+              value: slackConfigRollback.identity,
+            });
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              "Slack identity deletion failed and its company config could not be restored.",
+            );
+          }
+        }
+        throw error;
+      }
+      if (provider !== "slack") {
+        await deleteCredentialSidecarIdentity(agentId, provider);
+      }
       ctx.logger.info("Agent identity config deleted", { agentId, provider });
       return await buildSettingsData(ctx, nextState);
     });
@@ -235,7 +276,7 @@ const plugin = definePlugin({
       );
     }
 
-    await matched.provider.handleWebhook(input, ctx);
+    return matched.provider.handleWebhook(input, ctx);
   }
 });
 
@@ -247,7 +288,7 @@ async function resolveIdentityForProvider<TIdentity>(
   ctx: PluginContext,
   runCtx: ToolRunContext,
 ): Promise<ResolvedAgentIdentity<TIdentity>> {
-  const instanceConfig = await ctx.config.get();
+  const instanceConfig = await ctx.config.get(runCtx.companyId);
   const validated = provider.validateConfig(readInstanceIdentity(instanceConfig, runCtx.agentId));
   if (typeof validated !== "string") {
     return { agentId: runCtx.agentId, identity: validated };
@@ -273,6 +314,7 @@ function readInstanceIdentity(config: unknown, agentId: string): unknown {
 
 async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySettingsState, companyId = ""): Promise<BotIdentitySettingsData> {
   const companyName = companyId ? await resolveCompanyName(ctx, companyId) : "";
+  const companyConfig = companyId ? await ctx.config.get(companyId) : {};
   const credentialSidecarPath = await resolveCredentialSidecarPath();
   let sidecar: GitHubBotIdentityCredentialSidecar | null = null;
   let credentialSidecarError: string | undefined;
@@ -291,12 +333,20 @@ async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySetting
     .filter((identity) => !companyAgentIds || companyAgentIds.has(identity.agentId))
     .map((identity) => {
       const credential = sidecar?.identities[identity.id];
+      const slackCredentialConfigured = identity.provider === "slack" && hasSlackCredentialRefs(
+        companyConfig,
+        identity.agentId,
+      );
+      const slackSetup = identity.provider === "slack"
+        ? readSlackSetupProjection(companyConfig, identity.agentId)
+        : undefined;
       return {
         ...identity,
         credential,
-        credentialStatus: credential
+        ...(slackSetup ? { slackSetup } : {}),
+        credentialStatus: slackCredentialConfigured || credential
           ? "configured"
-          : credentialSidecarError
+          : identity.provider !== "slack" && credentialSidecarError
             ? "sidecar-unavailable"
             : "missing",
       } satisfies BotIdentitySettingsEntry;
@@ -311,6 +361,43 @@ async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySetting
     credentialSidecarPath,
     ...(credentialSidecarError ? { credentialSidecarError } : {}),
   };
+}
+
+function readSlackSetupProjection(
+  config: Record<string, unknown>,
+  agentId: string,
+): BotIdentitySettingsEntry["slackSetup"] | undefined {
+  const identities = isRecord(config.identities) ? config.identities : {};
+  const identity = isRecord(identities[agentId]) ? identities[agentId] : {};
+  const eventsRequestUrl = readString(identity.eventsRequestUrl);
+  let botTokenSecretId = "";
+  let signingSecretId = "";
+  try {
+    botTokenSecretId = readSlackSecretRef(config, agentId, "botToken").secretId;
+  } catch {
+    // Keep the safe projection partial when one reference is missing.
+  }
+  try {
+    signingSecretId = readSlackSecretRef(config, agentId, "signingSecret").secretId;
+  } catch {
+    // Keep the safe projection partial when one reference is missing.
+  }
+  if (!eventsRequestUrl && !botTokenSecretId && !signingSecretId) return undefined;
+  return {
+    ...(eventsRequestUrl ? { eventsRequestUrl } : {}),
+    ...(botTokenSecretId ? { botTokenSecretId } : {}),
+    ...(signingSecretId ? { signingSecretId } : {}),
+  };
+}
+
+function hasSlackCredentialRefs(config: Record<string, unknown>, agentId: string): boolean {
+  try {
+    readSlackSecretRef(config, agentId, "botToken");
+    readSlackSecretRef(config, agentId, "signingSecret");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function resolveCompanyName(ctx: PluginContext, companyId: string): Promise<string> {

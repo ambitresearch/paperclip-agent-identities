@@ -86,8 +86,16 @@ export type BotIdentityCredentialConfig = {
 
 export type BotIdentitySettingsState = AgentIdentitySettingsState;
 
+export type BotIdentitySlackSetup = {
+  eventsRequestUrl?: string;
+  botTokenSecretId?: string;
+  signingSecretId?: string;
+};
+
 export type BotIdentitySettingsEntry = BotIdentityConfig & {
   credential?: BotIdentityCredentialConfig;
+  /** Safe Slack setup projection. Contains secret UUID references, never secret values. */
+  slackSetup?: BotIdentitySlackSetup;
   credentialStatus: "configured" | "missing" | "sidecar-unavailable";
 };
 
@@ -188,6 +196,7 @@ export type SlackAppManifestFlowState = {
   createdAt: string;
   expiresAt: string;
   label: string;
+  eventsRequestUrl: string;
   consumed?: boolean;
 };
 
@@ -195,7 +204,7 @@ export type CreateSlackAppManifestInput = {
   agentId: string;
   provider?: IdentityProviderId;
   label: string;
-  workerHost?: string;
+  eventsRequestUrl: string;
 };
 
 export type CreateSlackAppManifestResult = {
@@ -207,6 +216,7 @@ export type CreateSlackAppManifestResult = {
   createdAt: string;
   expiresAt: string;
   label: string;
+  eventsRequestUrl: string;
 };
 
 export type GetSlackAppManifestFlowInput = {
@@ -214,6 +224,16 @@ export type GetSlackAppManifestFlowInput = {
 };
 
 export type GetSlackAppManifestFlowResult = CreateSlackAppManifestResult;
+
+export type DiscoverSlackInstallMetadataInput = {
+  botTokenSecretId: string;
+};
+
+export type DiscoverSlackInstallMetadataResult = {
+  teamId: string;
+  botUserId: string;
+  appId: string;
+};
 
 export type SaveSlackInstallMetadataInput = {
   state: string;
@@ -223,6 +243,7 @@ export type SaveSlackInstallMetadataInput = {
   botUserId: string;
   defaultChannel?: string;
   botTokenSecretId: string;
+  signingSecretId: string;
 };
 
 export type SaveSlackInstallMetadataResult = {
@@ -232,6 +253,7 @@ export type SaveSlackInstallMetadataResult = {
   appId: string;
   botUserId: string;
   botTokenSecretId: string;
+  signingSecretId: string;
   defaultChannel?: string;
   status: "saved";
 };

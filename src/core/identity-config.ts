@@ -15,9 +15,9 @@ export interface ExampleIdentityFields {
   readonly demoTokenSecretId: string;
 }
 
-// Shareable Slack install metadata only — never a credential. See
-// openwiki/domain/slack-provider-mvp.md §1: bot token / signing secret live
-// exclusively in the credential sidecar, never in this persisted config shape.
+// Shareable Slack install metadata only, never a credential. Bot token and
+// signing-secret references live in company-scoped host config, while this
+// settings projection contains only non-secret identity metadata.
 export interface SlackIdentityFields {
   readonly teamId: string;
   readonly appId: string;

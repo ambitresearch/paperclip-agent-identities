@@ -1,9 +1,21 @@
 import type { CredentialResolverInput, ResolvedCredential } from "../../core/provider-contract.js";
 import type { ResolvedAgentIdentity } from "../../core/agent-identity.js";
-import { readSidecarIdentityForProvider, resolveCredentialSidecarPath, type ResolveSecret } from "../../credential-sidecar.js";
-import type { SlackAgentIdentity } from "./config.js";
+import {
+  readSlackSecretRef,
+  slackCredentialConfigPath,
+  type SlackAgentIdentity,
+  type SlackSecretRef,
+} from "./config.js";
 
-const SLACK_PROVIDER_ID = "slack" as const;
+export interface SlackSecretResolveOptions {
+  readonly companyId: string;
+  readonly configPath: string;
+}
+
+export type ResolveSlackSecret = (
+  secretRef: SlackSecretRef,
+  options: SlackSecretResolveOptions,
+) => Promise<string>;
 
 export interface ResolvedSlackBotToken {
   readonly token: string;
@@ -24,6 +36,39 @@ export interface VerifiedSlackTokenIdentity {
 }
 
 export type VerifySlackToken = (token: string) => Promise<VerifiedSlackTokenIdentity>;
+
+export async function discoverSlackAppId(
+  token: string,
+  botId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  const response = await fetchImpl("https://slack.com/api/bots.info", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams({ bot: botId }),
+  });
+
+  const body = await response.json().catch(() => ({})) as {
+    ok?: unknown;
+    bot?: { app_id?: unknown };
+    error?: unknown;
+  };
+  const appId = body.bot?.app_id;
+  if (!response.ok || body.ok !== true || typeof appId !== "string" || !appId.trim()) {
+    const reason = typeof body.error === "string" ? body.error : `HTTP ${response.status}`;
+    if (reason === "missing_scope") {
+      throw new Error(
+        "Slack App ID discovery failed: missing_scope. Apply the latest generated manifest, reinstall the app to grant users:read, then retry.",
+      );
+    }
+    throw new Error(`Slack App ID discovery failed: ${reason}`);
+  }
+
+  return appId.trim();
+}
 
 /**
  * Verifies a resolved Slack bot token against Slack's own `auth.test`
@@ -74,8 +119,8 @@ export async function verifySlackToken(
 }
 
 /**
- * Resolves the Slack bot token for an agent's Slack identity from the
- * credential sidecar, then verifies the resolved token's *actual* workspace
+ * Resolves the Slack bot token for an agent's Slack identity from its exact
+ * company-scoped config binding, then verifies the resolved token's *actual* workspace
  * matches the configured identity's `teamId` before ever returning it. This
  * closes the gap where `assertSlackWorkspaceMatch` alone only checks a
  * resource ref's teamId against the identity, and never checks the real
@@ -90,39 +135,29 @@ export async function verifySlackToken(
  * inbound Events API request verification (deferred work, not part of
  * outbound/tool credential resolution). See `resolveSlackSigningSecret`.
  *
- * Fails closed (throws) on: missing sidecar entry, malformed sidecar entry,
+ * Fails closed (throws) on: missing or malformed company-scoped secret refs,
  * a rejected secret resolution (e.g. a revoked token), a resolved token
  * whose real workspace does not match the configured identity, a resolved
  * token whose real user does not match the identity's configured
  * `botUserId`, or a resolved token missing `bot_id` (i.e. a human/user OAuth
- * token, even one whose team_id/user_id happen to match) — there is no
+ * token, even one whose team_id/user_id happen to match). There is no
  * operator-identity or other fallback path. Error messages never include the
  * resolved token value.
  */
 export async function resolveSlackBotToken(
   resolvedIdentity: ResolvedAgentIdentity<SlackAgentIdentity>,
-  resolveSecret: ResolveSecret,
+  config: Record<string, unknown>,
+  companyId: string,
+  resolveSecret: ResolveSlackSecret,
   verifyToken: VerifySlackToken = verifySlackToken
 ): Promise<ResolvedSlackBotToken> {
-  const sidecarPath = await resolveCredentialSidecarPath();
-  const sidecarIdentity = await readSidecarIdentityForProvider(
-    resolvedIdentity.agentId,
-    SLACK_PROVIDER_ID,
-    sidecarPath
-  );
-
-  if (!sidecarIdentity.slackBotToken) {
-    throw new Error(
-      `Missing Slack bot token credential for agent '${resolvedIdentity.agentId}'. ` +
-      `Expected identities.${resolvedIdentity.agentId}:slack.slackBotToken in ${sidecarPath}.`
-    );
-  }
-
-  const { botTokenSecretId } = sidecarIdentity.slackBotToken;
+  if (!companyId.trim()) throw new Error("A host-authorized companyId is required to resolve Slack credentials.");
+  const secretRef = readSlackSecretRef(config, resolvedIdentity.agentId, "botToken");
+  const configPath = slackCredentialConfigPath(resolvedIdentity.agentId, "botToken");
 
   // Resolve the bot token first — let a rejection (e.g. revoked secret)
   // propagate untouched, with no fallback.
-  const token = await resolveSecret(botTokenSecretId);
+  const token = await resolveSecret(secretRef, { companyId, configPath });
 
   // Verify the resolved token's real workspace, user, and bot-ness before
   // ever returning it. No operator-identity fallback on any mismatch,
@@ -149,7 +184,7 @@ export async function resolveSlackBotToken(
 
 /**
  * Resolves the Slack signing secret for an agent's Slack identity from the
- * credential sidecar. Deliberately kept separate from `resolveSlackBotToken`
+ * exact company-scoped config binding. Deliberately kept separate from `resolveSlackBotToken`
  * and NOT wired into outbound/tool credential resolution — the signing
  * secret is only needed for inbound Events API request verification
  * (`X-Slack-Signature` / `X-Slack-Request-Timestamp`), which is deferred
@@ -160,31 +195,16 @@ export async function resolveSlackBotToken(
  */
 export async function resolveSlackSigningSecret(
   resolvedIdentity: ResolvedAgentIdentity<SlackAgentIdentity>,
-  resolveSecret: ResolveSecret
+  config: Record<string, unknown>,
+  companyId: string,
+  resolveSecret: ResolveSlackSecret,
 ): Promise<string> {
-  const sidecarPath = await resolveCredentialSidecarPath();
-  const sidecarIdentity = await readSidecarIdentityForProvider(
-    resolvedIdentity.agentId,
-    SLACK_PROVIDER_ID,
-    sidecarPath
-  );
-
-  if (!sidecarIdentity.slackBotToken) {
-    throw new Error(
-      `Missing Slack bot token credential for agent '${resolvedIdentity.agentId}'. ` +
-      `Expected identities.${resolvedIdentity.agentId}:slack.slackBotToken in ${sidecarPath}.`
-    );
-  }
-
-  const { signingSecretId } = sidecarIdentity.slackBotToken;
-  if (!signingSecretId) {
-    throw new Error(
-      `Missing Slack signing secret credential for agent '${resolvedIdentity.agentId}'. ` +
-      `Expected identities.${resolvedIdentity.agentId}:slack.slackBotToken.signingSecretId in ${sidecarPath}.`
-    );
-  }
-
-  return resolveSecret(signingSecretId);
+  if (!companyId.trim()) throw new Error("A host-authorized companyId is required to resolve Slack credentials.");
+  const secretRef = readSlackSecretRef(config, resolvedIdentity.agentId, "signingSecret");
+  return resolveSecret(secretRef, {
+    companyId,
+    configPath: slackCredentialConfigPath(resolvedIdentity.agentId, "signingSecret"),
+  });
 }
 
 /**
@@ -207,8 +227,14 @@ export function assertSlackWorkspaceMatch(identity: SlackAgentIdentity, expected
 export async function resolveSlackCredential(
   input: CredentialResolverInput<SlackAgentIdentity>
 ): Promise<ResolvedCredential> {
-  const { identity, ctx } = input;
-  const resolveSecret = (secretRef: string) => ctx.secrets.resolve(secretRef);
-  const { token, secrets } = await resolveSlackBotToken(identity, resolveSecret);
+  const { identity, ctx, runCtx } = input;
+  const config = await ctx.config.get(runCtx.companyId);
+  const resolveSecret: ResolveSlackSecret = (secretRef, options) => ctx.secrets.resolve(secretRef, options);
+  const { token, secrets } = await resolveSlackBotToken(
+    identity,
+    config,
+    runCtx.companyId,
+    resolveSecret,
+  );
   return { token, secrets };
 }

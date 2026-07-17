@@ -68,7 +68,7 @@ describe("handleSlackWebhook", () => {
     const result = await handleSlackWebhook(deps as never);
 
     expect(result.status).toBe(200);
-    expect(result.body).toEqual({ challenge: "abc123" });
+    expect(result.body).toBe("abc123");
   });
 
   it("rejects an unsigned URL verification handshake (401), never echoing the challenge unverified", async () => {
@@ -123,7 +123,7 @@ describe("handleSlackWebhook", () => {
     const result = await handleSlackWebhook(deps as never);
 
     expect(result.status).toBe(200);
-    expect(result.body).toEqual({ challenge: "xyz789" });
+    expect(result.body).toBe("xyz789");
   });
 
   it("fails closed (401) on a URL verification handshake when no identities are configured yet", async () => {
@@ -162,7 +162,7 @@ describe("handleSlackWebhook", () => {
       api_app_id: "A111",
       event_id: "Ev001",
       authorizations: authorizationsFor("T111"),
-      event: { type: "app_mention", text: "hi" },
+      event: { type: "message", channel_type: "im", channel: "D111", user: "U222", text: "hi" },
     };
     const rawBody = JSON.stringify(payload);
     const timestamp = "1800000000";
@@ -175,6 +175,59 @@ describe("handleSlackWebhook", () => {
     expect(deps.onAgentEvent).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "agent-1", event: payload.event })
     );
+  });
+
+  it("routes a user-authored public-channel app mention to the matching agent", async () => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-public-mention",
+      authorizations: authorizationsFor("T111"),
+      event: { type: "app_mention", channel: "C111", user: "U222", text: "<@U111> hi" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const deps = makeDeps({ rawBody, headers: baseHeaders(timestamp, rawBody), nowEpochSeconds: 1_800_000_000 });
+
+    await expect(handleSlackWebhook(deps as never)).resolves.toEqual({
+      status: 200,
+      body: { ok: true },
+    });
+    expect(deps.shouldProcessEvent).toHaveBeenCalledWith("agent-1", "Ev-public-mention");
+    expect(deps.onAgentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-1", event: payload.event }),
+    );
+  });
+
+  it.each([
+    ["a non-message event", { type: "reaction_added", channel: "C111", user: "U222" }],
+    ["a channel message", { type: "message", channel_type: "channel", channel: "C111", user: "U222" }],
+    ["a message subtype", { type: "message", channel_type: "im", channel: "D111", user: "U222", subtype: "message_changed" }],
+    ["a bot message", { type: "message", channel_type: "im", channel: "D111", user: "U222", bot_id: "B111" }],
+    ["a bot-authored app mention", { type: "app_mention", channel: "C111", user: "U222", bot_id: "B111" }],
+    ["a message with a blank user", { type: "message", channel_type: "im", channel: "D111", user: "   " }],
+    ["a message sent by the configured bot itself", { type: "message", channel_type: "im", channel: "D111", user: "U111" }],
+    ["an app mention sent by the configured bot itself", { type: "app_mention", channel: "C111", user: "U111" }],
+  ])("acks but does not claim or dispatch %s", async (_label, event) => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-filtered-message",
+      authorizations: authorizationsFor("T111"),
+      event,
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const deps = makeDeps({ rawBody, headers: baseHeaders(timestamp, rawBody) });
+
+    await expect(handleSlackWebhook(deps as never)).resolves.toEqual({
+      status: 200,
+      body: { ok: true, dispatched: false },
+    });
+    expect(deps.shouldProcessEvent).not.toHaveBeenCalled();
+    expect(deps.onAgentEvent).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -211,7 +264,7 @@ describe("handleSlackWebhook", () => {
       api_app_id: "A111",
       event_id: "Ev001",
       authorizations: authorizationsFor("T111"),
-      event: { type: "app_mention", text: "hi" },
+      event: { type: "message", channel_type: "im", channel: "D111", user: "U222", text: "hi" },
     };
     const rawBody = JSON.stringify(payload);
     const timestamp = "1800000000";
@@ -338,7 +391,7 @@ describe("handleSlackWebhook", () => {
     expect(Buffer.byteLength(rawBody, "utf8")).toBe(SLACK_WEBHOOK_MAX_BODY_BYTES);
     await expect(handleSlackWebhook(deps as never)).resolves.toEqual({
       status: 200,
-      body: { challenge: "at-limit" },
+      body: "at-limit",
     });
     expect(deps.resolveSigningSecret).toHaveBeenCalledTimes(1);
   });
@@ -467,7 +520,7 @@ describe("handleSlackWebhook", () => {
     const result = await handleSlackWebhook(deps as never);
 
     expect(result.status).toBe(200);
-    expect(result.body).toEqual({ challenge: "case-ok" });
+    expect(result.body).toBe("case-ok");
   });
 
   it("rejects a request missing the signature/timestamp headers before resolving any agent's signing secret (cheap early reject)", async () => {
@@ -512,7 +565,7 @@ describe("handleSlackWebhook", () => {
       api_app_id: "A9",
       event_id: "Ev-batched-secret-check",
       authorizations: authorizationsFor("T9"),
-      event: { type: "app_mention" },
+      event: { type: "message", channel_type: "im", channel: "D9", user: "U-human" },
     };
     const rawBody = JSON.stringify(payload);
     const timestamp = "1800000000";
@@ -561,7 +614,7 @@ describe("handleSlackWebhook rate limiting", () => {
         api_app_id: "A111",
         event_id: `Ev${i}`,
         authorizations: authorizationsFor(teamId),
-        event: { type: "app_mention" },
+        event: { type: "message", channel_type: "im", channel: "D111", user: "U222" },
       };
       const rawBody = JSON.stringify(payload);
       const timestamp = "1800000000";

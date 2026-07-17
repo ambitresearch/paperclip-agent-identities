@@ -66,7 +66,9 @@ export type IdentityFormState = {
   slackAppId: string;
   slackBotUserId: string;
   slackDefaultChannel: string;
+  slackEventsRequestUrl: string;
   slackBotTokenSecretId: string;
+  slackSigningSecretId: string;
 };
 
 type SettingsSection = "identities" | "setup" | "environment";
@@ -94,6 +96,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const convertGitHubAppManifest = usePluginAction("convert-github-app-manifest");
   const createSlackAppManifest = usePluginAction("create-slack-app-manifest");
   const getSlackAppManifestFlow = usePluginAction("get-slack-app-manifest-flow");
+  const discoverSlackInstallMetadata = usePluginAction("discover-slack-install-metadata");
   const saveSlackInstallMetadata = usePluginAction("save-slack-install-metadata");
   // Credential-free identity self-check tool (DRO-972) invoked the same way
   // as the plugin actions above. `usePluginAction` only calls
@@ -183,6 +186,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     companyId,
     createSlackAppManifest,
     getSlackAppManifestFlow,
+    discoverSlackInstallMetadata,
     saveSlackInstallMetadata,
     slackBotWhoami,
   });
@@ -461,7 +465,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         <div>
           <h2 style={pageTitleStyle}>Agent Identities</h2>
           <p style={descriptionStyle}>
-            Connect agents in {companyDisplayName || "this company"} to service-specific identity providers. GitHub is the first provider.
+            Connect agents in {companyDisplayName || "this company"} to GitHub and Slack identities.
           </p>
         </div>
         <button
@@ -599,7 +603,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
           <header className="agent-identities-dialog-header" style={dialogHeaderStyle}>
             <div>
               <h3 id="agent-identity-dialog-title" style={dialogTitleStyle}>{isEditingExistingIdentity ? "Edit agent identity" : "Add agent identity"}</h3>
-              <p style={sectionDescriptionStyle}>Configure the agent, GitHub App credential, and optional commit metadata.</p>
+              <p style={sectionDescriptionStyle}>Configure the agent and its provider-specific credentials.</p>
             </div>
             <button onClick={() => setFormState(null)} disabled={saving || slackSaveInFlight} style={closeButtonStyle} aria-label="Close identity editor">x</button>
           </header>
@@ -664,7 +668,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                   </option>
                 ))}
               </select>
-              <span style={hintStyle}>Each agent can have one identity per provider. GitHub is fully available; Slack identities can be set up here and Slack agent tools (post message, whoami) are already live.</span>
+              <span style={hintStyle}>Each agent can have one identity per provider. GitHub and Slack are available, with additional providers coming soon.</span>
             </label>
 
             {duplicateIdentity && <div style={validationNoticeStyle}>This agent already has a {getProviderDisplayName(config.provider, data?.providers)} identity. Edit the existing row instead.</div>}
@@ -916,7 +920,9 @@ export function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState
     slackAppId: entry?.provider === "slack" ? entry.slack.appId : "",
     slackBotUserId: entry?.provider === "slack" ? entry.slack.botUserId : "",
     slackDefaultChannel: entry?.provider === "slack" ? entry.slack.defaultChannel ?? "" : "",
-    slackBotTokenSecretId: "",
+    slackEventsRequestUrl: entry?.provider === "slack" ? entry.slackSetup?.eventsRequestUrl ?? "" : "",
+    slackBotTokenSecretId: entry?.provider === "slack" ? entry.slackSetup?.botTokenSecretId ?? "" : "",
+    slackSigningSecretId: entry?.provider === "slack" ? entry.slackSetup?.signingSecretId ?? "" : "",
   };
 }
 

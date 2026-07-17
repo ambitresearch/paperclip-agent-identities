@@ -4,16 +4,21 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@paperclipai/plugin-sdk@2026.707.0':
+    hash: b0a949ae0327030699359940bf6fe5b3b8821b5ab4e7a268ff1c434568630a29
+    path: patches/@paperclipai__plugin-sdk@2026.707.0.patch
+
 importers:
 
   .:
     devDependencies:
       '@paperclipai/plugin-sdk':
-        specifier: 2026.626.0
-        version: 2026.626.0(react@19.2.7)
+        specifier: 2026.707.0
+        version: 2026.707.0(patch_hash=b0a949ae0327030699359940bf6fe5b3b8821b5ab4e7a268ff1c434568630a29)(react@19.2.7)
       '@paperclipai/shared':
-        specifier: 2026.626.0
-        version: 2026.626.0
+        specifier: 2026.707.0
+        version: 2026.707.0
       '@rollup/plugin-node-resolve':
         specifier: ^16.0.1
         version: 16.0.3(rollup@4.62.2)
@@ -29,6 +34,12 @@ importers:
       '@types/react-dom':
         specifier: '19'
         version: 19.2.3(@types/react@19.2.17)
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
+      ajv-formats:
+        specifier: ^3.0.1
+        version: 3.0.1(ajv@8.20.0)
       esbuild:
         specifier: ^0.27.3
         version: 0.27.7
@@ -545,8 +556,8 @@ packages:
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
 
-  '@paperclipai/plugin-sdk@2026.626.0':
-    resolution: {integrity: sha512-L+iIr6dFQB+JqGbitxLwloH2s+EI87ij9ooIEvND0jW81h84DxfJHep7whSmYv7Ke74Q8mmQ5O0k829BVwIEew==}
+  '@paperclipai/plugin-sdk@2026.707.0':
+    resolution: {integrity: sha512-5pS4nG+l8k7GBvIHiuvPjWsiVX9KYG1WBD/c/DJGPBRRAuUj3Sd/PiaukAV6g/Ax94CnPS799hQLq40i09FKVg==}
     hasBin: true
     peerDependencies:
       react: '>=18'
@@ -554,8 +565,8 @@ packages:
       react:
         optional: true
 
-  '@paperclipai/shared@2026.626.0':
-    resolution: {integrity: sha512-LC4jkCXBEjsnUomWiiMU9l30JgaAvnaOV1xcw0a30u8/BkLaMqOlmzhYCFuldTlkr9O31mUpIPiLOeu7sQGjAA==}
+  '@paperclipai/shared@2026.707.0':
+    resolution: {integrity: sha512-CI1D+jBVKdBlCqhFi+GfaK+ADZ1E1PLxAhStzmDkHORTmDnloZZMQ2JbnbPcJGdlIJTTMxAEFVrhgGzwh7jsbw==}
 
   '@rollup/plugin-node-resolve@16.0.3':
     resolution: {integrity: sha512-lUYM3UBGuM93CnMPG1YocWu7X802BrNF3jW2zny5gQyLQgRFJhV1Sq0Zi74+dh/6NBx1DxFC4b4GXg9wUCG5Qg==}
@@ -908,6 +919,17 @@ packages:
   '@vueuse/shared@12.8.2':
     resolution: {integrity: sha512-dznP38YzxZoNloI0qpEfpkms8knDtaoQ6Y/sfS0L7Yki4zh40LFHEhur0odJC6xTHG5dxWVPiUWBXn+wCG2s5w==}
 
+  ajv-formats@3.0.1:
+    resolution: {integrity: sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==}
+    peerDependencies:
+      ajv: ^8.0.0
+    peerDependenciesMeta:
+      ajv:
+        optional: true
+
+  ajv@8.20.0:
+    resolution: {integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==}
+
   algoliasearch@5.55.2:
     resolution: {integrity: sha512-OyacJsaeuLUvGWOynNqYc6sx88XvyoG39wMT8SYqL3l9wwaorDW/LPRbUPfhzw0bWsUWzNCZTnFYOrWFBKsUaw==}
     engines: {node: '>= 14.0.0'}
@@ -1026,6 +1048,12 @@ packages:
     resolution: {integrity: sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA==}
     engines: {node: '>=12.0.0'}
 
+  fast-deep-equal@3.1.3:
+    resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
+
+  fast-uri@3.1.3:
+    resolution: {integrity: sha512-i70LwGWUduXqzicKXWshooq+sWL1K3WUU5rKZNG/0i3a1OSoX3HqhH5WbWwTmqWfor4urUakGPiRQcleRZTwOg==}
+
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
     engines: {node: '>=12.0.0'}
@@ -1091,6 +1119,9 @@ packages:
     peerDependenciesMeta:
       canvas:
         optional: true
+
+  json-schema-traverse@1.0.0:
+    resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
 
   loupe@3.2.1:
     resolution: {integrity: sha512-CdzqowRJCeLU72bHvWqwRBBlLcMEtIvGrlvef74kMnV2AolS9Y8xUv1I0U/MNAWMhBlKIoyuEgoJ0t/bbwHbLQ==}
@@ -1875,14 +1906,14 @@ snapshots:
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
-  '@paperclipai/plugin-sdk@2026.626.0(react@19.2.7)':
+  '@paperclipai/plugin-sdk@2026.707.0(patch_hash=b0a949ae0327030699359940bf6fe5b3b8821b5ab4e7a268ff1c434568630a29)(react@19.2.7)':
     dependencies:
-      '@paperclipai/shared': 2026.626.0
+      '@paperclipai/shared': 2026.707.0
       zod: 3.25.76
     optionalDependencies:
       react: 19.2.7
 
-  '@paperclipai/shared@2026.626.0':
+  '@paperclipai/shared@2026.707.0':
     dependencies:
       zod: 3.25.76
 
@@ -2220,6 +2251,17 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
+  ajv-formats@3.0.1(ajv@8.20.0):
+    optionalDependencies:
+      ajv: 8.20.0
+
+  ajv@8.20.0:
+    dependencies:
+      fast-deep-equal: 3.1.3
+      fast-uri: 3.1.3
+      json-schema-traverse: 1.0.0
+      require-from-string: 2.0.2
+
   algoliasearch@5.55.2:
     dependencies:
       '@algolia/abtesting': 1.21.2
@@ -2372,6 +2414,10 @@ snapshots:
 
   expect-type@1.4.0: {}
 
+  fast-deep-equal@3.1.3: {}
+
+  fast-uri@3.1.3: {}
+
   fdir@6.5.0(picomatch@4.0.5):
     optionalDependencies:
       picomatch: 4.0.5
@@ -2454,6 +2500,8 @@ snapshots:
       xml-name-validator: 5.0.0
     transitivePeerDependencies:
       - '@noble/hashes'
+
+  json-schema-traverse@1.0.0: {}
 
   loupe@3.2.1: {}
 

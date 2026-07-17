@@ -56,6 +56,19 @@ function isValidSlackEvent(event: unknown): event is Record<string, unknown> {
   return isRecord(event) && typeof event.type === "string" && event.type.trim().length > 0;
 }
 
+function isDispatchableSlackMessage(event: Record<string, unknown>, botUserId: string): boolean {
+  const userId = typeof event.user === "string" ? event.user.trim() : "";
+  const isDirectMessage = event.type === "message" && event.channel_type === "im";
+  const isAppMention = event.type === "app_mention";
+  return (
+    (isDirectMessage || isAppMention) &&
+    event.subtype === undefined &&
+    event.bot_id === undefined &&
+    userId.length > 0 &&
+    userId !== botUserId.trim()
+  );
+}
+
 export interface SlackWebhookHeaders {
   readonly [header: string]: string | string[] | undefined;
 }
@@ -262,7 +275,7 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
   // itself sufficient proof this request originated from a Slack app whose
   // secret this Paperclip instance holds.
   if (envelope.type === "url_verification" && typeof envelope.challenge === "string") {
-    return { status: 200, body: { challenge: envelope.challenge } };
+    return { status: 200, body: envelope.challenge };
   }
 
   const teamId = typeof envelope.team_id === "string" ? envelope.team_id : "";
@@ -337,6 +350,15 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
       agentId,
     });
     return { status: 401, body: { error: "unauthorized" } };
+  }
+
+  const botUserId = identities[agentId]?.botUserId ?? "";
+  if (!isDispatchableSlackMessage(event, botUserId)) {
+    logger.info("Slack webhook: ignored event that is not a user direct message or app mention", {
+      agentId,
+      eventId,
+    });
+    return { status: 200, body: { ok: true, dispatched: false } };
   }
 
   const shouldProcess = await deps.shouldProcessEvent(agentId, eventId);

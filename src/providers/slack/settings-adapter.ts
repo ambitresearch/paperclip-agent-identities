@@ -25,7 +25,8 @@ export const slackSettingsAdapter: ProviderSettingsAdapter = {
       config.slackTeamId.trim() &&
         config.slackAppId.trim() &&
         config.slackBotUserId.trim() &&
-        config.slackBotTokenSecretId.trim(),
+        config.slackBotTokenSecretId.trim() &&
+        config.slackSigningSecretId.trim(),
     );
     // The install metadata is only considered saved when save-slack-install-metadata
     // has actually completed for the CURRENT field values -- editing any Slack field
@@ -37,6 +38,7 @@ export const slackSettingsAdapter: ProviderSettingsAdapter = {
         slackSaveResult.appId === config.slackAppId.trim() &&
         slackSaveResult.botUserId === config.slackBotUserId.trim() &&
         slackSaveResult.botTokenSecretId === config.slackBotTokenSecretId.trim() &&
+        slackSaveResult.signingSecretId === config.slackSigningSecretId.trim() &&
         (slackSaveResult.defaultChannel ?? "") === config.slackDefaultChannel.trim(),
     );
     const hasSlackInstall = hasSlackInstallFields && slackSaveMatchesCurrentFields && !slackSaveBusy;
@@ -51,7 +53,7 @@ export const slackSettingsAdapter: ProviderSettingsAdapter = {
       ? "Slack install metadata is complete."
       : slackSaveBusy
         ? "Saving Slack install metadata..."
-        : "Create the Slack App manifest, install it, and paste back the team/app/bot IDs and bot token secret, then save install metadata before this identity can be saved.";
+        : "Create the Slack App manifest, install it, and paste back the team/app/bot IDs plus bot token and signing secret references, then save install metadata before this identity can be saved.";
     const saveMessage = !identityComplete
       ? identityMessage
       : !credentialComplete

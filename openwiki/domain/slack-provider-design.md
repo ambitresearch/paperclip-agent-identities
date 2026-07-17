@@ -95,11 +95,17 @@ receiver uses `assistant.threads.setStatus` for supported assistant threads and
 does not simulate typing by posting and later editing a placeholder message.
 
 Ingress reuses one Paperclip agent session for each Slack conversation so later
-messages retain the model's prior context. Top-level messages in one DM share a
-session. A thread uses a separate session keyed by its root `thread_ts`, and
-different channels or thread roots never share context. The session mapping is
-stored in plugin state and is replaced if Paperclip reports that the saved
-session is no longer active.
+messages retain the model's prior context. All messages in one DM share a session,
+including threaded replies. Private-group and channel threads use separate sessions
+keyed by their root `thread_ts`, and different channels or thread roots never share
+context. Only DMs may carry context across Slack threads. The session mapping is
+stored in plugin state and is replaced if Paperclip reports that the saved session
+is no longer active.
+
+Each inbound turn includes a bounded Slack sender profile from `users.info`, cached
+for 24 hours. Email is excluded. DMs may use sender-specific context; private groups
+and public channels may use only their own conversation context and the sender's
+workspace-visible profile.
 
 ## 2. Identity shape
 

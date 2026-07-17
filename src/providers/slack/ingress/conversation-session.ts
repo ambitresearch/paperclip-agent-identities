@@ -94,10 +94,11 @@ async function withConversationMutation<T>(
 /**
  * Returns one durable Paperclip agent session for one Slack conversation.
  *
- * A top-level DM is one conversation. A Slack thread is a separate
- * conversation keyed by its root `thread_ts`. The mapping lives in plugin
- * state so it survives worker reloads, while `sessions.list` verifies that a
- * saved session still exists and still belongs to the routed agent.
+ * A DM is one conversation across top-level and threaded replies because its
+ * caller omits `threadTs`. Group and channel threads are separate conversations
+ * keyed by their root `thread_ts`. The mapping lives in plugin state so it
+ * survives worker reloads, while `sessions.list` verifies that a saved session
+ * still exists and still belongs to the routed agent.
  */
 export async function getOrCreateSlackConversationSession(
   input: ConversationSessionInput,

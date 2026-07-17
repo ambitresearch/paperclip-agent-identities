@@ -36,11 +36,12 @@ export interface VerifiedSlackTokenIdentity {
 }
 
 export type VerifySlackToken = (token: string) => Promise<VerifiedSlackTokenIdentity>;
+type SlackApiFetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 export async function discoverSlackAppId(
   token: string,
   botId: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: SlackApiFetch = fetch,
 ): Promise<string> {
   const response = await fetchImpl("https://slack.com/api/bots.info", {
     method: "POST",
@@ -85,7 +86,7 @@ export async function discoverSlackAppId(
  */
 export async function verifySlackToken(
   token: string,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: SlackApiFetch = fetch
 ): Promise<VerifiedSlackTokenIdentity> {
   const response = await fetchImpl("https://slack.com/api/auth.test", {
     method: "POST",

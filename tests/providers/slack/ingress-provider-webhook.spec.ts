@@ -28,6 +28,8 @@ const SIGNING_SECRET_REF = {
   version: "latest",
 } as const;
 const SIGNING_SECRET_CONFIG_PATH = "identities.agent-1.credentials.signingSecret";
+const BOT_TOKEN_CONFIG_PATH = "identities.agent-1.credentials.botToken";
+const BOT_TOKEN = "xoxb-test";
 
 function slackIdentity(overrides: Record<string, unknown> = {}) {
   return {
@@ -124,7 +126,42 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
         options.companyId === "co-1" &&
         options.configPath === SIGNING_SECRET_CONFIG_PATH
         ? SIGNING_SECRET
-        : "unexpected"),
+        : secretRef.secretId === BOT_TOKEN_SECRET_REF.secretId &&
+            options.companyId === "co-1" &&
+            options.configPath === BOT_TOKEN_CONFIG_PATH
+          ? BOT_TOKEN
+          : "unexpected"),
+    },
+    http: {
+      fetch: vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "https://slack.com/api/auth.test") {
+          return new Response(JSON.stringify({
+            ok: true,
+            team_id: "T111",
+            user_id: "U111",
+            bot_id: "B111",
+          }), { status: 200 });
+        }
+        if (url === "https://slack.com/api/users.info") {
+          const userId = new URLSearchParams(String(init?.body)).get("user");
+          return new Response(JSON.stringify({
+            ok: true,
+            user: {
+              id: userId,
+              team_id: "T111",
+              real_name: "Roshan Gautam",
+              tz: "America/Los_Angeles",
+              profile: {
+                display_name: "Roshan",
+                real_name: "Roshan Gautam",
+                title: "Senior Software Engineering Manager",
+                email: "private@example.com",
+              },
+            },
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ ok: false, error: "unknown_method" }), { status: 404 });
+      }),
     },
     agents: makeAgents(),
     companies: {
@@ -249,6 +286,14 @@ describe("handleSlackProviderWebhook", () => {
       "co-1",
       expect.objectContaining({ reason: "slack-inbound-event", onEvent: expect.any(Function) })
     );
+    const prompt = (
+      ctx.agents.sessions.sendMessage.mock.calls as unknown as Array<[string, string, { prompt: string }]>
+    )[0][2].prompt;
+    expect(prompt).toContain('"kind":"direct_message"');
+    expect(prompt).toContain('"privateUserContextAllowed":true');
+    expect(prompt).toContain('"crossThreadContextAllowed":true');
+    expect(prompt).toContain('"displayName":"Roshan"');
+    expect(prompt).not.toContain("private@example.com");
     expect(ctx.config.get).toHaveBeenCalledOnce();
     expect(ctx.config.get).toHaveBeenCalledWith("co-1");
     expect(ctx.secrets.resolve).toHaveBeenCalledWith(SIGNING_SECRET_REF, {
@@ -305,6 +350,9 @@ describe("handleSlackProviderWebhook", () => {
     expect(invocation.prompt).toContain("Slack message received.");
     expect(invocation.prompt).toContain('"type":"app_mention"');
     expect(invocation.prompt).toContain('"channel":"C0123456789"');
+    expect(invocation.prompt).toContain('"kind":"public_channel"');
+    expect(invocation.prompt).toContain('"privateUserContextAllowed":false');
+    expect(invocation.prompt).toContain('"crossThreadContextAllowed":false');
     expect(createReplyStream).toHaveBeenCalledWith(expect.objectContaining({
       channel: "C0123456789",
       threadTs: "1719000000.123456",
@@ -312,11 +360,15 @@ describe("handleSlackProviderWebhook", () => {
     expect(replyStream.start).toHaveBeenCalledOnce();
   });
 
-  it("reuses one Paperclip session for consecutive top-level messages in the same DM", async () => {
+  it("reuses one Paperclip session across top-level and threaded messages in the same DM", async () => {
     const ctx = makeCtx();
     const timestamp = String(Math.floor(Date.now() / 1000));
 
-    for (const [eventId, text] of [["Ev-dm-1", "first"], ["Ev-dm-2", "second"]]) {
+    const events = [
+      { eventId: "Ev-dm-1", text: "first" },
+      { eventId: "Ev-dm-2", text: "second", threadTs: "1719000000.123456" },
+    ];
+    for (const { eventId, text, threadTs } of events) {
       const rawBody = JSON.stringify({
         type: "event_callback",
         team_id: "T111",
@@ -329,6 +381,7 @@ describe("handleSlackProviderWebhook", () => {
           channel: "D0123456789",
           user: "U222",
           text,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
         },
       });
       await runSlackWebhook({
@@ -347,6 +400,8 @@ describe("handleSlackProviderWebhook", () => {
     expect(ctx.agents.sessions.list).toHaveBeenCalledTimes(1);
     expect(ctx.agents.sessions.sendMessage.mock.calls.map((call: unknown[]) => call[0]))
       .toEqual(["session-1", "session-1"]);
+    expect(ctx.http.fetch.mock.calls.filter(([url]) => url === "https://slack.com/api/users.info"))
+      .toHaveLength(1);
   });
 
   it("reuses one Paperclip session for a public mention and later replies in its Slack thread", async () => {
@@ -408,7 +463,7 @@ describe("handleSlackProviderWebhook", () => {
     const events = [
       { eventId: "Ev-thread-a", channel: "C0123456789", ts: "1719000000.111111" },
       { eventId: "Ev-thread-b", channel: "C0123456789", ts: "1719000000.222222" },
-      { eventId: "Ev-channel-b", channel: "C9876543210", ts: "1719000000.111111" },
+      { eventId: "Ev-channel-b", channel: "G9876543210", ts: "1719000000.111111" },
     ];
 
     for (const item of events) {
@@ -441,6 +496,12 @@ describe("handleSlackProviderWebhook", () => {
     expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(3);
     expect(ctx.agents.sessions.sendMessage.mock.calls.map((call: unknown[]) => call[0]))
       .toEqual(["session-1", "session-2", "session-3"]);
+    const privateGroupPrompt = (
+      ctx.agents.sessions.sendMessage.mock.calls as unknown as Array<[string, string, { prompt: string }]>
+    )[2][2].prompt;
+    expect(privateGroupPrompt).toContain('"kind":"private_group"');
+    expect(privateGroupPrompt).toContain('"privateUserContextAllowed":false');
+    expect(privateGroupPrompt).toContain('"crossThreadContextAllowed":false');
   });
 
   it("posts streamed non-stderr response text and keeps the conversation session active", async () => {
@@ -895,7 +956,9 @@ describe("handleSlackProviderWebhook", () => {
     const first = runSlackWebhook(input("req-concurrent-1"), ctx);
     await invokeStarted;
     const duplicate = runSlackWebhook(input("req-concurrent-2"), ctx);
-    await vi.waitFor(() => expect(ctx.secrets.resolve).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(ctx.secrets.resolve.mock.calls.filter(
+      ([secretRef]) => secretRef.secretId === SIGNING_SECRET_ID,
+    )).toHaveLength(2));
     await Promise.resolve();
     rejectInvoke(sendError);
 

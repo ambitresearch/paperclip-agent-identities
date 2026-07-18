@@ -73,6 +73,7 @@ export interface SlackAgentReplyStreamTarget {
   readonly eventId: string;
   readonly identity: ResolvedAgentIdentity<SlackAgentIdentity>;
   readonly channel: string;
+  readonly messageTs?: string;
   readonly threadTs?: string;
 }
 
@@ -263,16 +264,21 @@ function buildInvocationPrompt(dispatch: {
   ].join("\n");
 }
 
-function readReplyDestination(event: unknown): { channel: string; threadTs?: string } {
+function readReplyDestination(event: unknown): { channel: string; messageTs?: string; threadTs?: string } {
   const rawEvent = isRecord(event) ? event : {};
   const channel = boundedString(rawEvent.channel, MAX_SLACK_EVENT_FIELD_LENGTH) ?? "";
+  const messageTs = boundedString(rawEvent.ts, MAX_SLACK_EVENT_FIELD_LENGTH);
   const existingThreadTs = boundedString(rawEvent.thread_ts, MAX_SLACK_EVENT_FIELD_LENGTH);
   const eventType = boundedString(rawEvent.type, MAX_SLACK_EVENT_FIELD_LENGTH);
   const mentionRootTs = eventType === "app_mention"
-    ? boundedString(rawEvent.ts, MAX_SLACK_EVENT_FIELD_LENGTH)
+    ? messageTs
     : undefined;
   const threadTs = existingThreadTs ?? mentionRootTs;
-  return threadTs ? { channel, threadTs } : { channel };
+  return {
+    channel,
+    ...(messageTs ? { messageTs } : {}),
+    ...(threadTs ? { threadTs } : {}),
+  };
 }
 
 /**
@@ -396,6 +402,7 @@ export async function handleSlackProviderWebhook(
               eventId: dispatch.eventId,
               identity: { agentId: dispatch.agentId, identity },
               channel: destination.channel,
+              ...(destination.messageTs ? { messageTs: destination.messageTs } : {}),
               ...(destination.threadTs ? { threadTs: destination.threadTs } : {}),
             });
             replyStream.start();

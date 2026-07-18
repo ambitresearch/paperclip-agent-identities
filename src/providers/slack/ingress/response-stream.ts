@@ -6,6 +6,7 @@ const DEFAULT_LOADING_MESSAGES = [
   "is running checks...",
   "is preparing a response...",
 ] as const;
+const WORKING_REACTION = "hourglass_flowing_sand";
 
 type SlackFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -15,6 +16,7 @@ interface SlackStreamLogger {
 
 export interface SlackResponseStreamOptions {
   readonly channel: string;
+  readonly messageTs?: string;
   readonly threadTs?: string;
   readonly fetch: SlackFetch;
   readonly resolveToken: () => Promise<string>;
@@ -69,25 +71,34 @@ export class SlackResponseStream {
   private streamUnavailable = false;
   private streamBroken = false;
   private deliveredNotified = false;
+  private workingReactionAdded = false;
 
   constructor(private readonly options: SlackResponseStreamOptions) {}
 
   start(): void {
-    if (!this.options.threadTs) return;
     void this.serialize(async () => {
-      await this.setStatus(DEFAULT_STATUS, DEFAULT_LOADING_MESSAGES);
+      const status = this.options.threadTs
+        ? await this.setStatus(DEFAULT_STATUS, DEFAULT_LOADING_MESSAGES)
+        : undefined;
+      if (!status?.ok) await this.addWorkingReaction();
     }).catch(() => undefined);
   }
 
   finish(finalText: string): Promise<boolean> {
-    return this.serialize(async () => this.finishInternal(finalText)).catch(() => false);
+    return this.serialize(async () => {
+      const streamed = await this.finishInternal(finalText);
+      await this.removeWorkingReaction();
+      return streamed;
+    }).catch(() => false);
   }
 
   fail(): Promise<void> {
-    if (!this.options.threadTs) return Promise.resolve();
     return this.serialize(async () => {
-      if (this.streamTs) await this.stopStream();
-      await this.clearStatus();
+      if (this.options.threadTs) {
+        if (this.streamTs) await this.stopStream();
+        await this.clearStatus();
+      }
+      await this.removeWorkingReaction();
     }).catch(() => undefined);
   }
 
@@ -139,8 +150,8 @@ export class SlackResponseStream {
     return { ok: true, body: responseBody };
   }
 
-  private async setStatus(status: string, loadingMessages?: readonly string[]): Promise<void> {
-    await this.call("assistant.threads.setStatus", {
+  private setStatus(status: string, loadingMessages?: readonly string[]): Promise<SlackApiResult> {
+    return this.call("assistant.threads.setStatus", {
       channel_id: this.options.channel,
       thread_ts: this.options.threadTs,
       status,
@@ -150,6 +161,26 @@ export class SlackResponseStream {
 
   private async clearStatus(): Promise<void> {
     await this.setStatus("");
+  }
+
+  private async addWorkingReaction(): Promise<void> {
+    if (!this.options.messageTs) return;
+    const result = await this.call("reactions.add", {
+      channel: this.options.channel,
+      timestamp: this.options.messageTs,
+      name: WORKING_REACTION,
+    });
+    this.workingReactionAdded = result.ok;
+  }
+
+  private async removeWorkingReaction(): Promise<void> {
+    if (!this.workingReactionAdded || !this.options.messageTs) return;
+    await this.call("reactions.remove", {
+      channel: this.options.channel,
+      timestamp: this.options.messageTs,
+      name: WORKING_REACTION,
+    });
+    this.workingReactionAdded = false;
   }
 
   private async appendInternal(text: string): Promise<void> {

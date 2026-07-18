@@ -92,7 +92,12 @@ Top-level direct messages receive one final response in the main DM, and only
 use a thread when the inbound DM already has `thread_ts`. Slack does not expose
 the human composer typing indicator to bots through its official Web API. The
 receiver uses `assistant.threads.setStatus` for supported assistant threads and
-does not simulate typing by posting and later editing a placeholder message.
+falls back to a temporary `:hourglass_flowing_sand:` reaction on the inbound
+message when thread status is unavailable. The reaction is removed when processing
+ends. It does not simulate typing by posting and later editing a placeholder message.
+This processing indicator is deterministic receiver behavior, not a model-selected
+reaction. The add/remove reaction tools remain available for task-specific agent use,
+but the plugin does not currently inject general reaction-etiquette instructions.
 
 Ingress reuses one Paperclip agent session for each Slack conversation so later
 messages retain the model's prior context. All messages in one DM share a session,

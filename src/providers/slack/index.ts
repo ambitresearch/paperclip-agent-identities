@@ -70,6 +70,7 @@ function createSlackAgentReplyStream(
   };
   return new SlackResponseStream({
     channel: target.channel,
+    messageTs: target.messageTs,
     threadTs: target.threadTs,
     fetch: ctx.http.fetch,
     logger: ctx.logger,

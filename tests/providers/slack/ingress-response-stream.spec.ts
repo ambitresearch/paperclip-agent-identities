@@ -14,13 +14,17 @@ function requestBody(call: unknown[]): Record<string, unknown> {
 }
 
 describe("SlackResponseStream", () => {
-  it("leaves a top-level response to the single final-message fallback", async () => {
+  it("uses a temporary reaction while a top-level response is processing", async () => {
     const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/reactions.add") || url.endsWith("/reactions.remove")) {
+        return jsonResponse({ ok: true });
+      }
       throw new Error(`Unexpected Slack URL: ${url}`);
     });
     const resolveToken = vi.fn(async () => "xoxb-test-token");
     const stream = new SlackResponseStream({
       channel: "D0123456789",
+      messageTs: "1719000000.123456",
       fetch: fetchMock,
       resolveToken,
       logger: { warn: vi.fn() },
@@ -30,8 +34,43 @@ describe("SlackResponseStream", () => {
     await expect(stream.finish("Final answer")).resolves.toBe(false);
     await expect(stream.fail()).resolves.toBeUndefined();
 
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(resolveToken).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://slack.com/api/reactions.add",
+      "https://slack.com/api/reactions.remove",
+    ]);
+    expect(requestBody(fetchMock.mock.calls[0])).toEqual({
+      channel: "D0123456789",
+      timestamp: "1719000000.123456",
+      name: "hourglass_flowing_sand",
+    });
+    expect(resolveToken).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to a temporary reaction when native thread status is unavailable", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/assistant.threads.setStatus")) {
+        return jsonResponse({ ok: false, error: "missing_scope" });
+      }
+      if (url.endsWith("/reactions.add") || url.endsWith("/reactions.remove")) {
+        return jsonResponse({ ok: true });
+      }
+      if (url.endsWith("/chat.startStream")) return jsonResponse({ ok: false, error: "missing_scope" });
+      throw new Error(`Unexpected Slack URL: ${url}`);
+    });
+    const stream = new SlackResponseStream({
+      channel: "D0123456789",
+      messageTs: "1719000001.123456",
+      threadTs: "1719000000.123456",
+      fetch: fetchMock,
+      resolveToken: async () => "xoxb-test-token",
+      logger: { warn: vi.fn() },
+    });
+
+    stream.start();
+    await expect(stream.finish("Final answer")).resolves.toBe(false);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toContain("https://slack.com/api/reactions.add");
+    expect(fetchMock.mock.calls.map(([url]) => url)).toContain("https://slack.com/api/reactions.remove");
   });
 
   it("sets native activity, posts the final answer, stops, and clears status", async () => {

@@ -355,6 +355,7 @@ describe("handleSlackProviderWebhook", () => {
     expect(invocation.prompt).toContain('"crossThreadContextAllowed":false');
     expect(createReplyStream).toHaveBeenCalledWith(expect.objectContaining({
       channel: "C0123456789",
+      messageTs: "1719000000.123456",
       threadTs: "1719000000.123456",
     }));
     expect(replyStream.start).toHaveBeenCalledOnce();
@@ -612,6 +613,7 @@ describe("handleSlackProviderWebhook", () => {
       companyId: "co-1",
       eventId: "Ev-native-stream",
       channel: "D0123456789",
+      messageTs: "1719000000.123456",
     }));
     expect(createReplyStream.mock.calls[0][0]).not.toHaveProperty("threadTs");
     expect(replyStream.start).toHaveBeenCalledOnce();

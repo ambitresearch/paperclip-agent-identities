@@ -724,7 +724,7 @@ describe("agent identity settings", () => {
     expect(unscopedConfig.identities.map((identity) => identity.agentId).sort()).toEqual(["agent-company-1", "agent-company-2"]);
   });
 
-  it("keeps configured identities visible when company agent lookup is empty", async () => {
+  it("does not expose configured identities when the scoped company has no agents", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
 
@@ -737,7 +737,7 @@ describe("agent identity settings", () => {
 
     const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company-with-empty-agent-list" });
 
-    expect(config.identities.map((identity) => identity.agentId)).toEqual(["agent-with-saved-config"]);
+    expect(config.identities).toEqual([]);
   });
 
   it("persists GitHub App credential propagation agent selections", async () => {

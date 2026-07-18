@@ -350,6 +350,7 @@ describe("Slack status panel (slack_bot_whoami)", () => {
       teamId: "T0123456789",
       appId: "A0123456789",
       botUserId: "U0123456789",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
       botTokenSecretId: BOT_TOKEN_SECRET_ID,
       signingSecretId: SIGNING_SECRET_ID,
       status: "saved",

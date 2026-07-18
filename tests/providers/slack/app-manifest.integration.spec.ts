@@ -148,6 +148,7 @@ describe("Slack manifest-assisted app setup actions", () => {
       teamId: "T0123ABCD",
       appId: "A0123ABCD",
       botUserId: "U0123ABCD",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
       botTokenSecretId: FAKE_SECRET_ID,
       signingSecretId: FAKE_SIGNING_SECRET_ID,
       defaultChannel: "D0123ABCD",
@@ -794,5 +795,63 @@ describe("Slack manifest-assisted app setup actions", () => {
     };
     expect(settingsAfterRetry.identities["agent-slack-1:slack"].label).toBe("Config Patch Failure Bot");
     expect(settingsAfterRetry.identities["agent-other:slack"]).toEqual(unrelatedIdentity);
+  });
+
+  it("surfaces every state rollback failure after an atomic config patch fails", async () => {
+    const harness = harnessWithSetup();
+    await plugin.definition.setup(harness.ctx);
+
+    const created = await harness.performAction<CreateSlackAppManifestResult>(
+      "create-slack-app-manifest",
+      { agentId: "agent-slack-1", label: "Rollback Failure Bot", eventsRequestUrl: EVENTS_REQUEST_URL },
+      { companyId: COMPANY_A },
+    );
+
+    harness.patchSecretRefs.mockRejectedValueOnce(new Error("atomic config patch failed"));
+    const originalStateSet = harness.ctx.state.set.bind(harness.ctx.state);
+    let settingsWrites = 0;
+    vi.spyOn(harness.ctx.state, "set").mockImplementation(async (scope, value) => {
+      if (scope.scopeKind === "instance" && scope.stateKey === CONFIG_SCOPE.stateKey) {
+        settingsWrites += 1;
+        if (settingsWrites === 2) throw new Error("settings rollback failed");
+      }
+      if (
+        scope.scopeKind === "company"
+        && scope.stateKey.startsWith("slack-app-manifest-flow:")
+        && typeof value === "object"
+        && value !== null
+        && !("consumed" in value)
+      ) {
+        throw new Error("flow rollback failed");
+      }
+      await originalStateSet(scope, value);
+    });
+
+    let failure: unknown;
+    try {
+      await harness.performAction<SaveSlackInstallMetadataResult>(
+        "save-slack-install-metadata",
+        {
+          state: created.state,
+          agentId: "agent-slack-1",
+          teamId: "T1",
+          appId: "A1",
+          botUserId: "U1",
+          botTokenSecretId: FAKE_SECRET_ID,
+          signingSecretId: FAKE_SIGNING_SECRET_ID,
+        },
+        { companyId: COMPANY_A },
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).message).toMatch(/could not be fully restored/);
+    expect((failure as AggregateError).errors.map((error) => (error as Error).message)).toEqual([
+      "atomic config patch failed",
+      "settings rollback failed",
+      "flow rollback failed",
+    ]);
   });
 });

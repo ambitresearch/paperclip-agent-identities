@@ -116,7 +116,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
   const agentOptions = agentsData?.agents ?? [];
-  const summary = summarizeIdentitySettings(identities, Boolean(data?.credentialSidecarError));
+  const summary = summarizeIdentitySettings(identities);
 
   useEffect(() => {
     if (!companyId) {
@@ -1043,12 +1043,12 @@ function getIdentityTone(entry: BotIdentitySettingsEntry): IdentityTone {
   return "neutral";
 }
 
-function summarizeIdentitySettings(identities: BotIdentitySettingsEntry[], sidecarUnavailable: boolean) {
-  const ready = sidecarUnavailable ? 0 : identities.filter((identity) => identity.credentialStatus === "configured").length;
+function summarizeIdentitySettings(identities: BotIdentitySettingsEntry[]) {
+  const ready = identities.filter((identity) => identity.credentialStatus === "configured").length;
   return {
     total: identities.length,
     ready,
-    needsSetup: sidecarUnavailable ? identities.length : identities.filter((identity) => identity.credentialStatus !== "configured").length,
+    needsSetup: identities.filter((identity) => identity.credentialStatus !== "configured").length,
   };
 }
 

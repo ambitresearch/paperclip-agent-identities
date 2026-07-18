@@ -353,11 +353,11 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
 
     try {
       const token = await ctx.secrets.resolve(botTokenRef, { companyId, configPath });
-      const verified = await verifySlackToken(token);
+      const verified = await verifySlackToken(token, ctx.http.fetch);
       if (!verified.botId) {
         throw new Error("The selected Paperclip secret does not contain a Slack bot token.");
       }
-      const appId = await discoverSlackAppId(token, verified.botId);
+      const appId = await discoverSlackAppId(token, verified.botId, ctx.http.fetch);
       const result: DiscoverSlackInstallMetadataResult = {
         teamId: verified.teamId,
         botUserId: verified.userId,
@@ -485,17 +485,33 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       // The flow was already claimed above. If the settings projection was
       // written before the atomic host config update failed, restore only
       // this identity and re-open the flow so the operator can retry.
+      const rollbackErrors: unknown[] = [];
       if (settingsWritten) {
-        const rollbackState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE).catch(() => null));
-        const { [identityId]: _current, ...remainingIdentities } = rollbackState.identities;
-        const restoredIdentities = previousIdentity
-          ? { ...remainingIdentities, [identityId]: previousIdentity }
-          : remainingIdentities;
-        await ctx.state
-          .set(CONFIG_SCOPE, { version: BOT_IDENTITY_SETTINGS_VERSION, identities: restoredIdentities })
-          .catch(() => undefined);
+        try {
+          const rollbackState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+          const { [identityId]: _current, ...remainingIdentities } = rollbackState.identities;
+          const restoredIdentities = previousIdentity
+            ? { ...remainingIdentities, [identityId]: previousIdentity }
+            : remainingIdentities;
+          await ctx.state.set(CONFIG_SCOPE, {
+            version: BOT_IDENTITY_SETTINGS_VERSION,
+            identities: restoredIdentities,
+          });
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
       }
-      await ctx.state.set(slackAppManifestFlowScope(companyId, state), flow).catch(() => undefined);
+      try {
+        await ctx.state.set(slackAppManifestFlowScope(companyId, state), flow);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+      if (rollbackErrors.length > 0) {
+        throw new AggregateError(
+          [err, ...rollbackErrors],
+          "Slack install metadata save failed and its state could not be fully restored.",
+        );
+      }
       throw err;
     }
 
@@ -517,6 +533,7 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       teamId,
       appId,
       botUserId,
+      eventsRequestUrl: flow.eventsRequestUrl,
       botTokenSecretId,
       signingSecretId,
       ...(defaultChannel ? { defaultChannel } : {}),

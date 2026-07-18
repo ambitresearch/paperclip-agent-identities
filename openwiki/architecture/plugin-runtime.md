@@ -96,10 +96,17 @@ collect response chunks. The plugin-state mapping survives worker reloads, while
 list lets ingress replace a mapping whose session no longer exists. Different Slack threads and
 channels remain isolated from each other.
 
-The agent returns plain text and does not call Slack tools for this path. The provider callback posts
-that text through `createProviderTool(slack_bot_post_message)`, preserving the standard validation,
-identity, resource, credential, perform, and redaction pipeline. This keeps the integration inside
-the plugin SDK boundary and requires no Paperclip core changes.
+The agent returns plain text and does not call Slack tools for this path. Threaded replies first use
+`SlackResponseStream`, which resolves the already-routed identity's bot token and calls Slack's
+status and streaming APIs through `ctx.http.fetch`. Top-level replies and streaming fallbacks use
+`createProviderTool(slack_bot_post_message)`, which applies the standard validation, identity,
+resource, credential, perform, and redaction pipeline.
+
+Slack ingress also depends on matching Paperclip host support. The host must expose a
+company-scoped webhook route, pass the route-derived `companyId` into `handleWebhook`, and preserve
+the worker's HTTP response. Slack credential setup and resolution additionally require the
+company-scoped config and secret RPC contracts described in the README. The repository's pnpm SDK
+patch covers only the worker side of those calls and cannot add the corresponding server behavior.
 
 ## Config and state sources
 

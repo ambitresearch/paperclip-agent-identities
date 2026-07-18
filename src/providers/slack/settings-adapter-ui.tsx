@@ -877,6 +877,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
       slackSaveResult.teamId === config.slackTeamId.trim() &&
       slackSaveResult.appId === config.slackAppId.trim() &&
       slackSaveResult.botUserId === config.slackBotUserId.trim() &&
+      slackSaveResult.eventsRequestUrl === config.slackEventsRequestUrl.trim() &&
       slackSaveResult.botTokenSecretId === config.slackBotTokenSecretId.trim() &&
       slackSaveResult.signingSecretId === config.slackSigningSecretId.trim() &&
       (slackSaveResult.defaultChannel ?? "") === config.slackDefaultChannel.trim() &&

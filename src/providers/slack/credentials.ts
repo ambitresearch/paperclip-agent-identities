@@ -236,6 +236,7 @@ export async function resolveSlackCredential(
     config,
     runCtx.companyId,
     resolveSecret,
+    (token) => verifySlackToken(token, ctx.http.fetch),
   );
   return { token, secrets };
 }

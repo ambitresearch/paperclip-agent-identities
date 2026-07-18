@@ -325,14 +325,14 @@ async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySetting
   }
 
   const companyAgents = companyId ? await listCompanyAgentOptions(ctx, companyId) : [];
-  const companyAgentIds = companyId && companyAgents.length > 0
+  const companyAgentIds = companyId
     ? new Set(companyAgents.map((agent) => agent.id))
     : null;
 
   const identities: BotIdentitySettingsEntry[] = Object.values(state.identities)
-    .filter((identity) => !companyAgentIds || companyAgentIds.has(identity.agentId))
+    .filter((identity) => companyAgentIds === null || companyAgentIds.has(identity.agentId))
     .map((identity) => {
-      const credential = sidecar?.identities[identity.id];
+      const credential = identity.provider === "slack" ? undefined : sidecar?.identities[identity.id];
       const slackCredentialConfigured = identity.provider === "slack" && hasSlackCredentialRefs(
         companyConfig,
         identity.agentId,
@@ -342,7 +342,7 @@ async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySetting
         : undefined;
       return {
         ...identity,
-        credential,
+        ...(credential ? { credential } : {}),
         ...(slackSetup ? { slackSetup } : {}),
         credentialStatus: slackCredentialConfigured || credential
           ? "configured"

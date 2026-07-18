@@ -35,9 +35,11 @@ export function DashboardWidget({ context }: PluginWidgetProps) {
         <Metric label="Need setup" value={summary.needsSetup} tone={summary.needsSetup > 0 ? "warn" : "good"} />
       </div>
 
-      {data?.credentialSidecarError ? (
-        <div style={warningStyle}>Credential sidecar unavailable. Saves may not update private key references.</div>
-      ) : identities.length === 0 ? (
+      {data?.credentialSidecarError && (
+        <div style={warningStyle}>GitHub credential sidecar unavailable. GitHub saves may not update private key references.</div>
+      )}
+
+      {identities.length === 0 ? (
         <div style={hintBoxStyle}>No agent identities configured yet. Open plugin settings to add a provider-backed agent identity.</div>
       ) : (
         <div style={identityListStyle}>

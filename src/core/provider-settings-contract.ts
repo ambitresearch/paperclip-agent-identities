@@ -58,7 +58,15 @@ export interface ProviderSettingsFormConfig {
 // can't derive from `config` alone. Optional/union-friendly since most
 // providers (e.g. GitHub) need none of it.
 export interface ProviderSettingsValidationExtra {
-  readonly slackSaveResult?: { teamId: string; appId: string; botUserId: string; botTokenSecretId: string; signingSecretId: string; defaultChannel?: string | null } | null;
+  readonly slackSaveResult?: {
+    teamId: string;
+    appId: string;
+    botUserId: string;
+    eventsRequestUrl: string;
+    botTokenSecretId: string;
+    signingSecretId: string;
+    defaultChannel?: string | null;
+  } | null;
   readonly slackSaveBusy?: boolean;
 }
 

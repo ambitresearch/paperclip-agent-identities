@@ -72,6 +72,8 @@ function createSlackAgentReplyStream(
     channel: target.channel,
     messageTs: target.messageTs,
     threadTs: target.threadTs,
+    recipientTeamId: target.recipientTeamId,
+    recipientUserId: target.recipientUserId,
     fetch: ctx.http.fetch,
     logger: ctx.logger,
     resolveToken: async () => {

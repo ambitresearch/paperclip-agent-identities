@@ -18,6 +18,8 @@ export interface SlackResponseStreamOptions {
   readonly channel: string;
   readonly messageTs?: string;
   readonly threadTs?: string;
+  readonly recipientTeamId?: string;
+  readonly recipientUserId?: string;
   readonly fetch: SlackFetch;
   readonly resolveToken: () => Promise<string>;
   readonly logger: SlackStreamLogger;
@@ -81,6 +83,12 @@ export class SlackResponseStream {
         ? await this.setStatus(DEFAULT_STATUS, DEFAULT_LOADING_MESSAGES)
         : undefined;
       if (!status?.ok) await this.addWorkingReaction();
+    }).catch(() => undefined);
+  }
+
+  append(text: string): Promise<void> {
+    return this.serialize(async () => {
+      await this.appendInternal(text);
     }).catch(() => undefined);
   }
 
@@ -193,6 +201,12 @@ export class SlackResponseStream {
           channel: this.options.channel,
           thread_ts: this.options.threadTs,
           markdown_text: chunk,
+          ...(this.options.recipientTeamId && this.options.recipientUserId
+            ? {
+                recipient_team_id: this.options.recipientTeamId,
+                recipient_user_id: this.options.recipientUserId,
+              }
+            : {}),
         });
         const messageTs = typeof started.body.ts === "string" ? started.body.ts : "";
         if (!started.ok || !messageTs) {
@@ -215,17 +229,18 @@ export class SlackResponseStream {
     }
   }
 
-  private async stopStream(): Promise<void> {
-    if (!this.streamTs) return;
-    await this.call("chat.stopStream", {
+  private async stopStream(): Promise<boolean> {
+    if (!this.streamTs) return false;
+    const stopped = await this.call("chat.stopStream", {
       channel: this.options.channel,
       ts: this.streamTs,
     });
+    return stopped.ok;
   }
 
   private async repairStream(finalText: string): Promise<boolean> {
     if (!this.streamTs) return false;
-    await this.stopStream();
+    if (!await this.stopStream()) return false;
     const updated = await this.call("chat.update", {
       channel: this.options.channel,
       ts: this.streamTs,
@@ -268,8 +283,9 @@ export class SlackResponseStream {
       return false;
     }
 
-    await this.stopStream();
+    const stopped = await this.stopStream();
     await this.clearStatus();
+    if (!stopped) return false;
     await this.notifyDelivered();
     return true;
   }

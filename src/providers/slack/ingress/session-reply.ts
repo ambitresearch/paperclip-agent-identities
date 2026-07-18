@@ -58,6 +58,7 @@ interface StructuredReply {
  */
 export class SlackSessionReplyAccumulator {
   private pending = "";
+  private discardingOversizedLine = false;
   private fallback = "";
   private structured: StructuredReply | null = null;
   private streamableText = "";
@@ -69,6 +70,13 @@ export class SlackSessionReplyAccumulator {
    * stderr, and model reasoning never become streamable output.
    */
   append(message: string): string {
+    if (this.discardingOversizedLine) {
+      const newlineIndex = message.indexOf("\n");
+      if (newlineIndex < 0) return "";
+      this.discardingOversizedLine = false;
+      message = message.slice(newlineIndex + 1);
+    }
+
     this.pending += message;
 
     let newlineIndex = this.pending.indexOf("\n");
@@ -80,8 +88,8 @@ export class SlackSessionReplyAccumulator {
     }
 
     if (this.pending.length > MAX_JSONL_LINE_LENGTH) {
-      this.appendFallback(this.pending);
       this.pending = "";
+      this.discardingOversizedLine = true;
     }
 
     const delta = this.streamableText.slice(this.emittedStreamableLength);
@@ -90,10 +98,11 @@ export class SlackSessionReplyAccumulator {
   }
 
   finish(): string {
-    if (this.pending) {
+    if (this.pending && !this.discardingOversizedLine) {
       this.consumeLine(this.pending, false);
-      this.pending = "";
     }
+    this.pending = "";
+    this.discardingOversizedLine = false;
     return truncateSlackReply((this.structured?.text ?? this.fallback).trim());
   }
 

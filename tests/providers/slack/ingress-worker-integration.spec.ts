@@ -120,14 +120,15 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
 
   it("streams a threaded session response through Slack's native agent reply APIs", async () => {
     const { harness, resolveSecret } = createConfiguredHarness();
-    const authFetch = vi.fn(async () => new Response(JSON.stringify({
-      ok: true,
-      team_id: "T111",
-      user_id: "U111",
-      bot_id: "B111",
-    }), { status: 200, headers: { "Content-Type": "application/json" } }));
-    vi.stubGlobal("fetch", authFetch);
     const slackFetch = vi.fn(async (input: string, _init?: RequestInit) => {
+      if (input === "https://slack.com/api/auth.test") {
+        return new Response(JSON.stringify({
+          ok: true,
+          team_id: "T111",
+          user_id: "U111",
+          bot_id: "B111",
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
       if (input === "https://slack.com/api/assistant.threads.setStatus") {
         return new Response(JSON.stringify({ ok: true }), {
           status: 200,
@@ -256,7 +257,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
         markdown_text: "Hello from Paperclip",
       });
       expect(slackFetch.mock.calls.some(([url]) => url === "https://slack.com/api/chat.postMessage")).toBe(false);
-      expect(authFetch).toHaveBeenCalledTimes(1);
+      expect(slackFetch.mock.calls.filter(([url]) => url === "https://slack.com/api/auth.test")).toHaveLength(2);
       expect(resolveSecret).toHaveBeenCalledWith(
         COMPANY_CONFIG.identities["agent-1"].credentials.botToken,
         {

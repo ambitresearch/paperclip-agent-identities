@@ -126,6 +126,66 @@ describe("SlackResponseStream", () => {
     expect(delivered).toHaveBeenCalledWith("1719000001.123456");
   });
 
+  it("streams safe deltas incrementally and supplies recipients for channel threads", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/chat.startStream")) {
+        return jsonResponse({ ok: true, channel: "C0123456789", ts: "1719000001.123456" });
+      }
+      if (url.endsWith("/chat.appendStream") || url.endsWith("/chat.stopStream")) {
+        return jsonResponse({ ok: true });
+      }
+      if (url.endsWith("/assistant.threads.setStatus")) return jsonResponse({ ok: true });
+      throw new Error(`Unexpected Slack URL: ${url}`);
+    });
+    const stream = new SlackResponseStream({
+      channel: "C0123456789",
+      threadTs: "1719000000.123456",
+      recipientTeamId: "T0123456789",
+      recipientUserId: "U0123456789",
+      fetch: fetchMock,
+      resolveToken: async () => "xoxb-test-token",
+      logger: { warn: vi.fn() },
+    });
+
+    await stream.append("Hello ");
+    await stream.append("world");
+    await expect(stream.finish("Hello world")).resolves.toBe(true);
+
+    expect(requestBody(fetchMock.mock.calls[0])).toEqual({
+      channel: "C0123456789",
+      thread_ts: "1719000000.123456",
+      markdown_text: "Hello ",
+      recipient_team_id: "T0123456789",
+      recipient_user_id: "U0123456789",
+    });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://slack.com/api/chat.startStream",
+      "https://slack.com/api/chat.appendStream",
+      "https://slack.com/api/chat.stopStream",
+      "https://slack.com/api/assistant.threads.setStatus",
+    ]);
+  });
+
+  it("returns control to the final-message fallback when Slack cannot stop a stream", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith("/chat.startStream")) {
+        return jsonResponse({ ok: true, channel: "D0123456789", ts: "1719000001.123456" });
+      }
+      if (url.endsWith("/chat.stopStream")) return jsonResponse({ ok: false, error: "internal_error" });
+      if (url.endsWith("/assistant.threads.setStatus")) return jsonResponse({ ok: true });
+      throw new Error(`Unexpected Slack URL: ${url}`);
+    });
+    const stream = new SlackResponseStream({
+      channel: "D0123456789",
+      threadTs: "1719000000.123456",
+      fetch: fetchMock,
+      resolveToken: async () => "xoxb-test-token",
+      logger: { warn: vi.fn() },
+    });
+
+    await expect(stream.finish("Hello")).resolves.toBe(false);
+  });
+
   it("returns control to the final-message fallback when Slack cannot start a stream", async () => {
     const fetchMock = vi.fn(async (url: string) => {
       if (url.endsWith("/assistant.threads.setStatus")) return jsonResponse({ ok: true });

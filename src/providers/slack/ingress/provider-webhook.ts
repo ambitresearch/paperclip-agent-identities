@@ -80,10 +80,13 @@ export interface SlackAgentReplyStreamTarget {
   readonly channel: string;
   readonly messageTs?: string;
   readonly threadTs?: string;
+  readonly recipientTeamId?: string;
+  readonly recipientUserId?: string;
 }
 
 export interface SlackAgentReplyStream {
   start(): void;
+  append(text: string): Promise<void>;
   finish(finalText: string): Promise<boolean>;
   fail(): Promise<void>;
 }
@@ -418,6 +421,9 @@ export async function handleSlackProviderWebhook(
               channel: destination.channel,
               ...(destination.messageTs ? { messageTs: destination.messageTs } : {}),
               ...(destination.threadTs ? { threadTs: destination.threadTs } : {}),
+              ...(conversationKind !== "direct_message" && userId
+                ? { recipientTeamId: dispatch.teamId, recipientUserId: userId }
+                : {}),
             });
             replyStream.start();
           } catch {
@@ -484,7 +490,14 @@ export async function handleSlackProviderWebhook(
           reason: "slack-inbound-event",
           onEvent(event) {
             if (event.eventType === "chunk" && event.stream !== "stderr" && event.message) {
-              response.append(event.message);
+              const delta = response.append(event.message);
+              if (delta && replyStream) {
+                void replyStream.append(delta).catch(() => {
+                  ctx.logger.warn("Slack webhook: native response streaming append failed", {
+                    agentId: dispatch.agentId,
+                  });
+                });
+              }
               return;
             }
             if ((event.eventType === "done" || event.eventType === "error") && !terminalEventHandled) {

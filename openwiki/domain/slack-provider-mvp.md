@@ -265,10 +265,11 @@ Implementation (`src/providers/slack/ingress/`):
   snapshot, resolves the routed identity's `credentials.signingSecret` ref through
   `ctx.secrets.resolve` just in time without caching the resolved value, creates a plugin-owned agent
   session, sends a bounded projection of the Slack event, accumulates non-stderr response chunks,
-  and posts the completed text through the existing `slack_bot_post_message` provider pipeline. It
-  closes the session on both success and error. The prompt explicitly tells the agent to return
-  plain text and not call Slack tools, so the agent runtime does not need
-  `slack_bot_post_message` in its own tool set for this reply path.
+  and relays only filtered user-facing text. Threaded replies use Slack's status and streaming APIs
+  through `ctx.http.fetch`; top-level replies and streaming fallbacks use the existing
+  `slack_bot_post_message` provider pipeline. It closes the session on both success and error. The
+  prompt explicitly tells the agent to return plain text and not call Slack tools, so the agent
+  runtime does not need `slack_bot_post_message` in its own tool set for this reply path.
 
 Composed generically: `src/core/provider-contract.ts` adds an optional `webhooks`/`handleWebhook`
 seam (mirroring the existing `manifestTools`/`liveTools()` pattern), `src/manifest.ts` declares the
@@ -291,9 +292,11 @@ rotation.
 
 This provider owns the complete Slack delivery and reply relay. It verifies and deduplicates the
 event, resolves exactly one configured identity, opens a Paperclip plugin session for that agent,
-and posts the completed response with the same provider tool pipeline used by explicit tool calls.
-This uses the documented `ctx.agents.sessions.create`, `sendMessage`, and `close` SDK methods. No
-Paperclip core change is required.
+and relays the completed response through either Slack's native streaming APIs or the provider tool
+fallback. This uses the documented `ctx.agents.sessions.create`, `sendMessage`, and `close` SDK
+methods. It also requires Paperclip core support for company-scoped webhook routing, worker response
+propagation, config secret-ref patches, and scoped secret resolution. The pnpm patch in this plugin
+updates the worker SDK surface only; an unmodified `2026.707.0` host is not compatible.
 
 The agent interprets the bounded event prompt and returns plain text. The plugin, not the agent,
 performs the Slack API call. This keeps Slack credentials in company config and secret refs, keeps

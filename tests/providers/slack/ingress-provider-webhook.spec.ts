@@ -234,6 +234,15 @@ describe("SlackSessionReplyAccumulator", () => {
     expect(response.finish()).toBe("Safe answer");
   });
 
+  it("discards an oversized structured record instead of exposing it as plain text", () => {
+    const response = new SlackSessionReplyAccumulator();
+    const oversizedToolRecord = `{"type":"tool_result","content":"${"private".repeat(150_000)}`;
+
+    expect(response.append(oversizedToolRecord)).toBe("");
+    expect(response.append('"}\n{"type":"result","result":"Safe final answer"}\n')).toBe("Safe final answer");
+    expect(response.finish()).toBe("Safe final answer");
+  });
+
   it("retains plain stdout as a fallback and safely truncates oversized replies", () => {
     const plain = new SlackSessionReplyAccumulator();
     plain.append("Hello ");
@@ -324,6 +333,7 @@ describe("handleSlackProviderWebhook", () => {
     const ctx = makeCtx();
     const replyStream = {
       start: vi.fn(),
+      append: vi.fn(async () => undefined),
       finish: vi.fn(async () => true),
       fail: vi.fn(async () => undefined),
     };
@@ -357,6 +367,8 @@ describe("handleSlackProviderWebhook", () => {
       channel: "C0123456789",
       messageTs: "1719000000.123456",
       threadTs: "1719000000.123456",
+      recipientTeamId: "T111",
+      recipientUserId: "U222",
     }));
     expect(replyStream.start).toHaveBeenCalledOnce();
   });
@@ -382,6 +394,7 @@ describe("handleSlackProviderWebhook", () => {
     const ctx = makeCtx();
     const replyStream = {
       start: vi.fn(),
+      append: vi.fn(async () => undefined),
       finish: vi.fn(async () => true),
       fail: vi.fn(async () => undefined),
     };
@@ -689,6 +702,7 @@ describe("handleSlackProviderWebhook", () => {
     const postReply = vi.fn(async (_reply: SlackAgentReply) => ({ content: "fallback posted" }));
     const replyStream = {
       start: vi.fn(),
+      append: vi.fn(async () => undefined),
       finish: vi.fn(async () => false),
       fail: vi.fn(async () => undefined),
     };
@@ -743,6 +757,8 @@ describe("handleSlackProviderWebhook", () => {
       stream: "system",
       message: null,
     });
+
+    await vi.waitFor(() => expect(replyStream.append).toHaveBeenCalledWith("Streaming reply"));
 
     await vi.waitFor(() => expect(replyStream.finish).toHaveBeenCalledWith("Streaming reply"));
     await vi.waitFor(() => expect(postReply).toHaveBeenCalledWith(expect.objectContaining({

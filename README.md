@@ -37,6 +37,23 @@ pnpm build
 paperclipai plugin install . --local
 ```
 
+### Required Paperclip host support for Slack
+
+The Slack setup and Events API paths require a Paperclip host that implements
+the company-scoped plugin contracts used by this branch:
+
+- webhook delivery through
+  `/api/companies/<companyId>/plugins/<pluginId>/webhooks/<endpointKey>`, with
+  the route-derived `companyId` passed to the worker and the worker's HTTP
+  status, headers, and body returned to Slack;
+- company-scoped plugin config reads and atomic secret-reference patches; and
+- company-scoped secret resolution for the configured bot-token and signing-secret refs.
+
+The stock `2026.707.0` host does not provide those server-side contracts. The
+pnpm patch in this repository updates the plugin worker SDK boundary, but it
+does not make an unmodified Paperclip server compatible. Install this plugin
+only with a host build containing the matching core support.
+
 ## Identity Config Model
 
 Agent Identities uses a provider-aware settings state. Each saved identity is keyed by `agentId + provider`, using the identity key format `${agentId}:${provider}`. The settings page stores a version 3 map in Paperclip plugin state:

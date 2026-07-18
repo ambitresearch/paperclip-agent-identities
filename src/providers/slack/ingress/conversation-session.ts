@@ -106,6 +106,34 @@ async function loadActiveConversationSession(
   return null;
 }
 
+export function withSlackConversationTurn<T>(
+  input: ConversationSessionInput,
+  operation: () => Promise<T>,
+  completion?: Promise<unknown>,
+): Promise<T> {
+  const stateKey = conversationStateKey(input.agentId, input.conversation);
+  const lockKey = `${input.agentId}:${stateKey.stateKey}`;
+  let tails = mutationTailsByState.get(input.state);
+  if (!tails) {
+    tails = new Map();
+    mutationTailsByState.set(input.state, tails);
+  }
+
+  const previous = tails.get(lockKey) ?? Promise.resolve();
+  const result = previous.then(operation);
+  const tail = result.then(
+    async () => {
+      await completion;
+    },
+    () => undefined,
+  );
+  tails.set(lockKey, tail);
+  void tail.then(() => {
+    if (tails?.get(lockKey) === tail) tails.delete(lockKey);
+  });
+  return result;
+}
+
 /**
  * Returns the active session only when this agent already owns the Slack
  * conversation. This is the fail-closed gate for plain channel-thread

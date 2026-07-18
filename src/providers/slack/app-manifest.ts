@@ -21,6 +21,7 @@ import type {
 } from "../../shared/types.js";
 
 const SLACK_APP_MANIFEST_FLOW_STATE_PREFIX = "slack-app-manifest-flow:";
+const SLACK_SETUP_BINDING_NAMESPACE = "slack-setup-bindings";
 const SLACK_PROVIDER = "slack" as const;
 // Setup-state flow is deliberately short-lived: it only needs to survive the
 // operator's manifest-review -> install -> paste-back round trip, not a
@@ -98,6 +99,21 @@ function slackAppManifestFlowScope(companyId: string, state: string) {
     scopeId: companyId,
     stateKey: `${SLACK_APP_MANIFEST_FLOW_STATE_PREFIX}${state}`,
   };
+}
+
+function slackSetupBindingScope(companyId: string, secretId: string) {
+  return {
+    scopeKind: "company" as const,
+    scopeId: companyId,
+    namespace: SLACK_SETUP_BINDING_NAMESPACE,
+    stateKey: `metadata:${secretId}`,
+  };
+}
+
+function readSetupBindingPath(value: unknown): string[] | null {
+  if (!isRecord(value) || !Array.isArray(value.path)) return null;
+  const path = value.path.filter((segment): segment is string => typeof segment === "string");
+  return path.length === value.path.length && path.length > 0 ? path : null;
 }
 
 // Slack's App Manifest schema gives the app name and bot display name
@@ -342,16 +358,25 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       .digest("hex")
       .slice(0, 32);
     const setupPath = ["setup", "slack", "metadata", setupKey];
+    const setupBindingState = slackSetupBindingScope(companyId, secretIdResult.data);
+    const staleSetupPath = readSetupBindingPath(await ctx.state.get(setupBindingState));
+    if (staleSetupPath) {
+      await ctx.config.patchSecretRefs({ companyId, path: staleSetupPath, value: null }).catch(() => undefined);
+      await ctx.state.delete(setupBindingState).catch(() => undefined);
+    }
     const botTokenRef = createSlackSecretRef(secretIdResult.data);
     const configPath = [...setupPath, "botToken"].join(".");
 
-    await ctx.config.patchSecretRefs({
-      companyId,
-      path: setupPath,
-      value: { botToken: botTokenRef },
-    });
+    // Record the path before creating the binding. If the worker exits after
+    // the patch, the next discovery attempt can remove the stale binding.
+    await ctx.state.set(setupBindingState, { path: setupPath });
 
     try {
+      await ctx.config.patchSecretRefs({
+        companyId,
+        path: setupPath,
+        value: { botToken: botTokenRef },
+      });
       const token = await ctx.secrets.resolve(botTokenRef, { companyId, configPath });
       const verified = await verifySlackToken(token, ctx.http.fetch);
       if (!verified.botId) {
@@ -366,6 +391,7 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       return result;
     } finally {
       await ctx.config.patchSecretRefs({ companyId, path: setupPath, value: null });
+      await ctx.state.delete(setupBindingState).catch(() => undefined);
     }
   });
 

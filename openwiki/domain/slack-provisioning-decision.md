@@ -172,9 +172,12 @@ features:
   app_home:
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
+  agent_view:
+    agent_description: "Paperclip agent identity for {{agentLabel}}"
 oauth_config:
   scopes:
     bot:
+      - assistant:write
       - app_mentions:read
       - chat:write
       - channels:history
@@ -189,6 +192,7 @@ settings:
   event_subscriptions:
     request_url: "{{eventsRequestUrl}}"
     bot_events:
+      - app_home_opened
       - app_mention
       - message.channels
       - message.groups

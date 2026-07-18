@@ -82,7 +82,14 @@ function makeAgents(sessionOverrides: Record<string, unknown> = {}) {
           (session) => session.agentId === agentId && session.companyId === companyId,
         )
       ),
-      sendMessage: vi.fn(async () => ({ runId: "run-1" })),
+      sendMessage: vi.fn(async (
+        _sessionId: string,
+        _companyId: string,
+        options: { onEvent?: (event: AgentSessionEvent) => void },
+      ) => {
+        queueMicrotask(() => options.onEvent?.({ eventType: "done", runId: "run-1" } as AgentSessionEvent));
+        return { runId: "run-1" };
+      }),
       close: vi.fn(async (sessionId: string) => {
         activeSessions.delete(sessionId);
       }),
@@ -636,6 +643,7 @@ describe("handleSlackProviderWebhook", () => {
     const rawBody = JSON.stringify(payload);
     const timestamp = String(Math.floor(Date.now() / 1000));
     const ctx = makeCtx();
+    ctx.agents.sessions.sendMessage.mockImplementation(async () => ({ runId: "run-test" }));
     const postReply = vi.fn(async () => ({ content: "posted" }));
 
     await runSlackWebhook(
@@ -699,6 +707,7 @@ describe("handleSlackProviderWebhook", () => {
     const rawBody = JSON.stringify(payload);
     const timestamp = String(Math.floor(Date.now() / 1000));
     const ctx = makeCtx();
+    ctx.agents.sessions.sendMessage.mockImplementation(async () => ({ runId: "run-test" }));
     const postReply = vi.fn(async (_reply: SlackAgentReply) => ({ content: "fallback posted" }));
     const replyStream = {
       start: vi.fn(),

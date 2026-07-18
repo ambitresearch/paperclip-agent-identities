@@ -23,7 +23,7 @@ type GitHubAgentIdentityConfig = {
 
 - `id`: stable identity key, for example `agent-123:github`.
 - `agentId`: Paperclip agent ID.
-- `provider`: identity provider ID. GitHub is enabled today; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are listed as coming soon.
+- `provider`: identity provider ID. GitHub is enabled for GitHub identities; Slack identity setup and the Slack ingress/tool surface are implemented, while Mattermost, Microsoft Entra, Google Cloud, and AWS remain coming soon.
 - `label`: human-readable name shown in settings and tool output. The UI convention is `Agent Name [Company Name]`.
 - `github.username` / `github.commitName` / `github.commitEmail` / `github.app.credentialPropagationAgentIds`: nested GitHub-specific fields — never accessed as top-level `githubUsername`/`commitName`/etc. anywhere past the persistence boundary.
 

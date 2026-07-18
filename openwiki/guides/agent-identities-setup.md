@@ -2,7 +2,7 @@
 
 Agent Identities connects a Paperclip agent to a provider account. Each agent can have one GitHub identity and one Slack identity.
 
-Open the plugin's **Agent Identities** settings page, then select **New identity**. Choose the Paperclip agent and provider. The setup wizard shows only the fields required by that provider.
+Open the plugin's **Agent Identities** settings page, then select **Add identity**. Choose the Paperclip agent and provider. The setup wizard shows only the fields required by that provider.
 
 ## GitHub
 

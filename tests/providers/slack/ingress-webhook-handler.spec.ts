@@ -200,6 +200,37 @@ describe("handleSlackWebhook", () => {
     );
   });
 
+  it("routes a user-authored reply in a public-channel thread without another mention", async () => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-public-thread-reply",
+      authorizations: authorizationsFor("T111"),
+      event: {
+        type: "message",
+        channel_type: "channel",
+        channel: "C111",
+        user: "U222",
+        text: "howdy",
+        ts: "1719000001.123456",
+        thread_ts: "1719000000.123456",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const deps = makeDeps({ rawBody, headers: baseHeaders(timestamp, rawBody) });
+
+    await expect(handleSlackWebhook(deps as never)).resolves.toEqual({
+      status: 200,
+      body: { ok: true },
+    });
+    expect(deps.shouldProcessEvent).toHaveBeenCalledWith("agent-1", "Ev-public-thread-reply");
+    expect(deps.onAgentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-1", event: payload.event }),
+    );
+  });
+
   it.each([
     ["a non-message event", { type: "reaction_added", channel: "C111", user: "U222" }],
     ["a channel message", { type: "message", channel_type: "channel", channel: "C111", user: "U222" }],

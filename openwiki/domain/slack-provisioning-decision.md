@@ -2,7 +2,8 @@
 
 Status: **decided and implemented for HTTP Events API**. Generated manifests require an
 operator-supplied HTTPS URL with the exact `/events` path, set it as the Slack Request URL, and
-subscribe to `message.im` and `app_mention`. Socket Mode remains an unimplemented,
+subscribe to `message.im`, `app_mention`, `message.channels`, `message.groups`, and
+`message.mpim`. Socket Mode remains an unimplemented,
 operator-opt-in future transport.
 
 ## Decision
@@ -50,7 +51,8 @@ operator-opt-in future transport.
 At the time of this decision, the Paperclip-hosted worker exposed no provider webhook seam, so a
 public Events API receiver was an implementation prerequisite. DRO-1005 added that HTTP ingress
 composition path. The current manifest builder now accepts the public HTTPS `/events` URL and
-subscribes the generated app to `message.im` and `app_mention`. Socket Mode remains separate
+subscribes the generated app to direct messages, app mentions, and channel thread messages.
+Socket Mode remains separate
 follow-up work.
 
 The Socket Mode acceptance bullet that appeared in linked GitHub issue #62 combined two transports
@@ -98,14 +100,16 @@ Source: [App Manifest APIs / Configuration tokens](https://api.slack.com/referen
 | Threaded replies | `chat:write` | No separate scope; thread targeting is a message parameter, not a scope. |
 | Reactions | `reactions:write` | Add/remove emoji reactions. |
 | Inbound direct messages | `im:history` (Events API subscription `message.im`) | Generated manifests configure the operator-supplied HTTPS `/events` Request URL and subscribe to direct messages. |
+| Inbound public-channel thread replies | `channels:history` (Events API subscription `message.channels`) | Receiver dispatches only replies in threads already owned by the routed agent. |
+| Inbound private-channel thread replies | `groups:history` (Events API subscription `message.groups`) | Uses the same exact-thread ownership gate. |
+| Inbound multi-person DM thread replies | `mpim:history` (Events API subscription `message.mpim`) | Uses the same exact-thread ownership gate. |
 | Setup metadata discovery | `users:read` | Lets Paperclip resolve the installed App ID through `bots.info` after `auth.test` returns the bot ID. |
-| Inbound mentions | `app_mentions:read` (Events API subscription `app_mention`) | Generated manifests subscribe to mention-only public-channel events. Ordinary channel messages remain ignored. |
+| Inbound mentions | `app_mentions:read` (Events API subscription `app_mention`) | An app mention establishes ownership of its Slack thread. Top-level channel messages without a mention remain ignored. |
 | (Optional) join channels itself | `channels:join` | Only if the agent should self-invite rather than be invited by an operator/user. |
 
-This is the **minimum** set for identity check, channel lookup, posting, threaded replies,
-reactions, inbound direct messages, and public-channel mentions. Do not request broader scopes
-(for example, `channels:history` or `users:read.email`)
-without a separate justification, per least-privilege.
+This is the **minimum** set for identity check, channel lookup, posting, reactions, inbound direct
+messages, mentions, and follow-up replies in owned threads. Do not request broader scopes such as
+`users:read.email` without a separate justification, per least-privilege.
 
 Source: [OAuth scopes reference](https://api.slack.com/scopes) (per-scope descriptions);
 [Reference: Slack apps manifest structure — `oauth_config.scopes.bot`](https://api.slack.com/reference/manifests#oauth_config).
@@ -173,9 +177,12 @@ oauth_config:
     bot:
       - app_mentions:read
       - chat:write
+      - channels:history
       - channels:read
+      - groups:history
       - groups:read
       - im:history
+      - mpim:history
       - reactions:write
       - users:read
 settings:
@@ -183,7 +190,10 @@ settings:
     request_url: "{{eventsRequestUrl}}"
     bot_events:
       - app_mention
+      - message.channels
+      - message.groups
       - message.im
+      - message.mpim
   interactivity:
     is_enabled: false
   org_deploy_enabled: false

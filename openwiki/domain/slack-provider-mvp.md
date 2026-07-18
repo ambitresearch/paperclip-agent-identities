@@ -3,7 +3,9 @@
 Status: **partially implemented**. The identity config, company-scoped credential refs, Slack tools,
 HTTP Events API receiver, and manifest-assisted setup flow exist and are covered by tests. Generated
 manifests require an HTTPS URL with the exact `/events` path, include
-`settings.event_subscriptions.request_url`, and subscribe to `message.im` and `app_mention`.
+`settings.event_subscriptions.request_url`, and subscribe to direct messages,
+app mentions, and thread replies in public channels, private channels, and
+multi-person DMs.
 Socket Mode, OAuth callback automation, and token rotation remain deferred.
 
 ## 1. Identity shape
@@ -138,9 +140,11 @@ JSON generation lives in the contributed `create-slack-app-manifest` action inst
 GitHub's App manifest generation lives (`contributeGitHubAppManifestActions`).
 
 The generated manifest accepts an operator-supplied HTTPS URL with the exact `/events` path,
-inserts it at `settings.event_subscriptions.request_url`, requests `im:history` and
-`app_mentions:read`, and subscribes to `message.im` and `app_mention`. Ordinary public-channel
-messages are not subscribed to or dispatched.
+inserts it at `settings.event_subscriptions.request_url`, requests the direct-message and
+channel history scopes, and subscribes to `message.im`, `app_mention`, `message.channels`,
+`message.groups`, and `message.mpim`. Ordinary top-level channel messages are acknowledged and
+ignored. A plain thread reply is dispatched only when that agent already owns the exact thread
+through a session mapping created by an earlier app mention.
 `settings.interactivity.is_enabled: false`, `socket_mode_enabled: false`, and
 `token_rotation_enabled: false` remain explicit.
 
@@ -219,8 +223,8 @@ which a Slack token could land in an agent's environment/logs.
 ## 10. Inbound events — HTTP receiver shipped (DRO-1005)
 
 The inbound HTTP Events API receiver and generated Request URL subscription are implemented. The
-manifest subscribes to `message.im` and `app_mention`; Socket Mode remains deferred and
-operator-opt-in per the decision record.
+manifest subscribes to `message.im`, `app_mention`, `message.channels`, `message.groups`, and
+`message.mpim`; Socket Mode remains deferred and operator-opt-in per the decision record.
 
 This is intentionally the HTTP slice selected by
 [`slack-provisioning-decision.md`](./slack-provisioning-decision.md), not an implementation of
@@ -306,6 +310,7 @@ these apps. There should be one Request URL, one dedup owner, and one reply owne
 | HTTP Events API receiver, routing, and dedup (DRO-1005) | ✅ (§10) | |
 | Generated app Request URL and `message.im` subscription | ✅ (§5, §10) | |
 | `app_mention` subscription and `app_mentions:read` scope | ✅ (§5, §10) | |
+| Owned-thread follow-ups through channel message subscriptions | ✅ (§5, §10) | |
 | Socket Mode | | ✅ (operator opt-in only, per decision record) |
 | App Manifest API (`apps.manifest.*`) bulk automation | | ✅ (operator-only, per decision record) |
 | In-house OAuth v2 install flow (vs. manifest copy/paste) | | ✅ |
@@ -315,10 +320,10 @@ these apps. There should be one Request URL, one dedup owner, and one reply owne
 
 ## 13. Required vs. optional scopes (MVP)
 
-**Required**: `app_mentions:read`, `chat:write`, `channels:read`, `groups:read`, `im:history`,
-`reactions:write`, and `users:read`. `app_mentions:read` and `im:history` back the generated
-`app_mention` and `message.im` event subscriptions. `users:read` lets setup resolve the App ID
-from the installed bot.
+**Required**: `assistant:write`, `app_mentions:read`, `chat:write`, `channels:history`,
+`channels:read`, `groups:history`, `groups:read`, `im:history`, `mpim:history`,
+`reactions:write`, and `users:read`. The history scopes back the generated message event
+subscriptions. `users:read` lets setup resolve the App ID from the installed bot.
 
 **Optional / deferred**: `channels:join` (only if self-invite ships).
 
@@ -414,8 +419,8 @@ still ship setup actions ahead of its tool surface; this is a provider-agnostic 
 Slack-specific one). Three actions are registered (`src/providers/slack/app-manifest.ts`):
 
 - `create-slack-app-manifest`: validates the operator-supplied HTTPS URL with the exact `/events`
-  path and builds the MVP app manifest with `request_url`, `app_mention`, `message.im`,
-  `app_mentions:read`, and `im:history`, while keeping `interactivity.is_enabled`,
+  path and builds the MVP app manifest with `request_url`, `app_mention`, direct-message events,
+  channel thread events, and their required history scopes, while keeping `interactivity.is_enabled`,
   `socket_mode_enabled`, and `token_rotation_enabled` false. It
   verifies the
   target `agentId` belongs to the host-authorized `companyId` (via `ctx.agents.list`), generates a

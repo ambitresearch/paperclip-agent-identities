@@ -21,6 +21,7 @@ import {
 } from "./dedup.js";
 import {
   forgetSlackConversationSession,
+  getExistingSlackConversationSession,
   getOrCreateSlackConversationSession,
   isMissingAgentSessionError,
   type SlackConversationTarget,
@@ -354,6 +355,36 @@ export async function handleSlackProviderWebhook(
         const destination = readReplyDestination(dispatch.event);
         const rawEvent = isRecord(dispatch.event) ? dispatch.event : {};
         const conversationKind = classifySlackConversation(rawEvent);
+        const conversation: SlackConversationTarget = {
+          teamId: dispatch.teamId,
+          appId: dispatch.appId,
+          channel: destination.channel,
+          ...(conversationKind !== "direct_message" && destination.threadTs
+            ? { threadTs: destination.threadTs }
+            : {}),
+        };
+        const sessionInput = {
+          state: ctx.state,
+          sessions: ctx.agents.sessions,
+          agentId: dispatch.agentId,
+          companyId,
+          conversation,
+        };
+        const requiresExistingThread =
+          conversationKind !== "direct_message" && rawEvent.type === "message";
+        let session = requiresExistingThread
+          ? await getExistingSlackConversationSession(sessionInput)
+          : await getOrCreateSlackConversationSession(sessionInput);
+        if (!session) {
+          ctx.logger.info("Slack webhook: ignored reply in a thread this agent does not own", {
+            agentId: dispatch.agentId,
+            channel: destination.channel,
+            threadTs: destination.threadTs,
+          });
+          await completeSlackEventClaim(ctx.state, dispatch.agentId, dispatch.eventId);
+          return;
+        }
+
         const userId = boundedString(rawEvent.user, MAX_SLACK_EVENT_FIELD_LENGTH);
         let sender: SlackSenderProfile | undefined;
         if (userId) {
@@ -375,22 +406,6 @@ export async function handleSlackProviderWebhook(
             });
           }
         }
-        const conversation: SlackConversationTarget = {
-          teamId: dispatch.teamId,
-          appId: dispatch.appId,
-          channel: destination.channel,
-          ...(conversationKind !== "direct_message" && destination.threadTs
-            ? { threadTs: destination.threadTs }
-            : {}),
-        };
-        const sessionInput = {
-          state: ctx.state,
-          sessions: ctx.agents.sessions,
-          agentId: dispatch.agentId,
-          companyId,
-          conversation,
-        };
-        let session = await getOrCreateSlackConversationSession(sessionInput);
         const response = new SlackSessionReplyAccumulator();
         let terminalEventHandled = false;
 

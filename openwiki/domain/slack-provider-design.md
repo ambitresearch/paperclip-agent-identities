@@ -56,9 +56,8 @@ persistence was available.
 **Explicitly out of scope for MVP** (tracked as later work, not silently
 dropped):
 - Socket Mode ingress, slash commands, and interactive event families. The
-  HTTP Events API receiver, direct-message `message.im` subscription, and
-  mention-only public-channel `app_mention` subscription are shipped; these
-  additional transports and event types remain deferred.
+  HTTP Events API receiver and message subscriptions are shipped; these
+  additional transports and interactive event types remain deferred.
 - Multi-workspace fan-out for a single agent identity (one Slack app
   installed into N workspaces). MVP is one workspace installation per agent
   identity, same cardinality as one GitHub App installation per agent.
@@ -83,8 +82,8 @@ later implemented the HTTP Events API receiver selected by
 follow-up shipped manifest provisioning. The generated manifest now requires an
 HTTPS URL with the exact `/events` path, writes it to
 `settings.event_subscriptions.request_url`, subscribes to `message.im` and
-`app_mention`, and requests `im:history` plus `app_mentions:read`. Socket Mode
-remains deferred.
+`app_mention` plus `message.channels`, `message.groups`, and `message.mpim`,
+and requests the corresponding history scopes. Socket Mode remains deferred.
 
 A top-level `app_mention` starts a Slack thread rooted at that event's `ts`.
 Mentions received inside an existing thread keep their original `thread_ts`.
@@ -106,6 +105,12 @@ keyed by their root `thread_ts`, and different channels or thread roots never sh
 context. Only DMs may carry context across Slack threads. The session mapping is
 stored in plugin state and is replaced if Paperclip reports that the saved session
 is no longer active.
+
+An ordinary channel, private-channel, or multi-person DM message is dispatched
+only when it is a threaded reply and the routed agent already has a session
+mapping for that exact thread. The initial `app_mention` creates that ownership
+mapping. Plain replies in unowned threads and top-level messages without a
+mention are acknowledged and ignored.
 
 Each inbound turn includes a bounded Slack sender profile from `users.info`, cached
 for 24 hours. Email is excluded. DMs may use sender-specific context; private groups
@@ -466,10 +471,12 @@ GitHub's App Manifest flow (`contributeGitHubAppManifestActions` /
 
 1. Operator enters a public HTTPS Events Request URL. It must have the exact
    `/events` path and no query or fragment. The settings page builds a Slack app
-   manifest with bot scopes `app_mentions:read`, `chat:write`, `channels:read`,
-   `groups:read`, `im:history`, `reactions:write`, and `users:read`. The manifest
+   manifest with bot scopes `assistant:write`, `app_mentions:read`, `chat:write`,
+   `channels:history`, `channels:read`, `groups:history`, `groups:read`,
+   `im:history`, `mpim:history`, `reactions:write`, and `users:read`. The manifest
    writes the URL to `settings.event_subscriptions.request_url`, subscribes to
-   `app_mention` and `message.im`,
+   `app_mention`, `message.channels`, `message.groups`, `message.im`, and
+   `message.mpim`,
    leaves Socket Mode disabled, copies the JSON, and opens
    `https://api.slack.com/apps` in a separate tab. `chat:write.public` is
    omitted, so the app must be a member of each target channel.
@@ -590,7 +597,8 @@ MVP has no callback endpoint and therefore does not expose this attack surface.
 without a valid Slack signature could spoof events as if from Slack.
 **Mitigation (implemented by DRO-1005 and the provisioning follow-up):** the
 generated manifest provisions the required HTTPS `/events` Request URL and
-subscribes to `app_mention` and `message.im`. The receiver resolves
+subscribes to `app_mention`, `message.channels`, `message.groups`, `message.im`,
+and `message.mpim`. The receiver resolves
 `identities.<agentId>.credentials.signingSecret`, verifies the
 `X-Slack-Signature` and `X-Slack-Request-Timestamp` headers before parsing or
 trusting the event body, rejects requests outside Slack's replay window

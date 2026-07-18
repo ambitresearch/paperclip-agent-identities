@@ -423,10 +423,11 @@ describe("handleSlackProviderWebhook", () => {
       {
         event_id: "Ev-thread-reply",
         event: {
-          type: "app_mention",
+          type: "message",
+          channel_type: "channel",
           channel: "C0123456789",
           user: "U222",
-          text: "<@U111> second",
+          text: "second",
           ts: "1719000001.123456",
           thread_ts: rootTs,
         },
@@ -456,6 +457,51 @@ describe("handleSlackProviderWebhook", () => {
     expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(1);
     expect(ctx.agents.sessions.sendMessage.mock.calls.map((call: unknown[]) => call[0]))
       .toEqual(["session-1", "session-1"]);
+  });
+
+  it("ignores a plain reply in a channel thread this agent does not own", async () => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-unowned-thread-reply",
+      authorizations: [{ team_id: "T111" }],
+      event: {
+        type: "message",
+        channel_type: "channel",
+        channel: "C0123456789",
+        user: "U222",
+        text: "not for this agent",
+        ts: "1719000001.123456",
+        thread_ts: "1719000000.123456",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const ctx = makeCtx();
+
+    await expect(runSlackWebhook({
+      endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+      companyId: "co-1",
+      headers: {
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": sign(timestamp, rawBody),
+      },
+      rawBody,
+      requestId: "req-unowned-thread-reply",
+    }, ctx)).resolves.toEqual({ status: 200, body: { ok: true } });
+
+    expect(ctx.agents.sessions.create).not.toHaveBeenCalled();
+    expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+    expect(ctx.logger.info).toHaveBeenCalledWith(
+      "Slack webhook: ignored reply in a thread this agent does not own",
+      expect.objectContaining({
+        agentId: "agent-1",
+        channel: "C0123456789",
+        threadTs: "1719000000.123456",
+      }),
+    );
   });
 
   it("keeps different Slack threads and channels in separate Paperclip sessions", async () => {

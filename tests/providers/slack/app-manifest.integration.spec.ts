@@ -97,15 +97,25 @@ describe("Slack manifest-assisted app setup actions", () => {
     expect(manifestBody.features.assistant_view).toBeUndefined();
     expect(manifestBody.settings.event_subscriptions).toEqual({
       request_url: EVENTS_REQUEST_URL,
-      bot_events: ["app_home_opened", "app_mention", "message.im"],
+      bot_events: [
+        "app_home_opened",
+        "app_mention",
+        "message.channels",
+        "message.groups",
+        "message.im",
+        "message.mpim",
+      ],
     });
     expect(manifestBody.oauth_config.scopes.bot).toEqual([
       "assistant:write",
       "app_mentions:read",
       "chat:write",
+      "channels:history",
       "channels:read",
+      "groups:history",
       "groups:read",
       "im:history",
+      "mpim:history",
       "reactions:write",
       "users:read",
     ]);

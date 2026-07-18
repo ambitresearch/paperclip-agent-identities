@@ -31,9 +31,12 @@ const SLACK_MVP_BOT_SCOPES = [
   "assistant:write",
   "app_mentions:read",
   "chat:write",
+  "channels:history",
   "channels:read",
+  "groups:history",
   "groups:read",
   "im:history",
+  "mpim:history",
   "reactions:write",
   "users:read",
 ] as const;
@@ -150,7 +153,14 @@ function buildSlackAppManifest(label: string, eventsRequestUrl: string): string 
     settings: {
       event_subscriptions: {
         request_url: eventsRequestUrl,
-        bot_events: ["app_home_opened", "app_mention", "message.im"],
+        bot_events: [
+          "app_home_opened",
+          "app_mention",
+          "message.channels",
+          "message.groups",
+          "message.im",
+          "message.mpim",
+        ],
       },
       interactivity: { is_enabled: false },
       org_deploy_enabled: false,

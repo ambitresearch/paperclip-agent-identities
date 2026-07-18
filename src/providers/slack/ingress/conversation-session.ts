@@ -91,6 +91,35 @@ async function withConversationMutation<T>(
   }
 }
 
+async function loadActiveConversationSession(
+  input: ConversationSessionInput,
+  stateKey: ReturnType<typeof conversationStateKey>,
+): Promise<AgentSession | null> {
+  const stored = parseStoredSession(await input.state.get(stateKey));
+  if (!stored) return null;
+
+  const activeSessions = await input.sessions.list(input.agentId, input.companyId);
+  const active = activeSessions.find((session) => session.sessionId === stored.sessionId);
+  if (active) return active;
+
+  await input.state.delete(stateKey);
+  return null;
+}
+
+/**
+ * Returns the active session only when this agent already owns the Slack
+ * conversation. This is the fail-closed gate for plain channel-thread
+ * replies, which must never create a new conversation without an app mention.
+ */
+export async function getExistingSlackConversationSession(
+  input: ConversationSessionInput,
+): Promise<AgentSession | null> {
+  const stateKey = conversationStateKey(input.agentId, input.conversation);
+  const lockKey = `${input.agentId}:${stateKey.stateKey}`;
+  return withConversationMutation(input.state, lockKey, () =>
+    loadActiveConversationSession(input, stateKey));
+}
+
 /**
  * Returns one durable Paperclip agent session for one Slack conversation.
  *
@@ -107,13 +136,8 @@ export async function getOrCreateSlackConversationSession(
   const lockKey = `${input.agentId}:${stateKey.stateKey}`;
 
   return withConversationMutation(input.state, lockKey, async () => {
-    const stored = parseStoredSession(await input.state.get(stateKey));
-    if (stored) {
-      const activeSessions = await input.sessions.list(input.agentId, input.companyId);
-      const active = activeSessions.find((session) => session.sessionId === stored.sessionId);
-      if (active) return active;
-      await input.state.delete(stateKey);
-    }
+    const active = await loadActiveConversationSession(input, stateKey);
+    if (active) return active;
 
     const created = await input.sessions.create(input.agentId, input.companyId);
     try {

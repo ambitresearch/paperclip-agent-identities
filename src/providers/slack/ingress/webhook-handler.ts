@@ -58,10 +58,18 @@ function isValidSlackEvent(event: unknown): event is Record<string, unknown> {
 
 function isDispatchableSlackMessage(event: Record<string, unknown>, botUserId: string): boolean {
   const userId = typeof event.user === "string" ? event.user.trim() : "";
+  const channelType = typeof event.channel_type === "string" ? event.channel_type.trim() : "";
+  const threadTs = typeof event.thread_ts === "string" ? event.thread_ts.trim() : "";
+  const text = typeof event.text === "string" ? event.text : "";
   const isDirectMessage = event.type === "message" && event.channel_type === "im";
   const isAppMention = event.type === "app_mention";
+  const isOwnedThreadCandidate =
+    event.type === "message" &&
+    ["channel", "group", "mpim"].includes(channelType) &&
+    threadTs.length > 0 &&
+    !text.includes(`<@${botUserId.trim()}>`);
   return (
-    (isDirectMessage || isAppMention) &&
+    (isDirectMessage || isAppMention || isOwnedThreadCandidate) &&
     event.subtype === undefined &&
     event.bot_id === undefined &&
     userId.length > 0 &&
@@ -354,7 +362,7 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
 
   const botUserId = identities[agentId]?.botUserId ?? "";
   if (!isDispatchableSlackMessage(event, botUserId)) {
-    logger.info("Slack webhook: ignored event that is not a user direct message or app mention", {
+    logger.info("Slack webhook: ignored event that is not a user direct message, app mention, or thread reply", {
       agentId,
       eventId,
     });

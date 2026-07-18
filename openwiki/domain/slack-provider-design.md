@@ -85,13 +85,14 @@ HTTPS URL with the exact `/events` path, writes it to
 `app_mention` plus `message.channels`, `message.groups`, and `message.mpim`,
 and requests the corresponding history scopes. Socket Mode remains deferred.
 
-A top-level `app_mention` starts a Slack thread rooted at that event's `ts`.
+A top-level `app_mention`, `@channel`, `@here`, or `@everyone` starts a Slack
+thread rooted at that event's `ts`.
 Mentions received inside an existing thread keep their original `thread_ts`.
 Top-level direct messages receive one final response in the main DM, and only
 use a thread when the inbound DM already has `thread_ts`. Slack does not expose
 the human composer typing indicator to bots through its official Web API. The
 receiver uses `assistant.threads.setStatus` for supported assistant threads and
-falls back to a temporary `:hourglass_flowing_sand:` reaction on the inbound
+falls back to a temporary `:paperclip:` reaction on the inbound
 message when thread status is unavailable. The reaction is removed when processing
 ends. It does not simulate typing by posting and later editing a placeholder message.
 This processing indicator is deterministic receiver behavior, not a model-selected
@@ -108,9 +109,11 @@ is no longer active.
 
 An ordinary channel, private-channel, or multi-person DM message is dispatched
 only when it is a threaded reply and the routed agent already has a session
-mapping for that exact thread. The initial `app_mention` creates that ownership
-mapping. Plain replies in unowned threads and top-level messages without a
-mention are acknowledged and ignored.
+mapping for that exact thread. An initial `app_mention` or Slack broadcast token
+(`<!channel>`, `<!here>`, or `<!everyone>`) creates that ownership mapping. A
+broadcast inside a thread may also create the routed agent's mapping for that
+thread. Plain replies in unowned threads and top-level messages without a
+mention or broadcast are acknowledged and ignored.
 
 Each inbound turn includes a bounded Slack sender profile from `users.info`, cached
 for 24 hours. Email is excluded. DMs may use sender-specific context; private groups
@@ -599,11 +602,14 @@ without a valid Slack signature could spoof events as if from Slack.
 generated manifest provisions the required HTTPS `/events` Request URL and
 subscribes to `app_mention`, `message.channels`, `message.groups`, `message.im`,
 and `message.mpim`. The receiver resolves
-`identities.<agentId>.credentials.signingSecret`, verifies the
-`X-Slack-Signature` and `X-Slack-Request-Timestamp` headers before parsing or
-trusting the event body, rejects requests outside Slack's replay window
-(roughly 5 minutes), bounds request size and unauthenticated work, and never
-logs the signing secret. For temporary local tests,
+`identities.<agentId>.credentials.signingSecret` just in time. For normal
+callbacks it extracts bounded `team_id` and `api_app_id` values as untrusted
+routing hints, resolves only the exactly routed identity's secret, and verifies
+the untouched raw body before trusting or dispatching the full envelope.
+Requests without usable hints use a bounded parallel verification fallback.
+The receiver rejects requests outside Slack's replay window (roughly 5
+minutes), bounds request size and unauthenticated work, and never logs or caches
+the signing secret. For temporary local tests,
 `scripts/slack-events-adapter.mjs` accepts loopback `POST /events` and forwards
 the unchanged body and Slack headers to
 `/api/companies/<companyId>/plugins/roshangautam.paperclip-agent-identities/webhooks/slack-events`.

@@ -200,6 +200,44 @@ describe("handleSlackWebhook", () => {
     );
   });
 
+  it.each([
+    ["channel", "<!channel>", "Ev-public-channel-broadcast"],
+    ["group", "<!here>", "Ev-private-group-broadcast"],
+    ["mpim", "<!everyone>", "Ev-mpim-broadcast"],
+  ])("routes a user-authored %s broadcast to the matching agent", async (channelType, token, eventId) => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: eventId,
+      authorizations: authorizationsFor("T111"),
+      event: {
+        type: "message",
+        channel_type: channelType,
+        channel: channelType === "channel" ? "C111" : "G111",
+        user: "U222",
+        text: `${token} please respond`,
+        ts: "1719000000.123456",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const deps = makeDeps({
+      rawBody,
+      headers: baseHeaders(timestamp, rawBody),
+      nowEpochSeconds: 1_800_000_000,
+    });
+
+    await expect(handleSlackWebhook(deps as never)).resolves.toEqual({
+      status: 200,
+      body: { ok: true },
+    });
+    expect(deps.shouldProcessEvent).toHaveBeenCalledWith("agent-1", eventId);
+    expect(deps.onAgentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-1", event: payload.event }),
+    );
+  });
+
   it("routes a user-authored reply in a public-channel thread without another mention", async () => {
     const payload = {
       type: "event_callback",
@@ -356,7 +394,7 @@ describe("handleSlackWebhook", () => {
     expect(deps.onAgentEvent).not.toHaveBeenCalled();
   });
 
-  it("fails closed (still acks 200, per Slack's retry-suppression contract) but does not dispatch when routing is ambiguous", async () => {
+  it("rejects ambiguous routing before resolving any signing secret", async () => {
     const payload = {
       type: "event_callback",
       team_id: "T111",
@@ -380,7 +418,8 @@ describe("handleSlackWebhook", () => {
 
     const result = await handleSlackWebhook(deps as never);
 
-    expect(result.status).toBe(200);
+    expect(result.status).toBe(401);
+    expect(deps.resolveSigningSecret).not.toHaveBeenCalled();
     expect(deps.onAgentEvent).not.toHaveBeenCalled();
   });
 
@@ -482,22 +521,19 @@ describe("handleSlackWebhook", () => {
     expect(deps.onAgentEvent).not.toHaveBeenCalled();
   });
 
-  it("authenticates the signature before any JSON.parse of the body — an unsigned request with a malicious/malformed body is rejected at 401, not 400", async () => {
-    // A body that is well-formed enough to parse but was never signed by any
-    // configured agent's secret must be rejected on authentication grounds
-    // (401) before the parse-dependent 400 path is ever reached — proving
-    // signature verification does not depend on (and is not ordered after)
-    // parsing.
-    const rawBody = JSON.stringify({ type: "event_callback", team_id: "T111", api_app_id: "A111" });
+  it("rejects missing authentication headers before routing-hint parsing or secret work", async () => {
+    const rawBody = "not json";
     const deps = makeDeps({
       rawBody,
-      headers: {}, // no signature at all
+      headers: {},
       nowEpochSeconds: 1_800_000_000,
     });
 
     const result = await handleSlackWebhook(deps as never);
 
     expect(result.status).toBe(401);
+    expect(deps.getProjectedIdentities).not.toHaveBeenCalled();
+    expect(deps.resolveSigningSecret).not.toHaveBeenCalled();
   });
 
   it("fails closed (401) when the routed agent's own secret did not match this request's signature (cross-agent confused-deputy defense)", async () => {
@@ -535,6 +571,8 @@ describe("handleSlackWebhook", () => {
     const result = await handleSlackWebhook(deps as never);
 
     expect(result.status).toBe(401);
+    expect(deps.resolveSigningSecret).toHaveBeenCalledTimes(1);
+    expect(deps.resolveSigningSecret).toHaveBeenCalledWith("agent-1");
     expect(deps.onAgentEvent).not.toHaveBeenCalled();
   });
 
@@ -578,7 +616,7 @@ describe("handleSlackWebhook", () => {
     expect(deps.resolveSigningSecret).not.toHaveBeenCalled();
   });
 
-  it("checks signing secrets in bounded parallel batches", async () => {
+  it("resolves only the exactly routed agent's signing secret for a normal multi-app event", async () => {
     const identities = Object.fromEntries(
       Array.from({ length: 12 }, (_, index) => [
         `agent-${index}`,
@@ -600,29 +638,21 @@ describe("handleSlackWebhook", () => {
     };
     const rawBody = JSON.stringify(payload);
     const timestamp = "1800000000";
-    let releaseFirstBatch!: () => void;
-    const firstBatchGate = new Promise<void>((resolve) => {
-      releaseFirstBatch = resolve;
-    });
-    const started: string[] = [];
     const deps = makeDeps({
       rawBody,
       headers: baseHeaders(timestamp, rawBody),
       getProjectedIdentities: vi.fn(async () => identities),
       resolveSigningSecret: vi.fn(async (agentId: string) => {
-        started.push(agentId);
-        if (started.length <= 8) await firstBatchGate;
         return agentId === "agent-9" ? SIGNING_SECRET : "non-matching-secret";
       }),
     });
 
-    const result = handleSlackWebhook(deps as never);
-    await vi.waitFor(() => expect(started).toHaveLength(8));
-    expect(started).toEqual(Object.keys(identities).slice(0, 8));
-    releaseFirstBatch();
-
-    await expect(result).resolves.toEqual({ status: 200, body: { ok: true } });
-    expect(started).toHaveLength(12);
+    await expect(handleSlackWebhook(deps as never)).resolves.toEqual({
+      status: 200,
+      body: { ok: true },
+    });
+    expect(deps.resolveSigningSecret).toHaveBeenCalledTimes(1);
+    expect(deps.resolveSigningSecret).toHaveBeenCalledWith("agent-9");
   });
 });
 

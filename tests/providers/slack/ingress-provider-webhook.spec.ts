@@ -361,6 +361,59 @@ describe("handleSlackProviderWebhook", () => {
     expect(replyStream.start).toHaveBeenCalledOnce();
   });
 
+  it("starts a routed agent session and reply thread for a top-level channel broadcast", async () => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev-public-broadcast",
+      authorizations: [{ team_id: "T111" }],
+      event: {
+        type: "message",
+        channel_type: "channel",
+        channel: "C0123456789",
+        user: "U222",
+        text: "<!channel> status check",
+        ts: "1719000002.123456",
+      },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const ctx = makeCtx();
+    const replyStream = {
+      start: vi.fn(),
+      finish: vi.fn(async () => true),
+      fail: vi.fn(async () => undefined),
+    };
+    const createReplyStream = vi.fn((_target: SlackAgentReplyStreamTarget) => replyStream);
+
+    const result = await runSlackWebhook(
+      {
+        endpointKey: SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+        companyId: "co-1",
+        headers: {
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": sign(timestamp, rawBody),
+        },
+        rawBody,
+        requestId: "req-public-broadcast",
+      },
+      ctx,
+      async () => ({}),
+      createReplyStream,
+    );
+
+    expect(result).toEqual({ status: 200, body: { ok: true } });
+    expect(ctx.agents.sessions.create).toHaveBeenCalledWith("agent-1", "co-1");
+    expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledTimes(1);
+    expect(createReplyStream).toHaveBeenCalledWith(expect.objectContaining({
+      channel: "C0123456789",
+      messageTs: "1719000002.123456",
+      threadTs: "1719000002.123456",
+    }));
+    expect(replyStream.start).toHaveBeenCalledOnce();
+  });
+
   it("reuses one Paperclip session across top-level and threaded messages in the same DM", async () => {
     const ctx = makeCtx();
     const timestamp = String(Math.floor(Date.now() / 1000));

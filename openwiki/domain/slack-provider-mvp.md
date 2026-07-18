@@ -142,9 +142,11 @@ GitHub's App manifest generation lives (`contributeGitHubAppManifestActions`).
 The generated manifest accepts an operator-supplied HTTPS URL with the exact `/events` path,
 inserts it at `settings.event_subscriptions.request_url`, requests the direct-message and
 channel history scopes, and subscribes to `message.im`, `app_mention`, `message.channels`,
-`message.groups`, and `message.mpim`. Ordinary top-level channel messages are acknowledged and
-ignored. A plain thread reply is dispatched only when that agent already owns the exact thread
-through a session mapping created by an earlier app mention.
+`message.groups`, and `message.mpim`. Top-level messages containing Slack's `<!channel>`,
+`<!here>`, or `<!everyone>` broadcast tokens start an agent-owned reply thread. Other ordinary
+top-level channel messages are acknowledged and ignored. A plain thread reply is dispatched only
+when that agent already owns the exact thread through a session mapping created by an earlier app
+mention or broadcast.
 `settings.interactivity.is_enabled: false`, `socket_mode_enabled: false`, and
 `token_rotation_enabled: false` remain explicit.
 
@@ -255,16 +257,18 @@ Implementation (`src/providers/slack/ingress/`):
   acknowledged but not dispatched because it cannot be deduplicated safely.
 - `webhook-handler.ts` — the pure pipeline composing the above, plus the `url_verification`
   handshake. It rejects bodies larger than 1 MiB before identity/secret resolution, applies a
-  process-wide unauthenticated ingress limit, checks signing secrets in cached parallel batches,
-  and requires an `event_callback` to contain a non-array event object with a nonblank `event.type`.
+  process-wide unauthenticated ingress limit, extracts bounded team/app fields as untrusted routing
+  hints, and resolves only the exactly routed identity's signing secret for a normal callback.
+  Deliveries without usable hints, including `url_verification`, use the bounded parallel fallback.
+  An `event_callback` must contain a non-array event object with a nonblank `event.type`.
 - `provider-webhook.ts` wires the pipeline to a `PluginContext`: it reads one company-scoped config
   snapshot, resolves the routed identity's `credentials.signingSecret` ref through
-  `ctx.secrets.resolve`, caches only within that delivery, creates a plugin-owned agent session,
-  sends a bounded projection of the Slack event, accumulates non-stderr response chunks, and posts
-  the completed text through the existing `slack_bot_post_message` provider pipeline. It closes the
-  session on both success and error. The prompt explicitly tells the agent to return plain text and
-  not call Slack tools, so the agent runtime does not need `slack_bot_post_message` in its own tool
-  set for this reply path.
+  `ctx.secrets.resolve` just in time without caching the resolved value, creates a plugin-owned agent
+  session, sends a bounded projection of the Slack event, accumulates non-stderr response chunks,
+  and posts the completed text through the existing `slack_bot_post_message` provider pipeline. It
+  closes the session on both success and error. The prompt explicitly tells the agent to return
+  plain text and not call Slack tools, so the agent runtime does not need
+  `slack_bot_post_message` in its own tool set for this reply path.
 
 Composed generically: `src/core/provider-contract.ts` adds an optional `webhooks`/`handleWebhook`
 seam (mirroring the existing `manifestTools`/`liveTools()` pattern), `src/manifest.ts` declares the

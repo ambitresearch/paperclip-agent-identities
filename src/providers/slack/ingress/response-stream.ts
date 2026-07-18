@@ -6,7 +6,7 @@ const DEFAULT_LOADING_MESSAGES = [
   "is running checks...",
   "is preparing a response...",
 ] as const;
-const WORKING_REACTION = "hourglass_flowing_sand";
+const WORKING_REACTION = "paperclip";
 
 type SlackFetch = (input: string, init?: RequestInit) => Promise<Response>;
 

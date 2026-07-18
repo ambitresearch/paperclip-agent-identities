@@ -13,7 +13,11 @@ import {
   verifySlackToken,
   type ResolveSlackSecret,
 } from "../credentials.js";
-import { handleSlackWebhook, type SlackWebhookHeaders } from "./webhook-handler.js";
+import {
+  handleSlackWebhook,
+  isSlackBroadcastMessage,
+  type SlackWebhookHeaders,
+} from "./webhook-handler.js";
 import {
   completeSlackEventClaim,
   releaseSlackEventClaim,
@@ -271,7 +275,7 @@ function readReplyDestination(event: unknown): { channel: string; messageTs?: st
   const messageTs = boundedString(rawEvent.ts, MAX_SLACK_EVENT_FIELD_LENGTH);
   const existingThreadTs = boundedString(rawEvent.thread_ts, MAX_SLACK_EVENT_FIELD_LENGTH);
   const eventType = boundedString(rawEvent.type, MAX_SLACK_EVENT_FIELD_LENGTH);
-  const mentionRootTs = eventType === "app_mention"
+  const mentionRootTs = eventType === "app_mention" || isSlackBroadcastMessage(rawEvent)
     ? messageTs
     : undefined;
   const threadTs = existingThreadTs ?? mentionRootTs;
@@ -303,19 +307,12 @@ export async function handleSlackProviderWebhook(
   const getSnapshot = () => snapshotPromise ??= buildSlackWebhookConfigSnapshot(ctx, companyId);
   const getIdentities = async () => (await getSnapshot()).identities;
   const resolveSecret: ResolveSlackSecret = (secretRef, options) => ctx.secrets.resolve(secretRef, options);
-  const signingSecrets = new Map<string, Promise<string>>();
-  const resolveSigningSecret = (agentId: string): Promise<string> => {
-    const existing = signingSecrets.get(agentId);
-    if (existing) return existing;
-    const resolved = (async () => {
-      const snapshot = await getSnapshot();
-      const identity = snapshot.identities[agentId];
-      if (!identity) throw new Error(`No Slack identity configured for agent '${agentId}'.`);
-      const resolvedIdentity: ResolvedAgentIdentity<SlackAgentIdentity> = { agentId, identity };
-      return resolveSlackSigningSecret(resolvedIdentity, snapshot.config, companyId, resolveSecret);
-    })();
-    signingSecrets.set(agentId, resolved);
-    return resolved;
+  const resolveSigningSecret = async (agentId: string): Promise<string> => {
+    const snapshot = await getSnapshot();
+    const identity = snapshot.identities[agentId];
+    if (!identity) throw new Error(`No Slack identity configured for agent '${agentId}'.`);
+    const resolvedIdentity: ResolvedAgentIdentity<SlackAgentIdentity> = { agentId, identity };
+    return resolveSlackSigningSecret(resolvedIdentity, snapshot.config, companyId, resolveSecret);
   };
 
   const result = await handleSlackWebhook({
@@ -371,7 +368,9 @@ export async function handleSlackProviderWebhook(
           conversation,
         };
         const requiresExistingThread =
-          conversationKind !== "direct_message" && rawEvent.type === "message";
+          conversationKind !== "direct_message" &&
+          rawEvent.type === "message" &&
+          !isSlackBroadcastMessage(rawEvent);
         let session = requiresExistingThread
           ? await getExistingSlackConversationSession(sessionInput)
           : await getOrCreateSlackConversationSession(sessionInput);

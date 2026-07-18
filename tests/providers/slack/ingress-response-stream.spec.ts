@@ -41,7 +41,7 @@ describe("SlackResponseStream", () => {
     expect(requestBody(fetchMock.mock.calls[0])).toEqual({
       channel: "D0123456789",
       timestamp: "1719000000.123456",
-      name: "hourglass_flowing_sand",
+      name: "paperclip",
     });
     expect(resolveToken).toHaveBeenCalledOnce();
   });

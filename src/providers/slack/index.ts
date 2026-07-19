@@ -16,8 +16,9 @@ import { contributeSlackAppManifestActions } from "./app-manifest.js";
 import { slackWhoamiToolSpec } from "./tools/whoami.js";
 import { slackManifestTools } from "./manifest-tools.js";
 import {
-  slackWebhookDeclarations,
+  contributeSlackIngress,
   handleSlackProviderWebhook,
+  slackWebhookDeclarations,
   type SlackAgentReply,
   type SlackAgentReplyStreamTarget,
 } from "./ingress/provider-webhook.js";
@@ -104,9 +105,13 @@ function createSlackAgentReplyStream(
   });
 }
 
-async function handleSlackWebhook(input: PluginWebhookInput, ctx: PluginContext) {
-  return handleSlackProviderWebhook(
-    input,
+async function handleSlackIngressWebhook(input: PluginWebhookInput, ctx: PluginContext) {
+  return handleSlackProviderWebhook(input, ctx);
+}
+
+function contributeSlackActionsAndIngress(ctx: PluginContext): void {
+  contributeSlackAppManifestActions(ctx);
+  contributeSlackIngress(
     ctx,
     (reply) => postSlackAgentReply(ctx, reply),
     (target) => createSlackAgentReplyStream(ctx, target),
@@ -158,7 +163,9 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
     slackAddReactionToolSpec,
     slackRemoveReactionToolSpec
   ],
-  contributeActions: contributeSlackAppManifestActions,
+  // `contributeActions` is the registry's existing provider setup seam; Slack
+  // uses it for setup actions plus exactly one queue-drain event handler.
+  contributeActions: contributeSlackActionsAndIngress,
   manifestTools: [...slackManifestTools, slackBotPostMessageManifestTool],
   // HTTP Events API ingress (DRO-1005): the design decision record
   // (openwiki/domain/slack-provisioning-decision.md) selects HTTP Events API
@@ -166,5 +173,5 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
   // through the generic `webhooks`/`handleWebhook` provider-contract seam --
   // no provider-specific branch in src/worker.ts or src/manifest.ts.
   webhooks: slackWebhookDeclarations,
-  handleWebhook: handleSlackWebhook
+  handleWebhook: handleSlackIngressWebhook
 };

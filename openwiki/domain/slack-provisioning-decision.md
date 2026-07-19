@@ -25,7 +25,7 @@ operator-opt-in future transport.
   or logs. The operator creates one Paperclip company secret for the bot token and another for the
   signing secret, then supplies both secret UUIDs to the settings form. Saving install metadata
   stores typed `secret_ref` values under
-  `identities.<agentId>.credentials.{botToken,signingSecret}` in company-scoped host config. Raw
+  `identities.<agentId>.slack.credentials.{botToken,signingSecret}` in company-scoped host config. Raw
   credential values never enter identity state or action input.
   Source: [App manifests overview](https://api.slack.com/reference/manifests) (the "From an app
   manifest" creation flow is UI paste-in; no query-string prefill parameter is documented).
@@ -251,7 +251,7 @@ above, including `socket_mode_enabled` and `token_rotation_enabled`).
   is saved because the receiver cannot authenticate Slack's challenge yet.
 - `save-slack-install-metadata` stores shareable install metadata in identity state and writes both
   company-scoped typed secret refs through `ctx.config.patchSecretRefs` under
-  `identities.<agentId>.credentials`.
+  `identities.<agentId>.slack.credentials`.
 - `scripts/slack-events-adapter.mjs` is the temporary local testing bridge. It listens only on
   `127.0.0.1:3110`, accepts `POST /events`, and forwards the unchanged body and Slack headers to
   `http://127.0.0.1:3100/api/companies/<companyId>/plugins/roshangautam.paperclip-agent-identities/webhooks/slack-events`.

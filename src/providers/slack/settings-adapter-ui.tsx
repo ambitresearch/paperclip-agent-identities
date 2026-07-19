@@ -5,6 +5,7 @@ import {
   type CreateSlackAppManifestResult,
   type DiscoverSlackInstallMetadataResult,
   type GetSlackAppManifestFlowResult,
+  type LegacySlackCredentialRebindResult,
   type SaveSlackInstallMetadataResult,
 } from "../../shared/types.js";
 import {
@@ -43,6 +44,8 @@ export interface SlackSettingsUIFormConfig {
   slackEventsRequestUrl: string;
   slackBotTokenSecretId: string;
   slackSigningSecretId: string;
+  slackLegacyCredentialStatus: string;
+  slackLegacySigningSecretRequired: string;
   [key: string]: string;
 }
 
@@ -89,6 +92,10 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
   // identity row, confirmation-gated. Reuses handleCreateSlackAppManifest;
   // mirrors GitHub's "Replace this GitHub App" collapsed-details pattern.
   handleReinstallSlackApp: () => Promise<void>;
+  legacySlackRebindBusy: boolean;
+  legacySlackRebindError: string | null;
+  legacySlackRebindResult: LegacySlackCredentialRebindResult | null;
+  handleLegacySlackRebind: () => Promise<void>;
   updateField: (field: keyof SlackSettingsUIFormConfig & string, value: string) => void;
   secretOptions: ReadonlyArray<{ id: string; name: string; key?: string; description?: string; provider?: string; status?: string }>;
   secretsLoading: boolean;
@@ -200,7 +207,7 @@ async function copyTextToClipboard(value: string): Promise<void> {
 type SlackCredentialStepInput = ProviderSettingsUIHookInput<SlackSettingsUIFormConfig> & SlackSettingsUIActionsInput;
 
 function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsUIHookResult {
-  const { config, hasPersistedIdentity, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, discoverSlackInstallMetadata, saveSlackInstallMetadata, slackBotWhoami, companyId } = input;
+  const { config, hasPersistedIdentity, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, discoverSlackInstallMetadata, saveSlackInstallMetadata, rebindLegacySlackCredentials, slackBotWhoami, companyId } = input;
 
   const [slackManifestFlow, setSlackManifestFlow] = useState<CreateSlackAppManifestResult | null>(null);
   const [slackManifestBusy, setSlackManifestBusy] = useState(false);
@@ -216,6 +223,9 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
   const [slackStatus, setSlackStatus] = useState<SlackBotWhoamiData | null>(null);
   const [slackStatusLoading, setSlackStatusLoading] = useState(false);
   const [slackStatusError, setSlackStatusError] = useState<string | null>(null);
+  const [legacySlackRebindBusy, setLegacySlackRebindBusy] = useState(false);
+  const [legacySlackRebindError, setLegacySlackRebindError] = useState<string | null>(null);
+  const [legacySlackRebindResult, setLegacySlackRebindResult] = useState<LegacySlackCredentialRebindResult | null>(null);
   const slackStatusGenerationRef = useRef(0);
   const slackDiscoveryGenerationRef = useRef(0);
   // Finding #2: when the post-save rebind cleanup (deleteConfig(previousAgentId))
@@ -284,6 +294,9 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     setSlackStatusError(null);
     setSlackStatusLoading(false);
     slackStatusGenerationRef.current += 1;
+    setLegacySlackRebindBusy(false);
+    setLegacySlackRebindError(null);
+    setLegacySlackRebindResult(null);
   }
 
   // Any edit to the Slack install fields invalidates a prior successful
@@ -729,6 +742,32 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     await handleCreateSlackAppManifest();
   }
 
+  async function handleLegacySlackRebind() {
+    if (!config?.agentId.trim()) return;
+    const signingSecretId = config.slackSigningSecretId.trim();
+    if (config.slackLegacySigningSecretRequired === "true" && !signingSecretId) {
+      setLegacySlackRebindError(
+        "Select or enter the Paperclip company secret UUID containing the Slack signing secret before rebinding.",
+      );
+      return;
+    }
+    setLegacySlackRebindBusy(true);
+    setLegacySlackRebindError(null);
+    try {
+      const result = await rebindLegacySlackCredentials({
+        agentId: config.agentId.trim(),
+        ...(signingSecretId ? { signingSecretId } : {}),
+      }) as LegacySlackCredentialRebindResult;
+      setLegacySlackRebindResult(result);
+      await refresh();
+    } catch (error) {
+      setLegacySlackRebindResult(null);
+      setLegacySlackRebindError(actionErrorMessage(error, "Could not rebind released Slack credentials"));
+    } finally {
+      setLegacySlackRebindBusy(false);
+    }
+  }
+
   return {
     validationExtra: { slackSaveResult, slackSaveBusy },
     reset,
@@ -760,6 +799,10 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     handleCheckSlackStatus,
     hasPersistedIdentity,
     handleReinstallSlackApp,
+    legacySlackRebindBusy,
+    legacySlackRebindError,
+    legacySlackRebindResult,
+    handleLegacySlackRebind,
     updateField,
     secretOptions: input.secretOptions,
     secretsLoading: input.secretsLoading,
@@ -779,6 +822,7 @@ export interface SlackSettingsUIActionsInput {
   getSlackAppManifestFlow: (input: Record<string, unknown>) => Promise<unknown>;
   discoverSlackInstallMetadata: (input: Record<string, unknown>) => Promise<unknown>;
   saveSlackInstallMetadata: (input: Record<string, unknown>) => Promise<unknown>;
+  rebindLegacySlackCredentials: (input: Record<string, unknown>) => Promise<unknown>;
   // The credential-free `slack_bot_whoami` tool (DRO-972), invoked identically
   // to the actions above via `usePluginAction` in SettingsPage.
   slackBotWhoami: (input: Record<string, unknown>) => Promise<unknown>;
@@ -863,6 +907,10 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     slackStatusLoading,
     slackStatusError,
     handleReinstallSlackApp,
+    legacySlackRebindBusy,
+    legacySlackRebindError,
+    legacySlackRebindResult,
+    handleLegacySlackRebind,
     hasPersistedIdentity,
     validationExtra,
     updateField,
@@ -873,16 +921,17 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
   } = state;
   const hasSecretOptions = secretOptions.length > 0;
   const credentialComplete = Boolean(
-    slackSaveResult &&
-      slackSaveResult.teamId === config.slackTeamId.trim() &&
-      slackSaveResult.appId === config.slackAppId.trim() &&
-      slackSaveResult.botUserId === config.slackBotUserId.trim() &&
-      slackSaveResult.eventsRequestUrl === config.slackEventsRequestUrl.trim() &&
-      slackSaveResult.botTokenSecretId === config.slackBotTokenSecretId.trim() &&
-      slackSaveResult.signingSecretId === config.slackSigningSecretId.trim() &&
-      (slackSaveResult.defaultChannel ?? "") === config.slackDefaultChannel.trim() &&
-      !validationExtra.slackSaveBusy,
+    slackSaveResult
+      && slackSaveResult.teamId === config.slackTeamId.trim()
+      && slackSaveResult.appId === config.slackAppId.trim()
+      && slackSaveResult.botUserId === config.slackBotUserId.trim()
+      && slackSaveResult.eventsRequestUrl === config.slackEventsRequestUrl.trim()
+      && slackSaveResult.botTokenSecretId === config.slackBotTokenSecretId.trim()
+      && slackSaveResult.signingSecretId === config.slackSigningSecretId.trim()
+      && (slackSaveResult.defaultChannel ?? "") === config.slackDefaultChannel.trim()
+      && !validationExtra.slackSaveBusy,
   );
+  const hasLegacyCredentialRecovery = Boolean(config.slackLegacyCredentialStatus);
 
   return (
     <fieldset style={fieldsetStyle}>
@@ -896,7 +945,18 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           error={slackStatusError}
         />
       )}
-      {!credentialComplete && (
+      {hasPersistedIdentity && config.slackLegacyCredentialStatus && (
+        <LegacySlackCredentialRebindPanel
+          status={config.slackLegacyCredentialStatus}
+          signingSecretRequired={config.slackLegacySigningSecretRequired === "true"}
+          signingSecretReady={Boolean(config.slackSigningSecretId.trim())}
+          busy={legacySlackRebindBusy}
+          error={legacySlackRebindError}
+          result={legacySlackRebindResult}
+          onRebind={handleLegacySlackRebind}
+        />
+      )}
+      {!credentialComplete && !hasLegacyCredentialRecovery && (
         <div style={validationNoticeStyle}>
           Create the Slack App manifest, install it, and paste back the team/app/bot IDs plus bot token and signing
           secret references, then save install metadata before this identity can be saved. Do not verify the Request
@@ -905,13 +965,13 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         </div>
       )}
 
-      <div style={inlineNoticeStyle}>
+      {!hasLegacyCredentialRecovery && <div style={inlineNoticeStyle}>
         <strong>Create a Slack App from a manifest.</strong> Slack does not support a prefilled deep link for manifests,
         so Paperclip generates the manifest JSON below for you to copy, then opens the plain Slack "create app" page
         where you paste it in via "From an app manifest".
-      </div>
+      </div>}
 
-      <label style={fieldStyle}>
+      {!hasLegacyCredentialRecovery && <label style={fieldStyle}>
         <span>Events Request URL <span style={requiredStyle}>*</span></span>
         <input
           type="url"
@@ -924,7 +984,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         <span style={hintStyle}>
           Public HTTPS URL for the local Slack Events adapter. It must use the exact /events path.
         </span>
-      </label>
+      </label>}
 
       {!hasPersistedIdentity && (
         <div style={formActionsStyle}>
@@ -946,7 +1006,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         </div>
       )}
 
-      {!slackManifestFlow && (
+      {!hasLegacyCredentialRecovery && !slackManifestFlow && (
         <div style={formActionsStyle}>
           <label style={fieldStyle}>
             <span>Resume an existing manifest flow</span>
@@ -1062,7 +1122,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         />
       </label>
 
-      <label style={fieldStyle}>
+      {!hasLegacyCredentialRecovery && <label style={fieldStyle}>
         <span>Bot token Paperclip secret UUID <span style={requiredStyle}>*</span></span>
         {hasSecretOptions ? (
           <select
@@ -1090,9 +1150,9 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           />
         )}
         <span style={hintStyle}>{getSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })} The bot token itself is never stored in this config; only the secret reference is.</span>
-      </label>
+      </label>}
 
-      <div style={formActionsStyle}>
+      {!hasLegacyCredentialRecovery && <div style={formActionsStyle}>
         <button
           type="button"
           onClick={() => void handleDiscoverSlackInstallMetadata()}
@@ -1104,10 +1164,10 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         <span style={hintStyle}>
           Uses the selected bot token secret to fill Team ID, App ID, and Bot User ID.
         </span>
-      </div>
-      {slackDiscoveryError && <span style={errorStyle}>{slackDiscoveryError}</span>}
+      </div>}
+      {!hasLegacyCredentialRecovery && slackDiscoveryError && <span style={errorStyle}>{slackDiscoveryError}</span>}
 
-      <label style={fieldStyle}>
+      {(!hasLegacyCredentialRecovery || config.slackLegacySigningSecretRequired === "true") && <label style={fieldStyle}>
         <span>Signing secret Paperclip secret UUID <span style={requiredStyle}>*</span></span>
         {hasSecretOptions ? (
           <select
@@ -1138,7 +1198,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           {getSigningSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })} The signing secret
           itself is never stored in this config; only the secret reference is.
         </span>
-      </label>
+      </label>}
 
       <label style={fieldStyle}>
         <span>Default channel</span>
@@ -1153,7 +1213,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         <span style={hintStyle}>Optional. Must be a Slack conversation ID starting with C, D, or G.</span>
       </label>
 
-      <div style={formActionsStyle}>
+      {!hasLegacyCredentialRecovery && <div style={formActionsStyle}>
         <button
           type="button"
           onClick={() => void handleSaveSlackInstallMetadata()}
@@ -1172,9 +1232,9 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         >
           {slackSaveBusy ? "Saving..." : "Save Slack install metadata"}
         </button>
-      </div>
+      </div>}
 
-      {!slackManifestFlow && !slackCleanupPendingAgentId && !slackSaveResult && (
+      {!hasLegacyCredentialRecovery && !slackManifestFlow && !slackCleanupPendingAgentId && !slackSaveResult && (
         <span style={hintStyle}>Create the manifest above first; saving install metadata requires an active manifest flow state.</span>
       )}
 
@@ -1206,7 +1266,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         </div>
       )}
 
-      {hasPersistedIdentity && (
+      {hasPersistedIdentity && !hasLegacyCredentialRecovery && (
         <details>
           <summary>Reinstall the Slack App for this identity</summary>
           <div style={{ display: "grid", gap: "0.75rem", marginTop: "0.75rem" }}>
@@ -1234,6 +1294,53 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         </details>
       )}
     </fieldset>
+  );
+}
+
+function LegacySlackCredentialRebindPanel(props: {
+  status: string;
+  signingSecretRequired: boolean;
+  signingSecretReady: boolean;
+  busy: boolean;
+  error: string | null;
+  result: LegacySlackCredentialRebindResult | null;
+  onRebind: () => Promise<void>;
+}) {
+  if (props.status === "conflict") {
+    return (
+      <div style={validationNoticeStyle}>
+        <strong>Released Slack credentials need operator review.</strong> The existing company Slack binding conflicts
+        with the public identity or released sidecar references. Paperclip will not overwrite it. Remove or correct
+        the conflicting host binding, then reopen this identity and rebind; reinstall is not required.
+      </div>
+    );
+  }
+
+  const cleanupPending = props.status === "cleanup-pending" || props.result?.status === "cleanup-pending";
+  return (
+    <div style={cleanupPending ? inlineNoticeStyle : validationNoticeStyle}>
+      <div>
+        <strong>{cleanupPending ? "Legacy Slack sidecar cleanup pending." : "Upgrade action required."}</strong>{" "}
+        {cleanupPending
+          ? "The company host binding is working. Retry to remove only the released Slack sidecar entry."
+          : "Slack v0.1.7/v0.1.8 saved credential UUID references in the local sidecar. Rebind copies those references into this company's authorized Slack config without reading either secret value."}
+        {!cleanupPending && props.signingSecretRequired
+          ? " This released entry has no signing-secret reference; select or enter its Paperclip company secret UUID below first."
+          : ""}
+      </div>
+      <div style={formActionsStyle}>
+        <button
+          type="button"
+          onClick={() => void props.onRebind()}
+          disabled={props.busy || (props.signingSecretRequired && !props.signingSecretReady)}
+          style={secondaryButtonStyle}
+        >
+          {props.busy ? "Working..." : cleanupPending ? "Retry legacy cleanup" : "Rebind released credentials"}
+        </button>
+      </div>
+      {props.result?.status === "rebound" && <span style={successStyle}>Released Slack credentials rebound successfully. Close this editor; reinstall is not required.</span>}
+      {props.error && <span style={errorStyle}>{props.error}</span>}
+    </div>
   );
 }
 

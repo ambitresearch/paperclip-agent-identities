@@ -59,6 +59,31 @@ describe("Slack setup wizard: provider selection and steps", () => {
     expect(form.slackBotTokenSecretId).toBe("11111111-1111-4111-8111-111111111111");
     expect(form.slackSigningSecretId).toBe("22222222-2222-4222-8222-222222222222");
   });
+
+  it("projects released-sidecar recovery status without projecting a bot-token UUID", () => {
+    const form = toFormState({
+      id: "agent-1:slack",
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      label: "Release Bot",
+      slack: {
+        teamId: "T0123456789",
+        appId: "A0123456789",
+        botUserId: "U0123456789",
+      },
+      slackSetup: {
+        legacyCredential: {
+          status: "rebind-required",
+          signingSecretRequired: true,
+        },
+      },
+      credentialStatus: "rebind-required",
+    });
+
+    expect(form.slackLegacyCredentialStatus).toBe("rebind-required");
+    expect(form.slackLegacySigningSecretRequired).toBe("true");
+    expect(form.slackBotTokenSecretId).toBe("");
+  });
 });
 
 describe("Slack setup wizard: manifest-create step gating", () => {

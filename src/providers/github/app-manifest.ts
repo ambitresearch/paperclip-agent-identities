@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { resolveCredentialSidecarPath } from "../../credential-sidecar.js";
+import { requireHumanSettingsActor } from "../../core/settings-action-authorization.js";
 import type {
   CreateGitHubAppManifestInput,
   CreateGitHubAppManifestResult,
@@ -256,14 +257,16 @@ function readOptionalUrl(value: unknown, field: string): string | undefined {
 }
 
 export function contributeGitHubAppManifestActions(ctx: PluginContext): void {
-  ctx.actions.register("create-github-app-manifest", async (params) => {
+  ctx.actions.register("create-github-app-manifest", async (params, context) => {
+    requireHumanSettingsActor(context);
     const result = createGitHubAppManifestFlow(params as CreateGitHubAppManifestInput);
     await ctx.state.set(githubAppManifestFlowScope(result.state), result);
     ctx.logger.info("GitHub App manifest flow created", { agentId: result.agentId, appName: result.appName });
     return result;
   });
 
-  ctx.actions.register("get-github-app-manifest-flow", async (params) => {
+  ctx.actions.register("get-github-app-manifest-flow", async (params, context) => {
+    requireHumanSettingsActor(context);
     const input = params as GetGitHubAppManifestFlowInput;
     const state = readRequiredString(input.state, "state");
     const flow = normalizeGitHubAppManifestFlowState(await ctx.state.get(githubAppManifestFlowScope(state)));
@@ -276,7 +279,8 @@ export function contributeGitHubAppManifestActions(ctx: PluginContext): void {
     return flow;
   });
 
-  ctx.actions.register("convert-github-app-manifest", async (params) => {
+  ctx.actions.register("convert-github-app-manifest", async (params, context) => {
+    requireHumanSettingsActor(context);
     const input = params as ConvertGitHubAppManifestInput;
     const state = readRequiredString(input.state, "state");
     const code = readRequiredString(input.code, "code");

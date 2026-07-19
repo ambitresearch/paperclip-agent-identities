@@ -51,6 +51,8 @@ export interface ProviderSettingsFormConfig {
   readonly slackEventsRequestUrl: string;
   readonly slackBotTokenSecretId: string;
   readonly slackSigningSecretId: string;
+  readonly slackLegacyCredentialStatus: string;
+  readonly slackLegacySigningSecretRequired: string;
 }
 
 // Provider-specific async/in-flight state the shared component tracks (e.g.

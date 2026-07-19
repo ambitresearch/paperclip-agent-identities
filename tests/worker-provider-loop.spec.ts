@@ -44,6 +44,42 @@ describe("worker provider registration", () => {
     );
   });
 
+  it("resolves GitHub and Slack identities for the same agent from one static config entry", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {
+        identities: {
+          "agent-1": {
+            label: "GitHub Bot",
+            githubUsername: "github-bot[bot]",
+            slack: {
+              label: "Slack Bot",
+              teamId: "T1",
+              appId: "A1",
+              botUserId: "U1",
+            },
+          },
+        },
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    const github = await harness.executeTool<{ data?: { githubUsername: string } }>(
+      "github_bot_whoami",
+      {},
+      { companyId: "company-1", agentId: "agent-1" },
+    );
+    const slack = await harness.executeTool<{ data?: { teamId: string } }>(
+      "slack_bot_whoami",
+      {},
+      { companyId: "company-1", agentId: "agent-1" },
+    );
+
+    expect(github.data?.githubUsername).toBe("github-bot[bot]");
+    expect(slack.data?.teamId).toBe("T1");
+  });
+
   it("fails closed through the generic pipeline when no identity is configured", async () => {
     const harness = createTestHarness({
       manifest,
@@ -72,7 +108,7 @@ describe("worker provider registration", () => {
       capabilities: [...manifest.capabilities],
       config: {
         identities: {
-          "agent-1": { label: "Bot", teamId: "T1", appId: "A1", botUserId: "U1" },
+          "agent-1": { slack: { label: "Bot", teamId: "T1", appId: "A1", botUserId: "U1" } },
         },
       },
     });
@@ -103,7 +139,7 @@ describe("worker provider registration", () => {
       capabilities: [...manifest.capabilities],
       config: {
         identities: {
-          "agent-other": { label: "Other", teamId: "T2", appId: "A2", botUserId: "U2" },
+          "agent-other": { slack: { label: "Other", teamId: "T2", appId: "A2", botUserId: "U2" } },
         },
       },
     });
@@ -130,7 +166,7 @@ describe("worker provider registration", () => {
       capabilities: [...manifest.capabilities],
       config: {
         identities: {
-          "agent-1": { label: "Bot", teamId: "T1", appId: "A1", botUserId: "U1" },
+          "agent-1": { slack: { label: "Bot", teamId: "T1", appId: "A1", botUserId: "U1" } },
         },
       },
     });

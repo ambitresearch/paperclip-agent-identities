@@ -1,5 +1,9 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 import { createProviderRegistry } from "./providers/index.js";
+import {
+  REBIND_LEGACY_SLACK_CREDENTIALS_ACTION,
+  RETRY_LEGACY_SLACK_SIDECAR_CLEANUP_ACTION,
+} from "./shared/types.js";
 
 const registry = createProviderRegistry();
 
@@ -13,6 +17,46 @@ const slackSecretRefConfigSchema = {
   required: ["type", "secretId", "version"],
   additionalProperties: false,
 } as const;
+
+const slackIdentityConfigSchema = {
+  type: "object",
+  properties: {
+    label: { type: "string" },
+    teamId: { type: "string" },
+    appId: { type: "string" },
+    botUserId: { type: "string" },
+    defaultChannel: { type: "string" },
+    eventsRequestUrl: { type: "string", format: "uri", pattern: "^https://.+/events$" },
+    credentials: {
+      type: "object",
+      properties: {
+        botToken: slackSecretRefConfigSchema,
+        signingSecret: slackSecretRefConfigSchema,
+      },
+      required: ["botToken", "signingSecret"],
+      additionalProperties: false,
+    },
+  },
+  required: ["label", "teamId", "appId", "botUserId", "credentials"],
+  additionalProperties: false,
+} as const;
+
+// Worker actions are registered dynamically through `ctx.actions`; the
+// current manifest schema has no action-declaration field. Keep the public
+// action keys here so UI wiring/tests share one explicit contract.
+export const SETTINGS_ACTIONS = [
+  "save-bot-identity-config",
+  "delete-bot-identity-config",
+  "create-github-app-manifest",
+  "get-github-app-manifest-flow",
+  "convert-github-app-manifest",
+  "create-slack-app-manifest",
+  "get-slack-app-manifest-flow",
+  "discover-slack-install-metadata",
+  "save-slack-install-metadata",
+  REBIND_LEGACY_SLACK_CREDENTIALS_ACTION,
+  RETRY_LEGACY_SLACK_SIDECAR_CLEANUP_ACTION,
+] as const;
 
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-agent-identities",
@@ -32,35 +76,24 @@ const manifest: PaperclipPluginManifestV1 = {
             oneOf: [
               {
                 type: "object",
+                additionalProperties: false,
+              },
+              // Compatibility for flat Slack records persisted by earlier
+              // builds of this PR. All new writes migrate to `.slack`.
+              slackIdentityConfigSchema,
+              {
+                type: "object",
                 properties: {
                   label: { type: "string" },
                   githubUsername: { type: "string" },
                   commitName: { type: "string" },
                   commitEmail: { type: "string" },
+                  slack: slackIdentityConfigSchema,
                 },
-                required: ["label", "githubUsername"],
-                additionalProperties: false,
-              },
-              {
-                type: "object",
-                properties: {
-                  label: { type: "string" },
-                  teamId: { type: "string" },
-                  appId: { type: "string" },
-                  botUserId: { type: "string" },
-                  defaultChannel: { type: "string" },
-                  eventsRequestUrl: { type: "string", format: "uri", pattern: "^https://.+/events$" },
-                  credentials: {
-                    type: "object",
-                    properties: {
-                      botToken: slackSecretRefConfigSchema,
-                      signingSecret: slackSecretRefConfigSchema,
-                    },
-                    required: ["botToken", "signingSecret"],
-                    additionalProperties: false,
-                  },
-                },
-                required: ["label", "teamId", "appId", "botUserId", "credentials"],
+                anyOf: [
+                  { required: ["label", "githubUsername"] },
+                  { required: ["slack"] },
+                ],
                 additionalProperties: false,
               },
             ],
@@ -99,6 +132,9 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   capabilities: [
     "events.subscribe",
+    // Slack webhook scope persists a turn, then awaits a company-scoped
+    // provider self-event instead of invoking an agent session inline.
+    "events.emit",
     "plugin.state.read",
     "plugin.state.write",
     "ui.dashboardWidget.register",

@@ -1,6 +1,7 @@
 import { getIdentityKey } from "../shared/types.js";
 
-export const BOT_IDENTITY_SETTINGS_VERSION = 4 as const;
+export const BOT_IDENTITY_SETTINGS_VERSION = 5 as const;
+export const LEGACY_SLACK_CLEANUP_TOMBSTONE_VERSION = 1 as const;
 
 export interface GitHubIdentityFields {
   readonly username: string;
@@ -56,8 +57,28 @@ export type AgentIdentityConfig =
   | ExampleAgentIdentityConfig
   | SlackAgentIdentityConfig;
 
+export interface LegacySlackSidecarCleanupTombstone {
+  readonly version: typeof LEGACY_SLACK_CLEANUP_TOMBSTONE_VERSION;
+  readonly cleanupId: string;
+  readonly companyId: string;
+  readonly agentId: string;
+  readonly provider: "slack";
+  readonly operation: "legacy-sidecar-delete";
+  readonly source: "identity-delete" | "legacy-rebind";
+  readonly expected?: {
+    readonly botTokenSecretId: string;
+    readonly signingSecretId?: string;
+  };
+}
+
 export interface AgentIdentitySettingsState {
   readonly version: typeof BOT_IDENTITY_SETTINGS_VERSION;
+  readonly identities: Record<string, AgentIdentityConfig>;
+  readonly cleanupTombstones: Record<string, LegacySlackSidecarCleanupTombstone>;
+}
+
+export interface AgentIdentitySettingsStateV4 {
+  readonly version: 4;
   readonly identities: Record<string, AgentIdentityConfig>;
 }
 
@@ -116,10 +137,10 @@ function migrateGitHubIdentityV3ToV4(raw: Record<string, unknown>): GitHubAgentI
   };
 }
 
-export function migrateSettingsStateToV4(raw: unknown): AgentIdentitySettingsState {
+export function migrateSettingsStateToV4(raw: unknown): AgentIdentitySettingsStateV4 {
   const identities: Record<string, AgentIdentityConfig> = {};
   if (!isRecord(raw) || !isRecord(raw.identities)) {
-    return { version: BOT_IDENTITY_SETTINGS_VERSION, identities };
+    return { version: 4, identities };
   }
 
   for (const entry of Object.values(raw.identities)) {
@@ -137,11 +158,11 @@ export function migrateSettingsStateToV4(raw: unknown): AgentIdentitySettingsSta
     identities[migrated.id] = migrated;
   }
 
-  return { version: BOT_IDENTITY_SETTINGS_VERSION, identities };
+  return { version: 4, identities };
 }
 
-function isV4State(raw: unknown): raw is AgentIdentitySettingsState {
-  return isRecord(raw) && raw.version === BOT_IDENTITY_SETTINGS_VERSION && isRecord(raw.identities);
+function isV4State(raw: unknown): raw is AgentIdentitySettingsStateV4 {
+  return isRecord(raw) && raw.version === 4 && isRecord(raw.identities);
 }
 
 function normalizeV4Identity(raw: unknown): AgentIdentityConfig | null {
@@ -194,22 +215,106 @@ function normalizeV4Identity(raw: unknown): AgentIdentityConfig | null {
   return null;
 }
 
-function normalizeV4State(raw: unknown): AgentIdentitySettingsState | null {
+function normalizeV4State(raw: unknown): AgentIdentitySettingsStateV4 | null {
   if (!isV4State(raw)) return null;
   const identities: Record<string, AgentIdentityConfig> = {};
   for (const entry of Object.values(raw.identities)) {
     const identity = normalizeV4Identity(entry);
     if (identity) identities[identity.id] = identity;
   }
-  return { version: BOT_IDENTITY_SETTINGS_VERSION, identities };
+  return { version: 4, identities };
 }
 
-// Migration ladder. A future v4 -> v5 step slots in as another `if` branch above the reset.
-export function normalizeSettingsState(raw: unknown): AgentIdentitySettingsState {
-  const v4 = normalizeV4State(raw);
-  if (v4) return v4;
-  if (isRecord(raw) && raw.version === 3) {
-    return migrateSettingsStateToV4(raw);
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function normalizeCleanupTombstone(raw: unknown): LegacySlackSidecarCleanupTombstone | null {
+  if (!isRecord(raw)) return null;
+  const cleanupId = readString(raw.cleanupId);
+  const companyId = readString(raw.companyId);
+  const agentId = readString(raw.agentId);
+  const source = raw.source === "identity-delete" || raw.source === "legacy-rebind"
+    ? raw.source
+    : null;
+  if (
+    raw.version !== LEGACY_SLACK_CLEANUP_TOMBSTONE_VERSION
+    || !cleanupId
+    || !companyId
+    || !agentId
+    || raw.provider !== "slack"
+    || raw.operation !== "legacy-sidecar-delete"
+    || !source
+  ) {
+    return null;
   }
-  return { version: BOT_IDENTITY_SETTINGS_VERSION, identities: {} };
+
+  let expected: LegacySlackSidecarCleanupTombstone["expected"];
+  if (raw.expected !== undefined) {
+    if (!isRecord(raw.expected)) return null;
+    const botTokenSecretId = readString(raw.expected.botTokenSecretId);
+    const signingSecretId = readOptionalString(raw.expected.signingSecretId);
+    if (!isUuid(botTokenSecretId) || (signingSecretId && !isUuid(signingSecretId))) return null;
+    expected = {
+      botTokenSecretId,
+      ...(signingSecretId ? { signingSecretId } : {}),
+    };
+  }
+
+  return {
+    version: LEGACY_SLACK_CLEANUP_TOMBSTONE_VERSION,
+    cleanupId,
+    companyId,
+    agentId,
+    provider: "slack",
+    operation: "legacy-sidecar-delete",
+    source,
+    ...(expected ? { expected } : {}),
+  };
+}
+
+function normalizeV5State(raw: unknown): AgentIdentitySettingsState | null {
+  if (
+    !isRecord(raw)
+    || raw.version !== BOT_IDENTITY_SETTINGS_VERSION
+    || !isRecord(raw.identities)
+    || !isRecord(raw.cleanupTombstones)
+  ) {
+    return null;
+  }
+
+  const identities: Record<string, AgentIdentityConfig> = {};
+  for (const entry of Object.values(raw.identities)) {
+    const identity = normalizeV4Identity(entry);
+    if (identity) identities[identity.id] = identity;
+  }
+
+  const cleanupTombstones: Record<string, LegacySlackSidecarCleanupTombstone> = {};
+  for (const entry of Object.values(raw.cleanupTombstones)) {
+    const tombstone = normalizeCleanupTombstone(entry);
+    if (tombstone) cleanupTombstones[tombstone.cleanupId] = tombstone;
+  }
+
+  return { version: BOT_IDENTITY_SETTINGS_VERSION, identities, cleanupTombstones };
+}
+
+export function migrateSettingsStateToV5(raw: unknown): AgentIdentitySettingsState {
+  const v4 = normalizeV4State(raw);
+  return {
+    version: BOT_IDENTITY_SETTINGS_VERSION,
+    identities: v4?.identities ?? {},
+    cleanupTombstones: {},
+  };
+}
+
+// Migration ladder. Persisted v3 and v4 states are normalized into v5 before use.
+export function normalizeSettingsState(raw: unknown): AgentIdentitySettingsState {
+  const v5 = normalizeV5State(raw);
+  if (v5) return v5;
+  const v4 = normalizeV4State(raw);
+  if (v4) return migrateSettingsStateToV5(v4);
+  if (isRecord(raw) && raw.version === 3) {
+    return migrateSettingsStateToV5(migrateSettingsStateToV4(raw));
+  }
+  return { version: BOT_IDENTITY_SETTINGS_VERSION, identities: {}, cleanupTombstones: {} };
 }

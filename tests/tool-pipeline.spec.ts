@@ -276,8 +276,10 @@ describe("tool pipeline security ordering — real Slack provider regression", (
     const getConfig = vi.fn(async () => ({
       identities: {
         "agent-1": {
-          ...slackIdentity,
-          credentials: { botToken: botTokenRef },
+          slack: {
+            ...slackIdentity,
+            credentials: { botToken: botTokenRef },
+          },
         },
       },
     }));
@@ -349,7 +351,7 @@ describe("tool pipeline security ordering — real Slack provider regression", (
     expect(resolveSecret).toHaveBeenCalledOnce();
     expect(resolveSecret).toHaveBeenCalledWith(botTokenRef, {
       companyId,
-      configPath: "identities.agent-1.credentials.botToken",
+      configPath: "identities.agent-1.slack.credentials.botToken",
     });
   });
 });

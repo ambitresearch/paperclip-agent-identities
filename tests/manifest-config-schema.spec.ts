@@ -10,22 +10,26 @@ function slackConfig() {
   return {
     identities: {
       "agent-slack": {
-        label: "Slack QA",
-        teamId: "T12345678",
-        appId: "A12345678",
-        botUserId: "U12345678",
-        defaultChannel: "C12345678",
-        eventsRequestUrl: "https://paperclip-test.trycloudflare.com/events",
-        credentials: {
-          botToken: {
-            type: "secret_ref",
-            secretId: BOT_TOKEN_SECRET_ID,
-            version: "latest",
-          },
-          signingSecret: {
-            type: "secret_ref",
-            secretId: SIGNING_SECRET_ID,
-            version: "latest",
+        label: "GitHub QA",
+        githubUsername: "github-qa[bot]",
+        slack: {
+          label: "Slack QA",
+          teamId: "T12345678",
+          appId: "A12345678",
+          botUserId: "U12345678",
+          defaultChannel: "C12345678",
+          eventsRequestUrl: "https://paperclip-test.trycloudflare.com/events",
+          credentials: {
+            botToken: {
+              type: "secret_ref",
+              secretId: BOT_TOKEN_SECRET_ID,
+              version: "latest",
+            },
+            signingSecret: {
+              type: "secret_ref",
+              secretId: SIGNING_SECRET_ID,
+              version: "latest",
+            },
           },
         },
       },
@@ -38,8 +42,15 @@ describe("manifest instance config schema", () => {
   addFormatsModule.default(ajv);
   const validate = ajv.compile(manifest.instanceConfigSchema!);
 
-  it("accepts strict Slack secret-reference objects", () => {
+  it("accepts GitHub and strict Slack config for the same agent", () => {
     expect(validate(slackConfig()), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it("accepts the flat Slack shape persisted by earlier builds of this PR", () => {
+    const config = slackConfig();
+    expect(validate({
+      identities: { "agent-slack": config.identities["agent-slack"].slack },
+    }), JSON.stringify(validate.errors)).toBe(true);
   });
 
   it("accepts the short-lived Slack metadata discovery binding", () => {
@@ -60,18 +71,31 @@ describe("manifest instance config schema", () => {
     }), JSON.stringify(validate.errors)).toBe(true);
   });
 
+  it("accepts an empty per-agent container after its last provider subtree is deleted", () => {
+    expect(validate({ identities: { "agent-deleted": {} } }), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it("rejects mixed flat GitHub and legacy Slack fields", () => {
+    const config = slackConfig();
+    const mixed = {
+      ...config.identities["agent-slack"].slack,
+      githubUsername: "github-qa[bot]",
+    };
+    expect(validate({ identities: { "agent-slack": mixed } })).toBe(false);
+  });
+
   it.each(["botToken", "signingSecret"] as const)(
     "rejects a bare UUID string for Slack %s",
     (credential) => {
       const config = slackConfig();
-      config.identities["agent-slack"].credentials[credential] = (
+      config.identities["agent-slack"].slack.credentials[credential] = (
         credential === "botToken" ? BOT_TOKEN_SECRET_ID : SIGNING_SECRET_ID
       ) as never;
 
       expect(validate(config)).toBe(false);
       expect(validate.errors).toEqual(expect.arrayContaining([
         expect.objectContaining({
-          instancePath: `/identities/agent-slack/credentials/${credential}`,
+          instancePath: `/identities/agent-slack/slack/credentials/${credential}`,
           keyword: "type",
         }),
       ]));

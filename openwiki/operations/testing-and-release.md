@@ -60,6 +60,28 @@ Current test files:
   - push tool success, denial, dry-run, credential failure, redaction
   - GitHub App manifest creation/conversion and private-key file persistence
   - sidecar writes/deletes and provider-aware settings fallback
+  - released Slack sidecar deletion while preserving sibling GitHub entries
+- `/tests/settings-action-authorization.spec.ts`
+  - table-driven agent/system denial for every protected settings/setup action before state, config, secret, agent-list, or HTTP access
+  - malformed actor rejection and local implicit-user (`userId: null`) success
+- `/tests/providers/slack/app-manifest.integration.spec.ts`
+  - released `v0.1.7`/`v0.1.8` Slack credential rebind, conflict, and cleanup-pending recovery
+  - deterministic metadata-discovery marker serialization/ownership
+  - deterministic Slack delete-rollback versus queued-save interleaving
+- `/tests/process-local-mutation-queue.spec.ts`
+  - failed mutations release their process-local queue key for later work
+- `/tests/providers/slack/ingress-conversation-queue.spec.ts`
+  - bounded persisted turns, pending/active/completed dedup, 24-hour completion retention, v1 ledger/run migration beyond minute 10, and unowned-thread fail-closed behavior
+- `/tests/providers/slack/ingress-provider-webhook.spec.ts`
+  - persist-before-ack and no session send in webhook scope
+  - deferred self-event draining, duplicate-drain coalescing, cross-conversation concurrency, FIFO successor kicks, accepted-run callback binding, stale callback rejection, and terminal reply-finalization ordering
+  - kick failure retention, ambiguous-send uncertain retirement/no replay, expired-lease retirement only under fresh scope, and restart plus webhook recovery
+- `/tests/providers/slack/ingress-session-reply.spec.ts`
+  - structured adapter-output reduction and bounded Slack reply truncation
+- `/tests/providers/slack/ingress-worker-integration.spec.ts`
+  - manifest `events.emit` capability and provider-owned self-event registration/draining through the real worker composition seam
+- `/tests/providers/slack/ingress-response-stream.spec.ts`, `ingress-webhook-handler.spec.ts`, `ingress-routing.spec.ts`, `ingress-signature.spec.ts`, and `ingress-rate-limit.spec.ts`
+  - native Slack stream behavior plus the unchanged authentication, filtering, routing, and ingress-rate boundaries around durable enqueue
 - `/tests/identity-policy.spec.ts`
   - config parsing and missing-agent fail-closed behavior
   - GitHub repo normalization from HTTPS/SSH/git URL forms

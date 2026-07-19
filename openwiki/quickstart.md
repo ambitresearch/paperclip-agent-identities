@@ -82,9 +82,10 @@ paperclipai plugin install . --local
 2. `/src/manifest.ts` declares plugin ID `roshangautam.paperclip-agent-identities`, version `0.1.3`, required capabilities, three tools, and two UI slots.
 3. `/src/worker.ts` calls `definePlugin()` and registers:
    - data loaders: `health`, `bot-identity-config`, `paperclip-agents`
-   - actions: `ping`, `save-bot-identity-config`, `delete-bot-identity-config`, GitHub App manifest-flow actions
+   - actions: `ping`, identity save/delete, GitHub/Slack manifest setup, Slack metadata discovery, and the released-sidecar Slack rebind action
    - tools: `github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`, `slack_bot_whoami`, and `slack_bot_post_message` — GitHub is still the only *enabled* provider (`registry.enabled()`), but Slack opts a subset of its tool surface in independently via `toolsStatus: "enabled"` (composed through `registry.liveTools()`/`registry.toolsEnabled()`), so the credential-free `slack_bot_whoami` (DRO-972) and the post/reply tool `slack_bot_post_message` (DRO-973) both register and appear in the manifest ahead of the rest of the Slack provider's (still `"coming-soon"`) tool surface.
-   - an `issue.created` event observer that marks issues as seen in plugin state
+    - an `issue.created` event observer that marks issues as seen in plugin state
+    - Slack's provider-owned `slack-turn-drain` self-event, which drains one durable queued turn under fresh company scope
 4. `/src/ui/index.tsx` exports a dashboard widget summarizing identity coverage and re-exports the settings page.
 5. GitHub tools validate and normalize repository inputs, resolve the calling agent's identity, then resolve credentials just in time. Provider permissions decide repository/resource access.
 
@@ -94,7 +95,7 @@ See [Plugin runtime architecture](architecture/plugin-runtime.md) for details.
 
 - **Agent identity**: a provider-aware mapping keyed by `${agentId}:${provider}`, with label, provider ID, provider account fields, selected-agent credential cascade, and optional commit author fields. GitHub is the only enabled provider today; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are listed as coming soon.
 - **Provider authorization**: repository/resource access is owned by the provider. For GitHub, App installation permissions and scopes decide which repositories tools can access.
-- **Credential sidecar**: an operator-local JSON file, defaulting to `<runtime-home>/.paperclip/agent-identities/credentials.json` via `os.homedir()`, that stores credential references by `${agentId}:${provider}` but not generated installation tokens. Native and container runs therefore use their own writable runtime homes.
+- **Credential sidecar**: an operator-local JSON file, defaulting to `<runtime-home>/.paperclip/agent-identities/credentials.json` via `os.homedir()`, used for GitHub credentials and one-release parsing/migration of Slack refs written by `v0.1.7`/`v0.1.8`. Current Slack runtime refs live in company host config. Native and container runs therefore use their own writable runtime homes.
 - **GitHub App path**: preferred credential mode. The settings UI creates a GitHub App manifest, the worker converts the one-time code, writes a private key file, and later mints short-lived installation tokens on tool calls.
 - **Fallback credentials**: secret ID or token file sources are still supported for dev and recovery flows, but GitHub App credentials are the durable path described in the README.
 

@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../../../src/manifest.js";
 import plugin from "../../../src/worker.js";
+import { SLACK_TURN_DRAIN_EVENT_TYPE } from "../../../src/providers/slack/ingress/provider-webhook.js";
 
 // End-to-end coverage that DRO-1005's Slack HTTP Events API ingress is
 // actually wired into the plugin's manifest + worker seams -- not just
@@ -22,17 +23,19 @@ const SIGNING_SECRET_REF = {
 const COMPANY_CONFIG = {
   identities: {
     "agent-1": {
-      label: "Agent One",
-      teamId: "T111",
-      appId: "A111",
-      botUserId: "U111",
-      credentials: {
-        botToken: {
-          type: "secret_ref",
-          secretId: BOT_TOKEN_SECRET_ID,
-          version: "latest",
+      slack: {
+        label: "Agent One",
+        teamId: "T111",
+        appId: "A111",
+        botUserId: "U111",
+        credentials: {
+          botToken: {
+            type: "secret_ref",
+            secretId: BOT_TOKEN_SECRET_ID,
+            version: "latest",
+          },
+          signingSecret: SIGNING_SECRET_REF,
         },
-        signingSecret: SIGNING_SECRET_REF,
       },
     },
   },
@@ -46,6 +49,7 @@ function sign(secret: string, timestamp: string, rawBody: string): string {
 
 function createConfiguredHarness() {
   const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
+  const emittedEvents: Array<{ name: string; companyId: string; payload: unknown }> = [];
   harness.seed({
     companies: [{ id: "company-1", name: "Acme" } as never],
     agents: [{ id: "agent-1", companyId: "company-1", name: "Agent One", status: "idle" } as never],
@@ -58,7 +62,21 @@ function createConfiguredHarness() {
   );
   Object.assign(harness.ctx.config, { get: getConfig });
   Object.assign(harness.ctx.secrets, { resolve: resolveSecret });
-  return { harness, getConfig, resolveSecret };
+  Object.assign(harness.ctx.events, {
+    emit: vi.fn(async (name: string, companyId: string, payload: unknown) => {
+      emittedEvents.push({ name, companyId, payload });
+    }),
+  });
+  return { harness, getConfig, resolveSecret, emittedEvents };
+}
+
+function emittedDrainPayload(emittedEvents: ReturnType<typeof createConfiguredHarness>["emittedEvents"]) {
+  const payload = emittedEvents.at(-1)?.payload;
+  if (!payload) throw new Error("Expected a Slack drain event");
+  return payload as {
+    agentId: string;
+    conversationKey: string;
+  };
 }
 
 describe("Slack Events API ingress - manifest + worker wiring", () => {
@@ -69,16 +87,27 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
   });
 
   it("declares webhook and agent-session capabilities required for ingress", () => {
+    expect(manifest.capabilities).toContain("events.emit");
     expect(manifest.capabilities).toContain("webhooks.receive");
     expect(manifest.capabilities).toContain("agent.sessions.create");
     expect(manifest.capabilities).toContain("agent.sessions.list");
     expect(manifest.capabilities).toContain("agent.sessions.send");
     expect(manifest.capabilities).toContain("agent.sessions.close");
+    expect(manifest.capabilities).not.toContain("jobs.schedule");
     expect(manifest.capabilities).not.toContain("agents.invoke");
   });
 
+  it("registers exactly one Slack drain self-event through the provider setup seam", async () => {
+    const { harness } = createConfiguredHarness();
+    const onSpy = vi.spyOn(harness.ctx.events, "on");
+    await plugin.definition.setup(harness.ctx);
+
+    expect(onSpy.mock.calls.filter(([name]) =>
+      name === SLACK_TURN_DRAIN_EVENT_TYPE)).toHaveLength(1);
+  });
+
   it("routes a signed event_callback delivery to the matching agent end-to-end", async () => {
-    const { harness, getConfig, resolveSecret } = createConfiguredHarness();
+    const { harness, getConfig, resolveSecret, emittedEvents } = createConfiguredHarness();
 
     await plugin.definition.setup(harness.ctx);
     const createSpy = vi.spyOn(harness.ctx.agents.sessions, "create");
@@ -105,6 +134,12 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
     });
 
     expect(result).toEqual({ status: 200, body: { ok: true } });
+    expect(sendSpy).not.toHaveBeenCalled();
+    await harness.emit(
+      SLACK_TURN_DRAIN_EVENT_TYPE,
+      emittedDrainPayload(emittedEvents),
+      { companyId: "company-1" },
+    );
     expect(createSpy).toHaveBeenCalledWith("agent-1", "company-1");
     expect(sendSpy).toHaveBeenCalledWith(
       expect.any(String),
@@ -114,12 +149,53 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
     expect(getConfig).toHaveBeenCalledWith("company-1");
     expect(resolveSecret).toHaveBeenCalledWith(SIGNING_SECRET_REF, {
       companyId: "company-1",
-      configPath: "identities.agent-1.credentials.signingSecret",
+      configPath: "identities.agent-1.slack.credentials.signingSecret",
     });
   });
 
+  it("acks a second same-conversation delivery before the first session reaches terminal", async () => {
+    const { harness, emittedEvents } = createConfiguredHarness();
+    await plugin.definition.setup(harness.ctx);
+    const sendSpy = vi.spyOn(harness.ctx.agents.sessions, "sendMessage");
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const input = (eventId: string, text: string) => {
+      const rawBody = JSON.stringify({
+        type: "event_callback",
+        team_id: "T111",
+        api_app_id: "A111",
+        event_id: eventId,
+        authorizations: [{ team_id: "T111" }],
+        event: { type: "message", channel_type: "im", channel: "D0123456789", user: "U222", text },
+      });
+      return {
+        endpointKey: "slack-events",
+        companyId: "company-1",
+        headers: {
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": sign(SIGNING_SECRET, timestamp, rawBody),
+        },
+        rawBody,
+        requestId: `req-${eventId}`,
+      };
+    };
+
+    await plugin.definition.onWebhook?.(input("Ev-first", "first"));
+    await harness.emit(
+      SLACK_TURN_DRAIN_EVENT_TYPE,
+      emittedDrainPayload(emittedEvents),
+      { companyId: "company-1" },
+    );
+    expect(sendSpy).toHaveBeenCalledOnce();
+
+    await expect(plugin.definition.onWebhook?.(input("Ev-second", "second"))).resolves.toEqual({
+      status: 200,
+      body: { ok: true },
+    });
+    expect(sendSpy).toHaveBeenCalledOnce();
+  });
+
   it("streams a threaded session response through Slack's native agent reply APIs", async () => {
-    const { harness, resolveSecret } = createConfiguredHarness();
+    const { harness, resolveSecret, emittedEvents } = createConfiguredHarness();
     const slackFetch = vi.fn(async (input: string, _init?: RequestInit) => {
       if (input === "https://slack.com/api/auth.test") {
         return new Response(JSON.stringify({
@@ -194,17 +270,25 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
         requestId: "req-post-reply",
       });
 
+      await harness.emit(
+        SLACK_TURN_DRAIN_EVENT_TYPE,
+        emittedDrainPayload(emittedEvents),
+        { companyId: "company-1" },
+      );
+
       const sessionId = sendSpy.mock.calls[0][0];
+      const runId = (await sendSpy.mock.results[0].value).runId;
       harness.simulateSessionEvent(sessionId, {
-        runId: "run-post-reply",
+        runId,
         seq: 1,
         eventType: "chunk",
         stream: "stdout",
         message: "[paperclip] preparing workspace\n{\"type\":\"system\",\"subtype\":\"hook_started\"}\n",
         payload: null,
       });
+
       harness.simulateSessionEvent(sessionId, {
-        runId: "run-post-reply",
+        runId,
         seq: 2,
         eventType: "chunk",
         stream: "stderr",
@@ -212,7 +296,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
         payload: null,
       });
       harness.simulateSessionEvent(sessionId, {
-        runId: "run-post-reply",
+        runId,
         seq: 3,
         eventType: "chunk",
         stream: "stdout",
@@ -220,7 +304,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
         payload: null,
       });
       harness.simulateSessionEvent(sessionId, {
-        runId: "run-post-reply",
+        runId,
         seq: 4,
         eventType: "chunk",
         stream: "stdout",
@@ -228,7 +312,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
         payload: null,
       });
       harness.simulateSessionEvent(sessionId, {
-        runId: "run-post-reply",
+        runId,
         seq: 5,
         eventType: "done",
         stream: "system",
@@ -259,10 +343,10 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
       expect(slackFetch.mock.calls.some(([url]) => url === "https://slack.com/api/chat.postMessage")).toBe(false);
       expect(slackFetch.mock.calls.filter(([url]) => url === "https://slack.com/api/auth.test")).toHaveLength(2);
       expect(resolveSecret).toHaveBeenCalledWith(
-        COMPANY_CONFIG.identities["agent-1"].credentials.botToken,
+        COMPANY_CONFIG.identities["agent-1"].slack.credentials.botToken,
         {
           companyId: "company-1",
-          configPath: "identities.agent-1.credentials.botToken",
+          configPath: "identities.agent-1.slack.credentials.botToken",
         },
       );
       expect(closeSpy).not.toHaveBeenCalled();
@@ -310,8 +394,8 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
     expect(createSpy).not.toHaveBeenCalled();
   });
 
-  it("releases the dedup claim when session send fails, so a Slack retry of the same event_id can succeed later", async () => {
-    const { harness } = createConfiguredHarness();
+  it("acks after durable enqueue and treats an ambiguous session send failure as completed without replay", async () => {
+    const { harness, emittedEvents } = createConfiguredHarness();
 
     await plugin.definition.setup(harness.ctx);
 
@@ -327,27 +411,30 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = sign(SIGNING_SECRET, timestamp, rawBody);
 
-    // First delivery: the session run cannot start.
+    // Webhook scope only enqueues and kicks; it never sees this send failure.
     const sendSpy = vi
       .spyOn(harness.ctx.agents.sessions, "sendMessage")
       .mockRejectedValueOnce(new Error("agent runtime unavailable"));
 
-    await expect(
-      plugin.definition.onWebhook?.({
-        endpointKey: "slack-events",
-        companyId: "company-1",
-        headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature },
-        rawBody,
-        requestId: "req-fail-1",
-      })
-    ).rejects.toThrow("agent runtime unavailable");
+    await expect(plugin.definition.onWebhook?.({
+      endpointKey: "slack-events",
+      companyId: "company-1",
+      headers: { "x-slack-request-timestamp": timestamp, "x-slack-signature": signature },
+      rawBody,
+      requestId: "req-fail-1",
+    })).resolves.toEqual({ status: 200, body: { ok: true } });
+
+    const drainPayload = emittedDrainPayload(emittedEvents);
+    await harness.emit(
+      SLACK_TURN_DRAIN_EVENT_TYPE,
+      drainPayload,
+      { companyId: "company-1" },
+    );
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
 
-    // Slack redelivers the identical event_id (its own retry policy for a
-    // failed/slow ack). Because the failed first attempt released its dedup
-    // claim, this second delivery must be allowed to start the agent session
-    // again -- not be silently dropped as a duplicate.
+    // A generic transport/runtime error may occur after host acceptance. With
+    // no request key, the provider completes the claim and never auto-resends.
     await plugin.definition.onWebhook?.({
       endpointKey: "slack-events",
       companyId: "company-1",
@@ -355,7 +442,11 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
       rawBody,
       requestId: "req-fail-2",
     });
-
-    expect(sendSpy).toHaveBeenCalledTimes(2);
+    await harness.emit(
+      SLACK_TURN_DRAIN_EVENT_TYPE,
+      emittedDrainPayload(emittedEvents),
+      { companyId: "company-1" },
+    );
+    expect(sendSpy).toHaveBeenCalledTimes(1);
   });
 });

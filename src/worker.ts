@@ -1,13 +1,16 @@
 import {
   definePlugin, runWorker, type PluginContext, type ToolRunContext,
 } from "@paperclipai/plugin-sdk";
-import { CONFIG_SCOPE } from "./config-source.js";
+import { CONFIG_SCOPE, configMutationLockKeys } from "./config-source.js";
 import {
   getIdentityKey, getIdentityProviderDefinition, isIdentityProviderId,
   SUPPORTED_IDENTITY_PROVIDERS, type BotIdentityCredentialConfig,
   type BotIdentitySettingsData, type BotIdentitySettingsEntry,
   type DeleteBotIdentityConfigInput, type IdentityProviderId,
   type PaperclipAgentOption, type PaperclipAgentsData,
+  RETRY_LEGACY_SLACK_SIDECAR_CLEANUP_ACTION,
+  type RetryLegacySlackSidecarCleanupInput,
+  type RetryLegacySlackSidecarCleanupResult,
   type SaveBotIdentityConfigInput,
 } from "./shared/types.js";
 import { resolveAgentIdentity, type ResolvedAgentIdentity } from "./core/agent-identity.js";
@@ -20,12 +23,27 @@ import {
 import type { IdentityProvider } from "./core/provider-contract.js";
 import type { ResourceReference } from "./core/resource-reference.js";
 import { createProviderTool, type ProviderToolPipelineDeps } from "./core/tool-pipeline.js";
+import { withProcessLocalLocks } from "./core/process-local-mutation-queue.js";
+import { requireHumanSettingsActor } from "./core/settings-action-authorization.js";
 import { redactSecrets } from "./lib/redaction.js";
+import {
+  findLegacySlackSidecarCleanup,
+  getLegacySlackSidecarCleanupId,
+  retryLegacySlackSidecarCleanup,
+  stageLegacySlackSidecarCleanup,
+} from "./legacy-slack-sidecar-cleanup.js";
 import { createProviderRegistry } from "./providers/index.js";
-import { readSlackSecretRef, slackIdentityConfigPath } from "./providers/slack/config.js";
+import {
+  readSlackIdentityConfigEntry,
+  readSlackSecretRef,
+} from "./providers/slack/config.js";
+import {
+  getLegacySlackCredentialStatus,
+} from "./providers/slack/legacy-rebind.js";
 import {
   deleteCredentialSidecarIdentity,
   readCredentialSidecarIfExists,
+  readLegacySlackCredentialSidecarEntry,
   resolveCredentialSidecarPath,
   upsertCredentialSidecarIdentity,
   type CredentialSidecarIdentity,
@@ -139,51 +157,68 @@ const plugin = definePlugin({
         return await registered.handler(params, runCtx);
       });
     }
-    // contributeActions is composed for EVERY registered provider, not just
-    // "enabled" ones: a "coming-soon" provider (no tools yet) can still ship
-    // setup/bootstrap actions (e.g. Slack's manifest-assisted app setup) ahead
-    // of its tool surface landing. This loop stays provider-agnostic — no
-    // provider-specific branch is added here.
+    // This provider setup seam is composed for EVERY registered provider, not
+    // just "enabled" ones. In addition to actions, a provider may register its
+    // own runtime handlers here; Slack uses it for one queue-drain self-event.
+    // The worker remains provider-agnostic.
     for (const provider of registry.all()) {
       provider.contributeActions?.(ctx);
     }
 
-    ctx.actions.register("save-bot-identity-config", async (params) => {
+    ctx.actions.register("save-bot-identity-config", async (params, context) => {
+      requireHumanSettingsActor(context);
       const input = params as SaveBotIdentityConfigInput;
       const identity = normalizeIdentityInput(input);
-      const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
-      const previousAgentId = typeof input.previousAgentId === "string" ? input.previousAgentId.trim() : "";
-      const previousIdentityKey = previousAgentId && previousAgentId !== identity.agentId
-        ? getIdentityKey(previousAgentId, identity.provider)
-        : "";
-      const nextIdentities = { ...previousState.identities };
-      if (previousIdentityKey) {
-        delete nextIdentities[previousIdentityKey];
+      const companyId = typeof context.companyId === "string" ? context.companyId.trim() : "";
+      const mutationAgentIds = [identity.agentId];
+      const previousAgentIdForLock = typeof input.previousAgentId === "string" ? input.previousAgentId.trim() : "";
+      if (previousAgentIdForLock && previousAgentIdForLock !== identity.agentId) {
+        mutationAgentIds.push(previousAgentIdForLock);
       }
-      nextIdentities[identity.id] = identity;
-      const nextState: AgentIdentitySettingsState = {
-        version: BOT_IDENTITY_SETTINGS_VERSION,
-        identities: nextIdentities,
-      };
+      if (companyId) {
+        await requireCompanyAgents(ctx, companyId, mutationAgentIds);
+      }
+      return await withProcessLocalLocks(
+        ctx.state,
+        mutationAgentIds.flatMap((agentId) => configMutationLockKeys(companyId, agentId)),
+        async () => {
+          const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+          const previousAgentId = typeof input.previousAgentId === "string" ? input.previousAgentId.trim() : "";
+          const previousIdentityKey = previousAgentId && previousAgentId !== identity.agentId
+            ? getIdentityKey(previousAgentId, identity.provider)
+            : "";
+          const nextIdentities = { ...previousState.identities };
+          if (previousIdentityKey) {
+            delete nextIdentities[previousIdentityKey];
+          }
+          nextIdentities[identity.id] = identity;
+          const nextState: AgentIdentitySettingsState = {
+            ...previousState,
+            version: BOT_IDENTITY_SETTINGS_VERSION,
+            identities: nextIdentities,
+          };
 
-      await ctx.state.set(CONFIG_SCOPE, nextState);
-      const credential = normalizeCredentialInput(input.credential);
-      if (previousAgentId && previousAgentId !== identity.agentId) {
-        await deleteCredentialSidecarIdentity(previousAgentId, identity.provider);
-      }
-      if (input.credential !== undefined) {
-        if (credential) {
-          await upsertCredentialSidecarIdentity(identity.agentId, identity.provider, credential);
-        } else {
-          await deleteCredentialSidecarIdentity(identity.agentId, identity.provider);
+          await ctx.state.set(CONFIG_SCOPE, nextState);
+          const credential = normalizeCredentialInput(input.credential);
+          if (previousAgentId && previousAgentId !== identity.agentId) {
+            await deleteCredentialSidecarIdentity(previousAgentId, identity.provider);
+          }
+          if (input.credential !== undefined) {
+            if (credential) {
+              await upsertCredentialSidecarIdentity(identity.agentId, identity.provider, credential);
+            } else {
+              await deleteCredentialSidecarIdentity(identity.agentId, identity.provider);
+            }
+          }
+
+          ctx.logger.info("Agent identity config saved", { agentId: identity.agentId, provider: identity.provider, label: identity.label, githubUsername: identity.github.username });
+          return (await buildSettingsData(ctx, nextState)).identities.find((entry) => entry.id === identity.id) ?? identity;
         }
-      }
-
-      ctx.logger.info("Agent identity config saved", { agentId: identity.agentId, provider: identity.provider, label: identity.label, githubUsername: identity.github.username });
-      return (await buildSettingsData(ctx, nextState)).identities.find((entry) => entry.id === identity.id) ?? identity;
+      );
     });
 
     ctx.actions.register("delete-bot-identity-config", async (params, context) => {
+      requireHumanSettingsActor(context);
       const input = params as DeleteBotIdentityConfigInput;
       const agentId = typeof input.agentId === "string" ? input.agentId.trim() : "";
       const provider = normalizeProviderInput(input.provider);
@@ -191,54 +226,164 @@ const plugin = definePlugin({
         throw new Error("agentId is required");
       }
       const identityKey = getIdentityKey(agentId, provider);
-      const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
-      const { [identityKey]: _removed, ...identities } = previousState.identities;
-      const nextState: AgentIdentitySettingsState = { version: BOT_IDENTITY_SETTINGS_VERSION, identities };
-      let slackConfigRollback: { companyId: string; identity: Record<string, unknown> } | undefined;
-
-      if (provider === "slack") {
-        const companyId = typeof context.companyId === "string" ? context.companyId.trim() : "";
-        if (!companyId) throw new Error("Deleting a Slack identity requires a host-authorized companyId.");
-        const companyAgents = await listCompanyAgentOptions(ctx, companyId);
-        if (!companyAgents.some((agent) => agent.id === agentId)) {
-          throw new Error("agentId does not belong to the host-authorized company.");
-        }
-        const companyConfig = await ctx.config.get(companyId);
-        const existingIdentity = readInstanceIdentity(companyConfig, agentId);
-        if (isRecord(existingIdentity)) {
-          slackConfigRollback = { companyId, identity: existingIdentity };
-        }
-        await ctx.config.patchSecretRefs({
-          companyId,
-          path: slackIdentityConfigPath(agentId),
-          value: null,
-        });
+      const companyId = typeof context.companyId === "string" ? context.companyId.trim() : "";
+      if (provider === "slack" && !companyId) {
+        throw new Error("Deleting a Slack identity requires a host-authorized companyId.");
+      }
+      if (provider === "github" && companyId) {
+        await requireCompanyAgents(ctx, companyId, [agentId]);
       }
 
-      try {
-        await ctx.state.set(CONFIG_SCOPE, nextState);
-      } catch (error) {
-        if (slackConfigRollback) {
-          try {
-            await ctx.config.patchSecretRefs({
-              companyId: slackConfigRollback.companyId,
-              path: slackIdentityConfigPath(agentId),
-              value: slackConfigRollback.identity,
-            });
-          } catch (rollbackError) {
-            throw new AggregateError(
-              [error, rollbackError],
-              "Slack identity deletion failed and its company config could not be restored.",
-            );
+      return await withProcessLocalLocks(
+        ctx.state,
+        configMutationLockKeys(companyId, agentId),
+        async () => {
+          const previousState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+          const { [identityKey]: _removed, ...identities } = previousState.identities;
+          let nextState: AgentIdentitySettingsState = {
+            ...previousState,
+            version: BOT_IDENTITY_SETTINGS_VERSION,
+            identities,
+          };
+          let slackConfigRollback: {
+            companyId: string;
+            path: string[];
+            identity: Record<string, unknown>;
+          } | undefined;
+          let legacySlackCredential: ReturnType<typeof readLegacySlackCredentialSidecarEntry>;
+          let legacySlackCleanupError: unknown;
+          let cleanupTombstone = provider === "slack"
+            ? findLegacySlackSidecarCleanup(previousState, companyId, { agentId })
+            : undefined;
+
+          if (provider === "slack") {
+            const companyAgents = await listCompanyAgentOptions(ctx, companyId);
+            if (!companyAgents.some((agent) => agent.id === agentId)) {
+              throw new Error("agentId does not belong to the host-authorized company.");
+            }
+            const companyConfig = await ctx.config.get(companyId);
+            const existingSlackConfig = readSlackIdentityConfigEntry(companyConfig, agentId);
+            if (existingSlackConfig) {
+              const slackConfigPath = [...existingSlackConfig.path];
+              slackConfigRollback = {
+                companyId,
+                path: slackConfigPath,
+                identity: existingSlackConfig.value,
+              };
+              await ctx.config.patchSecretRefs({
+                companyId,
+                path: slackConfigPath,
+                value: null,
+              });
+            }
+            try {
+              legacySlackCredential = readLegacySlackCredentialSidecarEntry(
+                await readCredentialSidecarIfExists(),
+                agentId,
+              );
+            } catch (error) {
+              ctx.logger.warn("Could not inspect the legacy Slack sidecar before identity deletion", {
+                agentId,
+                reason: error instanceof Error ? error.message : "unknown error",
+              });
+              legacySlackCleanupError = error;
+            }
+            if (legacySlackCredential || legacySlackCleanupError || cleanupTombstone) {
+              const staged = stageLegacySlackSidecarCleanup(nextState, {
+                companyId,
+                agentId,
+                source: "identity-delete",
+                ...(legacySlackCredential ? { expected: legacySlackCredential } : {}),
+              });
+              nextState = staged.state;
+              cleanupTombstone = staged.tombstone;
+            }
           }
-        }
-        throw error;
+
+          try {
+            await ctx.state.set(CONFIG_SCOPE, nextState);
+          } catch (error) {
+            if (slackConfigRollback) {
+              try {
+                await ctx.config.patchSecretRefs({
+                  companyId: slackConfigRollback.companyId,
+                  path: slackConfigRollback.path,
+                  value: slackConfigRollback.identity,
+                });
+              } catch (rollbackError) {
+                throw new AggregateError(
+                  [error, rollbackError],
+                  "Slack identity deletion failed and its company config could not be restored.",
+                );
+              }
+            }
+            throw error;
+          }
+          if (provider !== "slack") {
+            await deleteCredentialSidecarIdentity(agentId, provider);
+          } else if (cleanupTombstone && !legacySlackCleanupError) {
+            try {
+              nextState = await retryLegacySlackSidecarCleanup(ctx, cleanupTombstone);
+            } catch (error) {
+              ctx.logger.warn("Slack identity deleted; legacy sidecar cleanup remains pending", { agentId });
+              legacySlackCleanupError = error;
+            }
+          }
+          ctx.logger.info("Agent identity config deleted", { agentId, provider });
+          return await buildSettingsData(ctx, nextState, companyId);
+        },
+      );
+    });
+
+    ctx.actions.register(RETRY_LEGACY_SLACK_SIDECAR_CLEANUP_ACTION, async (params, context) => {
+      requireHumanSettingsActor(context);
+      const input = params as RetryLegacySlackSidecarCleanupInput;
+      const companyId = typeof context.companyId === "string" ? context.companyId.trim() : "";
+      if (!companyId) {
+        throw new Error("Retrying legacy Slack cleanup requires a host-authorized companyId.");
       }
-      if (provider !== "slack") {
-        await deleteCredentialSidecarIdentity(agentId, provider);
+      const cleanupId = typeof input.cleanupId === "string" ? input.cleanupId.trim() : "";
+      const requestedAgentId = typeof input.agentId === "string" ? input.agentId.trim() : "";
+      if (!cleanupId && !requestedAgentId) {
+        throw new Error("cleanupId or agentId is required.");
       }
-      ctx.logger.info("Agent identity config deleted", { agentId, provider });
-      return await buildSettingsData(ctx, nextState);
+
+      const initialState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+      const initialTombstone = findLegacySlackSidecarCleanup(initialState, companyId, {
+        ...(cleanupId ? { cleanupId } : {}),
+        ...(requestedAgentId ? { agentId: requestedAgentId } : {}),
+      });
+      const agentId = initialTombstone?.agentId || requestedAgentId;
+      if (!agentId) {
+        throw new Error("The cleanupId is not pending in the host-authorized company.");
+      }
+
+      return await withProcessLocalLocks(
+        ctx.state,
+        configMutationLockKeys(companyId, agentId),
+        async (): Promise<RetryLegacySlackSidecarCleanupResult> => {
+          const companyAgents = await listCompanyAgentOptions(ctx, companyId);
+          if (!companyAgents.some((agent) => agent.id === agentId)) {
+            throw new Error("agentId does not belong to the host-authorized company.");
+          }
+          const state = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+          const tombstone = findLegacySlackSidecarCleanup(state, companyId, {
+            ...(cleanupId ? { cleanupId } : {}),
+            agentId,
+          });
+          const resolvedCleanupId = tombstone?.cleanupId ?? getLegacySlackSidecarCleanupId(companyId, agentId);
+          const nextState = tombstone
+            ? await retryLegacySlackSidecarCleanup(ctx, tombstone)
+            : state;
+          return {
+            cleanupId: resolvedCleanupId,
+            provider: "slack",
+            agentId,
+            status: "cleaned",
+            settings: await buildSettingsData(ctx, nextState, companyId),
+          };
+        },
+      );
     });
   },
 
@@ -337,16 +482,21 @@ async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySetting
         companyConfig,
         identity.agentId,
       );
+      const legacySlackCredential = identity.provider === "slack"
+        ? getLegacySlackCredentialStatus(sidecar, companyConfig, identity)
+        : undefined;
       const slackSetup = identity.provider === "slack"
-        ? readSlackSetupProjection(companyConfig, identity.agentId)
+        ? readSlackSetupProjection(companyConfig, identity.agentId, legacySlackCredential)
         : undefined;
       return {
         ...identity,
         ...(credential ? { credential } : {}),
         ...(slackSetup ? { slackSetup } : {}),
-        credentialStatus: slackCredentialConfigured || credential
-          ? "configured"
-          : identity.provider !== "slack" && credentialSidecarError
+        credentialStatus: legacySlackCredential?.status
+          ? legacySlackCredential.status
+          : slackCredentialConfigured || credential
+            ? "configured"
+          : credentialSidecarError && (identity.provider !== "slack" || !slackCredentialConfigured)
             ? "sidecar-unavailable"
             : "missing",
       } satisfies BotIdentitySettingsEntry;
@@ -360,15 +510,26 @@ async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySetting
     ...(companyName ? { companyName } : {}),
     credentialSidecarPath,
     ...(credentialSidecarError ? { credentialSidecarError } : {}),
+    cleanupPending: Object.values(state.cleanupTombstones)
+      .filter((tombstone) => !companyId || tombstone.companyId === companyId)
+      .map((tombstone) => ({
+        cleanupId: tombstone.cleanupId,
+        companyId: tombstone.companyId,
+        provider: tombstone.provider,
+        agentId: tombstone.agentId,
+        operation: tombstone.operation,
+        source: tombstone.source,
+      }))
+      .sort((left, right) => left.cleanupId.localeCompare(right.cleanupId)),
   };
 }
 
 function readSlackSetupProjection(
   config: Record<string, unknown>,
   agentId: string,
+  legacyCredential?: NonNullable<BotIdentitySettingsEntry["slackSetup"]>["legacyCredential"],
 ): BotIdentitySettingsEntry["slackSetup"] | undefined {
-  const identities = isRecord(config.identities) ? config.identities : {};
-  const identity = isRecord(identities[agentId]) ? identities[agentId] : {};
+  const identity = readSlackIdentityConfigEntry(config, agentId)?.value ?? {};
   const eventsRequestUrl = readString(identity.eventsRequestUrl);
   let botTokenSecretId = "";
   let signingSecretId = "";
@@ -382,11 +543,12 @@ function readSlackSetupProjection(
   } catch {
     // Keep the safe projection partial when one reference is missing.
   }
-  if (!eventsRequestUrl && !botTokenSecretId && !signingSecretId) return undefined;
+  if (!eventsRequestUrl && !botTokenSecretId && !signingSecretId && !legacyCredential) return undefined;
   return {
     ...(eventsRequestUrl ? { eventsRequestUrl } : {}),
     ...(botTokenSecretId ? { botTokenSecretId } : {}),
     ...(signingSecretId ? { signingSecretId } : {}),
+    ...(legacyCredential ? { legacyCredential } : {}),
   };
 }
 
@@ -420,6 +582,17 @@ async function listCompanyAgentOptions(ctx: PluginContext, companyId: string): P
       status: agent.status ?? null,
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+async function requireCompanyAgents(
+  ctx: PluginContext,
+  companyId: string,
+  agentIds: readonly string[],
+): Promise<void> {
+  const companyAgentIds = new Set((await listCompanyAgentOptions(ctx, companyId)).map((agent) => agent.id));
+  if (agentIds.some((agentId) => !companyAgentIds.has(agentId))) {
+    throw new Error("agentId does not belong to the host-authorized company.");
+  }
 }
 
 function normalizeIdentityInput(input: SaveBotIdentityConfigInput): GitHubAgentIdentityConfig {

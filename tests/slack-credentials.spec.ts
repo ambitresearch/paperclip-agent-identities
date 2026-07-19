@@ -36,13 +36,15 @@ function slackConfig(agentId = "agent-1"): Record<string, unknown> {
   return {
     identities: {
       [agentId]: {
-        label: "Bot",
-        teamId: "T123",
-        appId: "A123",
-        botUserId: "U123",
-        credentials: {
-          botToken: BOT_TOKEN_REF,
-          signingSecret: SIGNING_SECRET_REF,
+        slack: {
+          label: "Bot",
+          teamId: "T123",
+          appId: "A123",
+          botUserId: "U123",
+          credentials: {
+            botToken: BOT_TOKEN_REF,
+            signingSecret: SIGNING_SECRET_REF,
+          },
         },
       },
     },
@@ -82,7 +84,7 @@ describe("resolveSlackBotToken", () => {
     expect(resolveSecret).toHaveBeenCalledOnce();
     expect(resolveSecret).toHaveBeenCalledWith(BOT_TOKEN_REF, {
       companyId: COMPANY_ID,
-      configPath: "identities.agent-1.credentials.botToken",
+      configPath: "identities.agent-1.slack.credentials.botToken",
     });
     expect(result).toEqual({
       token: `resolved:${BOT_TOKEN_REF.secretId}`,
@@ -110,7 +112,8 @@ describe("resolveSlackBotToken", () => {
 
   it("rejects a bare UUID instead of resolving it outside a bound config path", async () => {
     const config = slackConfig();
-    const identity = (config.identities as Record<string, Record<string, unknown>>)["agent-1"];
+    const identity = ((config.identities as Record<string, Record<string, unknown>>)["agent-1"]
+      .slack as Record<string, unknown>);
     identity.credentials = {
       botToken: BOT_TOKEN_REF.secretId,
       signingSecret: SIGNING_SECRET_REF,
@@ -131,6 +134,27 @@ describe("resolveSlackBotToken", () => {
     await expect(
       resolveSlackBotToken(fakeIdentity(), slackConfig(), COMPANY_ID, resolveSecret, verifyMatchingWorkspace),
     ).rejects.toThrow(/secret revoked/);
+  });
+
+  it("continues resolving the flat Slack config persisted by earlier builds of this PR", async () => {
+    const config = slackConfig();
+    const nested = (config.identities as Record<string, Record<string, unknown>>)["agent-1"]
+      .slack as Record<string, unknown>;
+    (config.identities as Record<string, unknown>)["agent-1"] = nested;
+    const resolveSecret = vi.fn(async () => "resolved-token");
+
+    await resolveSlackBotToken(
+      fakeIdentity(),
+      config,
+      COMPANY_ID,
+      resolveSecret,
+      verifyMatchingWorkspace,
+    );
+
+    expect(resolveSecret).toHaveBeenCalledWith(BOT_TOKEN_REF, {
+      companyId: COMPANY_ID,
+      configPath: "identities.agent-1.credentials.botToken",
+    });
   });
 
   it("rejects a token for the wrong workspace without leaking the resolved token", async () => {
@@ -199,13 +223,14 @@ describe("resolveSlackSigningSecret", () => {
     expect(signingSecret).toBe(`resolved:${SIGNING_SECRET_REF.secretId}`);
     expect(resolveSecret).toHaveBeenCalledWith(SIGNING_SECRET_REF, {
       companyId: COMPANY_ID,
-      configPath: "identities.agent-1.credentials.signingSecret",
+      configPath: "identities.agent-1.slack.credentials.signingSecret",
     });
   });
 
   it("fails closed when the signing-secret binding is absent", async () => {
     const config = slackConfig();
-    const identity = (config.identities as Record<string, Record<string, unknown>>)["agent-1"];
+    const identity = ((config.identities as Record<string, Record<string, unknown>>)["agent-1"]
+      .slack as Record<string, unknown>);
     identity.credentials = { botToken: BOT_TOKEN_REF };
     const resolveSecret = vi.fn(async () => "unused");
 
@@ -217,7 +242,8 @@ describe("resolveSlackSigningSecret", () => {
 
   it("rejects a bare UUID instead of resolving it outside a bound config path", async () => {
     const config = slackConfig();
-    const identity = (config.identities as Record<string, Record<string, unknown>>)["agent-1"];
+    const identity = ((config.identities as Record<string, Record<string, unknown>>)["agent-1"]
+      .slack as Record<string, unknown>);
     identity.credentials = {
       botToken: BOT_TOKEN_REF,
       signingSecret: SIGNING_SECRET_REF.secretId,

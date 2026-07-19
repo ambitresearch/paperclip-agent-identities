@@ -519,6 +519,52 @@ describe("Slack reinstall action", () => {
   });
 });
 
+describe("Released Slack credential recovery", () => {
+  it("offers rebind instead of reinstall and submits only agentId plus an operator signing-secret UUID", async () => {
+    bridgeData = baseBridgeData([{
+      ...slackIdentityEntry(),
+      credentialStatus: "rebind-required",
+      slackSetup: {
+        legacyCredential: { status: "rebind-required", signingSecretRequired: true },
+      },
+    }]);
+    actionFor("slack_bot_whoami").mockResolvedValue({ error: "Host binding not configured" });
+    actionFor("rebind-legacy-slack-credentials").mockResolvedValue({
+      agentId: "agent-0",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      status: "rebound",
+    });
+    renderSettingsPage();
+    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Edit") ?? null);
+    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Next") ?? null);
+
+    expect(text()).toContain("Upgrade action required");
+    expect(text()).toContain("v0.1.7/v0.1.8");
+    expect(text()).not.toContain("xoxb-");
+    expect(text()).not.toContain("Reinstall the Slack App for this identity");
+    expect(container.querySelector('input[placeholder="Company secret UUID containing the Slack bot token"]')).toBeNull();
+
+    change(
+      container.querySelector('input[placeholder="Company secret UUID containing the Slack signing secret"]'),
+      SIGNING_SECRET_ID,
+    );
+    const rebind = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "Rebind released credentials",
+    );
+    await act(async () => {
+      click(rebind ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("rebind-legacy-slack-credentials")).toHaveBeenCalledWith({
+      agentId: "agent-0",
+      signingSecretId: SIGNING_SECRET_ID,
+    });
+    expect(text()).toContain("Released Slack credentials rebound successfully");
+  });
+});
+
 describe("Slack removal confirmation copy", () => {
   it("calls window.confirm with Slack-specific recovery-guidance copy, and only deletes when confirmed", async () => {
     bridgeData["bot-identity-config"] = {

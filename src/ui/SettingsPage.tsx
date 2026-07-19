@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
-import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
+import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, REBIND_LEGACY_SLACK_CREDENTIALS_ACTION, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
 import { slackBotWhoamiToolName } from "../shared/slack-bot-whoami-tool.js";
 import { buildProviderSettingsRegistry } from "../core/provider-settings-contract.js";
 import { ALL_SETTINGS_ADAPTERS } from "../providers/settings-index.js";
@@ -68,6 +68,8 @@ export type IdentityFormState = {
   slackEventsRequestUrl: string;
   slackBotTokenSecretId: string;
   slackSigningSecretId: string;
+  slackLegacyCredentialStatus: string;
+  slackLegacySigningSecretRequired: string;
 };
 
 type IdentityFormSection = "identity" | "github" | "slack" | "commit";
@@ -96,6 +98,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const getSlackAppManifestFlow = usePluginAction("get-slack-app-manifest-flow");
   const discoverSlackInstallMetadata = usePluginAction("discover-slack-install-metadata");
   const saveSlackInstallMetadata = usePluginAction("save-slack-install-metadata");
+  const rebindLegacySlackCredentials = usePluginAction(REBIND_LEGACY_SLACK_CREDENTIALS_ACTION);
   // Credential-free identity self-check tool (DRO-972) invoked the same way
   // as the plugin actions above. `usePluginAction` only calls
   // `ctx.actions.register` handlers, not `ctx.tools.register` handlers -- this
@@ -185,6 +188,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     getSlackAppManifestFlow,
     discoverSlackInstallMetadata,
     saveSlackInstallMetadata,
+    rebindLegacySlackCredentials,
     slackBotWhoami,
   });
 
@@ -267,7 +271,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   // before it resolves, letting that stale response's state updates land on
   // a different form (Copilot finding on settings-adapter-ui.tsx:454).
   const slackSaveInFlight =
-    activeProviderId === SLACK_IDENTITY_PROVIDER_ID && (slackUIState.slackSaveBusy || slackUIState.slackCleanupBusy);
+    activeProviderId === SLACK_IDENTITY_PROVIDER_ID && (
+      slackUIState.slackSaveBusy
+      || slackUIState.slackCleanupBusy
+      || slackUIState.legacySlackRebindBusy
+    );
 
   if (loading) return <div>Loading settings...</div>;
   if (error) return <div>Error loading settings: {error.message}</div>;
@@ -838,6 +846,12 @@ export function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState
     slackEventsRequestUrl: entry?.provider === "slack" ? entry.slackSetup?.eventsRequestUrl ?? "" : "",
     slackBotTokenSecretId: entry?.provider === "slack" ? entry.slackSetup?.botTokenSecretId ?? "" : "",
     slackSigningSecretId: entry?.provider === "slack" ? entry.slackSetup?.signingSecretId ?? "" : "",
+    slackLegacyCredentialStatus: entry?.provider === "slack"
+      ? entry.slackSetup?.legacyCredential?.status ?? ""
+      : "",
+    slackLegacySigningSecretRequired: entry?.provider === "slack" && entry.slackSetup?.legacyCredential?.signingSecretRequired
+      ? "true"
+      : "",
   };
 }
 
@@ -1033,13 +1047,16 @@ function readString(value: unknown): string {
 
 function formatCredentialStatus(status: BotIdentitySettingsEntry["credentialStatus"]): string {
   if (status === "configured") return "Configured";
+  if (status === "rebind-required") return "Rebind required";
+  if (status === "cleanup-pending") return "Cleanup pending";
+  if (status === "conflict") return "Conflict";
   if (status === "sidecar-unavailable") return "Unavailable";
   return "Missing";
 }
 
 function getIdentityTone(entry: BotIdentitySettingsEntry): IdentityTone {
   if (entry.credentialStatus === "configured") return "good";
-  if (entry.credentialStatus === "sidecar-unavailable") return "warn";
+  if (entry.credentialStatus !== "missing") return "warn";
   return "neutral";
 }
 

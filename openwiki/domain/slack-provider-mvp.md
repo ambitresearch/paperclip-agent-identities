@@ -39,27 +39,29 @@ Separates public identity metadata from host-managed credential references:
 - **Public identity config** (`identities[agentId:slack]` in `bot-identity-config`, v4 settings
   state): `teamId`, `appId`, `botUserId`, `defaultChannel` — all shareable per the decision
   record's shareable/secret table.
-- **Company-scoped host config** (`identities.<agentId>`): shareable install fields plus typed
+- **Company-scoped host config** (`identities.<agentId>.slack`): shareable install fields plus typed
   `secret_ref` values for both required Slack credentials.
 
   ```json
   {
     "identities": {
       "<agent-id>": {
-        "label": "<agent-label>",
-        "teamId": "<slack-team-id>",
-        "appId": "<slack-app-id>",
-        "botUserId": "<slack-bot-user-id>",
-        "credentials": {
-          "botToken": {
-            "type": "secret_ref",
-            "secretId": "<paperclip-secret-uuid>",
-            "version": "latest"
-          },
-          "signingSecret": {
-            "type": "secret_ref",
-            "secretId": "<paperclip-secret-uuid>",
-            "version": "latest"
+        "slack": {
+          "label": "<agent-label>",
+          "teamId": "<slack-team-id>",
+          "appId": "<slack-app-id>",
+          "botUserId": "<slack-bot-user-id>",
+          "credentials": {
+            "botToken": {
+              "type": "secret_ref",
+              "secretId": "<paperclip-secret-uuid>",
+              "version": "latest"
+            },
+            "signingSecret": {
+              "type": "secret_ref",
+              "secretId": "<paperclip-secret-uuid>",
+              "version": "latest"
+            }
           }
         }
       }
@@ -71,6 +73,10 @@ Separates public identity metadata from host-managed credential references:
   subtree with `ctx.config.patchSecretRefs`. `resolveSlackBotToken` and
   `resolveSlackSigningSecret` read the company config snapshot and resolve only the required ref
   through `ctx.secrets.resolve`. There is no plaintext or token-file fallback for Slack.
+  Existing static GitHub fields stay at `identities.<agentId>` and can coexist with this Slack
+  subtree. Flat Slack host records remain readable and migrate on the next Slack save. Released
+  `v0.1.7`/`v0.1.8` local-sidecar entries are separately recoverable through the explicit
+  company-authorized rebind action; they are never used as a runtime token fallback.
 
   **Rotation decision: MVP disables Slack token rotation (`token_rotation_enabled: false`).**
   Tracking a single extra refresh-token reference is not a complete rotation contract: rotated bot
@@ -246,37 +252,61 @@ Implementation (`src/providers/slack/ingress/`):
   whose `team_id` equals the outer `team_id`. That list is visibility evidence only: it never
   overrides the outer app/team route or fans a delivery out. Enterprise-only entries without a
   `team_id` are rejected because the MVP identity model is one workspace installation per agent.
-- `dedup.ts` — keeps every live event ID in a per-agent hashed ledger for the full 10-minute TTL;
-  expired entries are pruned on the next claim. Concurrent retries in one worker await the original
-  processing outcome; failures release their claim so every waiter fails retryably instead of
-  acknowledging lost work. A token write/read-back check elects one winner for overlapping writes
-  it can observe, and disappearance of a just-written unique claim is surfaced as a retryable state
-  conflict. The current plugin-state SDK has no compare-and-set primitive, so cross-process
-  deduplication remains best-effort rather than an atomic exactly-once guarantee: a later competing
-  write can still race after another process confirms ownership. A missing or blank `event_id` is
-  acknowledged but not dispatched because it cannot be deduplicated safely.
+- `conversation-session.ts` — owns the version-2 durable per-conversation record: reusable session
+  mapping, FIFO pending turns, active/accepted/uncertain phase, and completed hashes. It bounds the
+  queue at 32 active/pending turns and the total claim ledger at 1,024 hashes. Pending/active hashes
+  do not expire; completed hashes remain for 24 hours measured from completion. The old independent
+  10-minute dedup ledger is removed, so a duplicate cannot restart a run after minute 10 while that
+  run is still active. A state write/read-back confirms that a newly queued hash survived; the SDK
+  still has no cross-process CAS, so multi-worker atomic exactly-once claiming remains a host gap.
+  On first contact with a version-1 accepted conversation record, the queue imports that agent's
+  bounded released ledger and holds its hashes without expiry until the old run retires; they then
+  become 24-hour completed claims. This prevents an in-flight pre-upgrade run from being replayed
+  after minute 10. Because the released ledger was per-agent rather than per-conversation, all of its
+  bounded hashes are conservatively retained on that legacy conversation during migration rather
+  than risking a replay; new version-2 records do not consult the old ledger. If an old accepted run
+  has no recoverable ledger, the first delivery is conservatively claimed as that uncertain run and
+  not sent; its kick retires the old lease instead of guessing that a resend is safe. A pre-upgrade accepted callback cannot be rebound after a
+  worker reload, so its durable lease is intentionally allowed to expire before retirement. A v1
+  idle session converts the old bounded ledger directly to 24-hour completed claims.
 - `webhook-handler.ts` — the pure pipeline composing the above, plus the `url_verification`
   handshake. It rejects bodies larger than 1 MiB before identity/secret resolution, applies a
   process-wide unauthenticated ingress limit, extracts bounded team/app fields as untrusted routing
   hints, and resolves only the exactly routed identity's signing secret for a normal callback.
   Deliveries without usable hints, including `url_verification`, use the bounded parallel fallback.
   An `event_callback` must contain a non-array event object with a nonblank `event.type`.
-- `provider-webhook.ts` wires the pipeline to a `PluginContext`: it reads one company-scoped config
-  snapshot, resolves the routed identity's `credentials.signingSecret` ref through
-  `ctx.secrets.resolve` just in time without caching the resolved value, creates a plugin-owned agent
-  session, sends a bounded projection of the Slack event, accumulates non-stderr response chunks,
-  and relays only filtered user-facing text. Threaded replies use Slack's status and streaming APIs
-  through `ctx.http.fetch`; top-level replies and streaming fallbacks use the existing
-  `slack_bot_post_message` provider pipeline. It closes the session on both success and error. The
-  prompt explicitly tells the agent to return plain text and not call Slack tools, so the agent
-  runtime does not need `slack_bot_post_message` in its own tool set for this reply path.
+- `provider-webhook.ts` wires the pipeline to `PluginContext`. Webhook scope reads one company config
+  snapshot, resolves only the routed signing secret, persists the bounded turn, awaits
+  `ctx.events.emit("slack-turn-drain", companyId, payload)`, and returns 200. It never calls
+  `ctx.agents.sessions.sendMessage` or waits for a previous terminal event. Slack's provider setup contribution
+  registers one `plugin.roshangautam.paperclip-agent-identities.slack-turn-drain` handler. Under that
+  fresh event scope it drains one turn, resolves sender profile/session state, sends the bounded
+  prompt, accumulates non-stderr output, and relays only filtered user-facing text. Threaded replies
+  use Slack streaming; top-level/fallback replies use the provider post-message pipeline. Callbacks
+  bind to the persisted accepted run ID, buffer pre-send-result events, ignore stale callbacks, and
+  await reply finalization before completing/clearing/kicking the successor. There is no detached
+  host-calling timeout. A later webhook/self-event scope retires an expired 30-minute lease. Generic send errors
+  are ambiguous and become uncertain/completed with no resend; only the host's exact
+  `Session not found` / `Session not found or closed` class is retried
+  safely on a replacement session. Restart plus a later webhook re-kicks persisted work, while
+  restart after ack with no later trigger requires host durable scheduling/request-key support.
+- `index.ts` is the shared Slack-ingress export barrel for bounded turn inputs/results,
+  secret-free queue status/count/capacity summaries, bounded constants and conversation-key helpers,
+  and strict `createSlackTurnDrainPayload` payloads. Provider registration, the one-turn drain seam, webhook
+  declarations/handling, raw queue records, and mutable internal state transitions stay
+  provider-private.
+  `SlackConversationQueueFullError` and `SlackConversationStateConflictError`
+  are exported for host-facing
+  integration tests and adapters that need to preserve non-ack semantics;
+  `isRetryableSlackQueueError` provides the stable code-based check.
 
 Composed generically: `src/core/provider-contract.ts` adds an optional `webhooks`/`handleWebhook`
 seam (mirroring the existing `manifestTools`/`liveTools()` pattern), `src/manifest.ts` declares the
 `slack-events` endpoint through the registry, and `src/worker.ts` dispatches `onWebhook` deliveries
 by `endpointKey` via the registry — no Slack-specific branch in either file. Unit/integration
 tests cover URL verification, signature/timestamp rejection, routing ambiguity, authorization
-lists, required event IDs, dedup, and worker wiring (`tests/providers/slack/ingress-*.spec.ts`).
+lists, durable queue bounds/dedup, deferred self-event draining, callback ordering, uncertain sends,
+restart recovery, and worker wiring (`tests/providers/slack/ingress-*.spec.ts`).
 
 For temporary local testing, `scripts/slack-events-adapter.mjs` listens only on
 `127.0.0.1:3110`, accepts `POST /events`, and forwards the unchanged request body and Slack headers
@@ -340,7 +370,8 @@ Confirms the acceptance criterion directly: every capability above is expressed 
 `IdentityProvider` (`validateConfig`, `projectPluginConfig`, `resolveCredential`, `tools`,
 `contributeActions`, `manifestTools`) or a provider-neutral host-config extension. Slack resolvers
 read typed refs from the calling company's config snapshot and use `ctx.secrets.resolve`; there is
-no Slack credential-sidecar source kind. `src/worker.ts` and
+no Slack runtime credential-sidecar source kind; the explicit legacy migration
+path is settings-only. `src/worker.ts` and
 `src/manifest.ts` require zero new `if (provider === "slack")` branches; adding Slack is
 `ALL_PROVIDERS: readonly IdentityProvider[] = [githubProvider, exampleProvider, slackProvider]`
 in `src/providers/index.ts`, per the existing composition-root comment.
@@ -360,8 +391,9 @@ in `src/providers/index.ts`, per the existing composition-root comment.
 
 The original DRO-969 slice introduced the identity and resolver shape. The current implementation
 has since moved both Slack credential references into company-scoped host config as described in
-§2. The bot token and signing secret are required typed refs; no Slack credential remains in the
-local sidecar. Two boundaries remain unchanged:
+§2. The bot token and signing secret are required typed refs. Released `v0.1.7`/`v0.1.8` Slack
+sidecar refs can remain until an operator runs the one-release migration action; current Slack
+runtime resolution never consumes them. Two boundaries remain unchanged:
 
 - **Token rotation is unimplemented**, per the §2 MVP decision
   (`token_rotation_enabled: false`): there is no refresh-token storage, expiry tracking, or
@@ -444,7 +476,7 @@ Slack-specific one). Three actions are registered (`src/providers/slack/app-mani
   overwrite a *different* agent's identity), and validates both `botTokenSecretId` and
   `signingSecretId` as UUIDs before mutation. It claims the flow, persists
   `teamId`/`appId`/`botUserId`/`defaultChannel` into the `SlackAgentIdentityConfig` variant, then
-  calls `ctx.config.patchSecretRefs` once to persist the company-scoped identity subtree with typed
+  calls `ctx.config.patchSecretRefs` once to persist the company-scoped Slack subtree with typed
   `credentials.botToken` and `credentials.signingSecret` refs. The action never receives either raw
   secret. Neither action logs the one-time `state` value (it is
   short-lived secret material per `slack-provisioning-decision.md`).

@@ -2,7 +2,7 @@ import type { CredentialResolverInput, ResolvedCredential } from "../../core/pro
 import type { ResolvedAgentIdentity } from "../../core/agent-identity.js";
 import {
   readSlackSecretRef,
-  slackCredentialConfigPath,
+  slackSecretRefConfigPath,
   type SlackAgentIdentity,
   type SlackSecretRef,
 } from "./config.js";
@@ -154,7 +154,7 @@ export async function resolveSlackBotToken(
 ): Promise<ResolvedSlackBotToken> {
   if (!companyId.trim()) throw new Error("A host-authorized companyId is required to resolve Slack credentials.");
   const secretRef = readSlackSecretRef(config, resolvedIdentity.agentId, "botToken");
-  const configPath = slackCredentialConfigPath(resolvedIdentity.agentId, "botToken");
+  const configPath = slackSecretRefConfigPath(config, resolvedIdentity.agentId, "botToken");
 
   // Resolve the bot token first — let a rejection (e.g. revoked secret)
   // propagate untouched, with no fallback.
@@ -204,7 +204,7 @@ export async function resolveSlackSigningSecret(
   const secretRef = readSlackSecretRef(config, resolvedIdentity.agentId, "signingSecret");
   return resolveSecret(secretRef, {
     companyId,
-    configPath: slackCredentialConfigPath(resolvedIdentity.agentId, "signingSecret"),
+    configPath: slackSecretRefConfigPath(config, resolvedIdentity.agentId, "signingSecret"),
   });
 }
 

@@ -89,6 +89,9 @@ function formatIdentityCredential(identity: BotIdentitySettingsEntry): string {
   if (hasCompleteGitHubApp(identity)) return "GitHub App";
   if (hasFallbackCredential(identity)) return "Fallback";
   if (identity.credentialStatus === "configured") return "Configured";
+  if (identity.credentialStatus === "rebind-required") return "Rebind required";
+  if (identity.credentialStatus === "cleanup-pending") return "Cleanup pending";
+  if (identity.credentialStatus === "conflict") return "Conflict";
   if (identity.credentialStatus === "sidecar-unavailable") return "Unavailable";
   return "Missing";
 }

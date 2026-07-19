@@ -36,8 +36,25 @@ Invite the bot to any public channel where it should receive mentions or post me
 
 If you change the manifest permissions or events after installing the app, reinstall it in Slack so the new grants take effect.
 
+### Upgrade from v0.1.7 or v0.1.8
+
+Those released versions stored the Slack bot-token company-secret UUID, and
+sometimes the signing-secret UUID, under
+`identities.<agentId>:slack.slackBotToken` in the local credential sidecar. The
+current runtime intentionally does not use that sidecar as a token fallback.
+
+If a row shows **Rebind required**, edit it and choose **Rebind released
+credentials**. When prompted, select or paste the UUID of the existing
+Paperclip company secret containing the Slack signing secret. The action checks
+the host-authorized company and agent membership and copies only typed UUID
+references into `identities.<agentId>.slack`; it never reads or displays either
+secret value. **Cleanup pending** means the host binding works but deleting the
+legacy sidecar entry failed; retry the same action. **Conflict** means an
+existing host Slack binding differs and must be reviewed rather than
+overwritten. None of these recovery states requires reinstalling the Slack App.
+
 ## Edit or remove an identity
 
-Use **Edit** on a configured identity to update its provider metadata or credential references. Use **Delete** to remove the mapping from Paperclip. Deleting an identity does not delete the GitHub App or Slack App from the provider, so remove the provider app separately if it is no longer needed.
+Use **Edit** on a configured identity to update its provider metadata or credential references. Use **Delete** to remove only that provider's mapping from Paperclip; deleting Slack also removes that identity's exact released legacy Slack sidecar entry after host/state deletion succeeds, while preserving all GitHub entries. Deleting an identity does not delete the GitHub App or Slack App from the provider, so remove the provider app separately if it is no longer needed.
 
 Raw private keys, bot tokens, and signing secrets should never be pasted into identity metadata fields, logs, issues, or documentation. Store them in Paperclip secrets or the generated local key file where supported.

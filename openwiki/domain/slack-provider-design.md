@@ -22,15 +22,19 @@ shipped Slack settings adapter adds the Slack form and public settings-state
 projection, while `save-slack-install-metadata` owns Slack installation
 persistence. That action writes the public identity fields to settings state
 and calls `ctx.config.patchSecretRefs` to write the company-scoped identity at
-`identities.<agentId>`, including required typed secret refs at
-`credentials.botToken` and `credentials.signingSecret`. Slack credentials do
-not use the local credential sidecar.
+`identities.<agentId>.slack`, including required typed secret refs at
+`slack.credentials.botToken` and `slack.credentials.signingSecret`. Current
+runtime credential resolution does not use the local credential sidecar; it is
+inspected only by the one-release legacy migration path described below.
 
 Historical design context: the initial plan called for a provider dispatch
 table that returned a normalized sidecar credential and extended the GitHub
-sidecar schema for Slack. That sidecar design did not ship. The company-scoped
-host-config path became the Slack credential boundary once typed secret-ref
-persistence was available.
+sidecar schema for Slack. That shape did ship in `v0.1.7` and `v0.1.8` as
+`identities.<agentId>:slack.slackBotToken`, before company-scoped typed
+secret-ref persistence replaced it. Current runtime credential resolution uses
+only the company host-config path. The legacy parser remains for one
+compatibility release and an explicit, company-authorized rebind action moves
+the typed UUID refs without resolving secret values.
 
 **In scope for MVP:**
 - One Slack app identity per Paperclip agent (`${agentId}:slack`), mirroring
@@ -103,9 +107,70 @@ Ingress reuses one Paperclip agent session for each Slack conversation so later
 messages retain the model's prior context. All messages in one DM share a session,
 including threaded replies. Private-group and channel threads use separate sessions
 keyed by their root `thread_ts`, and different channels or thread roots never share
-context. Only DMs may carry context across Slack threads. The session mapping is
-stored in plugin state and is replaced if Paperclip reports that the saved session
-is no longer active.
+context. Only DMs may carry context across Slack threads.
+
+The webhook never waits behind that session. After signature/routing checks, it
+persists a bounded safe turn in one version-2 per-conversation state record, awaits
+a company-scoped `slack-turn-drain` self-event emit, and acknowledges. The record
+contains the session mapping, FIFO pending turns (32 active/pending maximum), one
+active phase (`active`, `accepted`, or `uncertain`), and up to 1,024 hashed event
+claims. Pending and active hashes do not expire. Completed claims expire 24 hours
+after completion, well beyond Slack's retry horizon and the 30-minute run lease.
+Duplicates in any phase re-kick but do not enqueue again. Plain replies in unowned
+threads are completed without dispatch, preserving fail-closed ownership.
+Queue-full errors are explicitly retryable and occur before the webhook can ack.
+Persisted turn metadata records whether ownership came from a DM, app mention,
+broadcast, or an already-owned reply so the drain can revalidate that boundary.
+The plugin-state API remains last-write-wins rather than CAS; enqueue uses a
+unique claim token plus write/read-back confirmation to detect observable races,
+but cross-worker exactly-once claiming still requires a host transaction primitive.
+Self-event drains are serialized per `(company, agent, conversation)` only within
+one worker process; the durable active claim is the restart/cross-worker backstop.
+Persisted Slack text is truncated safely to 4,096 UTF-16 code units and bounded to 64 KiB; IDs and
+event IDs are separately bounded (oversized event IDs fail before ack), and
+arbitrary envelope fields are never stored.
+The design removes agent-session create/list/send/close and agent-run waiting from
+Slack's three-second HTTP budget; host
+config, secret, state, and event-bus RPC latency still remains inside that budget.
+Ingress logs use only stable classifications and agent IDs; raw Slack text,
+event IDs, session IDs, run IDs, and transport error messages are not logged.
+
+The provider registers exactly one self-event handler through its existing setup
+contribution. Duplicate drain notifications are coalesced per conversation in-process.
+The handler's batch size is exactly one turn under fresh company scope, records the accepted
+run ID, buffers callbacks received before `sendMessage` returns, and ignores stale
+run/session callbacks. Terminal handling awaits stream/post finalization, then marks
+the event completed, clears active state, and emits the successor kick. No detached
+timer calls host APIs. The persisted `retireAfter` is a 30-minute durable accepted
+lease and is retired only when a
+later webhook/self-event supplies host scope; a fresh terminal session callback
+can finalize its own accepted run.
+An agent terminal `error` also retires the mapped session before the successor
+kick, so later context does not reuse a failed session.
+Before any send, the fresh drain snapshot revalidates that the configured Slack
+app/team route still matches the queued conversation; a rebind blocks the queued
+turn rather than sending it through a different identity. It also revalidates
+that the target agent still belongs to the fresh company scope. Removing the
+identity or changing its app/team therefore leaves the turn durable and unsent.
+An expired pre-send claim is requeued only if no session was attached, or if a
+fresh session-list check proves that the merely reused mapped session is still
+active. Once a newly created/attached session makes send acceptance ambiguous,
+the claim is retired rather than replayed.
+
+Only the exact host `Session not found` response proves a send was not accepted and
+permits one replacement-session retry. Any other `sendMessage` failure is ambiguous:
+the provider persists `uncertain`, closes/retires that session, completes the event
+claim, and never auto-resends. The host has no request-key or accepted-run
+cancellation API, so exactly-once execution cannot be claimed beyond this boundary.
+Closing retires callback/session reuse but cannot prove an underlying run stopped.
+A failed session close leaves the durable `uncertain` phase in place and blocks
+the successor; a later fresh trigger retries retirement rather than reusing the
+session or resending the claimed turn.
+A worker restart plus a later duplicate/new webhook re-kicks durable work; restart
+after acknowledgement with no later trigger still requires host durable scheduling
+or request-key support. The same trigger limitation applies if a terminal successor
+emit fails after state finalization: the successor remains queued and a later
+duplicate/new webhook resumes it.
 
 An ordinary channel, private-channel, or multi-person DM message is dispatched
 only when it is a threaded reply and the routed agent already has a session
@@ -149,9 +214,10 @@ No token, signing secret, or client secret belongs in this schema — see §5.
 ## 3. Install metadata and credential references
 
 Historical design context: the first contract mirrored GitHub's local
-credential sidecar and proposed storing Slack secret UUIDs there. That design
-did not ship. Slack uses company-scoped host config for both credential refs and
-does not read or write the local sidecar.
+credential sidecar and stored Slack secret UUIDs there in released `v0.1.7` and
+`v0.1.8`. Slack runtime calls now use company-scoped host config for both refs.
+The sidecar is read only to project migration status and service the explicit
+rebind/cleanup action during one compatibility release.
 
 Current shipped company config has this shape:
 
@@ -159,21 +225,23 @@ Current shipped company config has this shape:
 {
   "identities": {
     "<agent-id>": {
-      "label": "Paperclip Agent - QA",
-      "teamId": "T0123ABCD",
-      "appId": "A0123ABCD",
-      "botUserId": "U0123ABCD",
-      "defaultChannel": "C0123ABCD",
-      "credentials": {
-        "botToken": {
-          "type": "secret_ref",
-          "secretId": "<paperclip-company-secret-uuid-containing-xoxb-token>",
-          "version": "latest"
-        },
-        "signingSecret": {
-          "type": "secret_ref",
-          "secretId": "<paperclip-company-secret-uuid-containing-signing-secret>",
-          "version": "latest"
+      "slack": {
+        "label": "Paperclip Agent - QA",
+        "teamId": "T0123ABCD",
+        "appId": "A0123ABCD",
+        "botUserId": "U0123ABCD",
+        "defaultChannel": "C0123ABCD",
+        "credentials": {
+          "botToken": {
+            "type": "secret_ref",
+            "secretId": "<paperclip-company-secret-uuid-containing-xoxb-token>",
+            "version": "latest"
+          },
+          "signingSecret": {
+            "type": "secret_ref",
+            "secretId": "<paperclip-company-secret-uuid-containing-signing-secret>",
+            "version": "latest"
+          }
         }
       }
     }
@@ -200,13 +268,33 @@ const slackSecretRefSchema = z.object({
   challenge.
 - `save-slack-install-metadata` validates both submitted UUIDs before mutation,
   converts them to typed refs, and writes the identity subtree with one
-  `ctx.config.patchSecretRefs` call.
+  `ctx.config.patchSecretRefs` call scoped to `identities.<agentId>.slack`, so
+  static GitHub fields in the same per-agent object remain intact. Flat Slack
+  records written by earlier builds of this PR remain readable and are moved
+  into the provider subtree on the next save.
 
 The raw bot token and signing secret live only in Paperclip company secrets.
 The settings form accepts their UUIDs or host-provided secret selections, not
 the values themselves. Slack has no `privateKeyFile`-style fallback and no
 sidecar fallback. The plugin SDK does not create secrets, so the operator must
 create both company secrets through the host first.
+
+Released-sidecar migration is explicit, not a bare-UUID runtime fallback.
+`rebind-legacy-slack-credentials` requires the host-authorized `companyId`,
+revalidates agent membership, requires an existing public Slack settings
+identity, and rejects a conflicting host binding. It copies the released bot
+token UUID and either the released signing-secret UUID or an operator-supplied
+signing-secret UUID into typed refs. It then deletes only the exact legacy Slack
+entry, preserving sibling GitHub entries. Cleanup failure leaves the working
+host binding in place and projects `cleanup-pending` for a safe retry.
+
+Process-local queues serialize metadata discovery by `(state client,
+companyId, secretId)` and Slack settings mutations by the shared settings
+document plus `(companyId, agentId)`. Discovery markers are versioned and
+owner-qualified, while legacy `{ path }` markers remain recoverable. The host
+state/config APIs expose no compare-and-set transaction, so these guarantees do
+not extend across multiple worker processes; a host CAS/transaction primitive
+is required for cross-worker atomicity.
 
 ## 4. Resource references
 
@@ -256,7 +344,7 @@ export async function resolveSlackCredential(
   const secretRef = readSlackSecretRef(config, identity.agentId, "botToken");
   const token = await ctx.secrets.resolve(secretRef, {
     companyId: runCtx.companyId,
-    configPath: slackCredentialConfigPath(identity.agentId, "botToken")
+    configPath: slackSecretRefConfigPath(config, identity.agentId, "botToken")
   });
 
   const auth = await verifySlackToken(token);
@@ -276,7 +364,9 @@ The production implementation factors this sequence through
 `resolveSlackBotToken`, but the boundaries above are exact: read the
 host-authorized company snapshot with `ctx.config.get(runCtx.companyId)`, read
 only the calling agent's typed ref with `readSlackSecretRef`, and pass both the
-company ID and exact config path into `ctx.secrets.resolve`. Missing, malformed,
+company ID and exact nested config path into `ctx.secrets.resolve`. The path
+helper retains the flat legacy path only while reading a record written by an
+earlier build of this PR. Missing, malformed,
 revoked, or cross-bound refs fail closed. `verifySlackToken` calls `auth.test`
 and parses only the documented team, user, and bot identity fields without
 including the token or raw response in an error.
@@ -284,7 +374,7 @@ including the token or raw response in an error.
 The `bot_id` check is mandatory and not redundant with `team_id`/`user_id`:
 Slack returns it only for bot tokens. Requiring it rejects a human user token
 even if its other IDs could be made to line up. The receiver resolves
-`credentials.signingSecret` through the same company-scoped lookup in the
+`slack.credentials.signingSecret` through the same company-scoped lookup in the
 separate `resolveSlackSigningSecret` path; outbound tools never resolve it.
 
 The result remains `{ token, secrets: [token] }` so the pipeline's redact step
@@ -538,7 +628,7 @@ or renewal path. Unlike GitHub's short-lived installation tokens, an MVP bot
 token therefore remains valid until revoked or manually rotated.
 **Mitigation:** treat the bot token as the single most sensitive artifact in
 the Slack credential path. Store its typed Paperclip secret ref only at
-`identities.<agentId>.credentials.botToken`, resolve it just in time in step 4,
+`identities.<agentId>.slack.credentials.botToken`, resolve it just in time in step 4,
 and never write the raw value into config or `ctx` state. Recommend workspace
 admins scope the app to the bot scopes in §7 and rotate on any suspected leak;
 this plugin cannot force Slack-side rotation, but it can guarantee the token
@@ -557,7 +647,7 @@ lookup keyed strictly by the calling `runCtx.agentId`. Slack's provider
 module must not accept an `agentId` param from tool input to select an
 identity — the identity is always the caller's own, never a caller-supplied
 target. Credential resolution reads only
-`identities.<runCtx.agentId>.credentials.botToken` from the host-authorized
+`identities.<runCtx.agentId>.slack.credentials.botToken` from the host-authorized
 company config, passes the company ID and exact config path to secret
 resolution, then calls `auth.test`. It requires `team_id` and `user_id` to
 match the resolved identity's `teamId` and `botUserId`, and requires `bot_id`
@@ -602,7 +692,7 @@ without a valid Slack signature could spoof events as if from Slack.
 generated manifest provisions the required HTTPS `/events` Request URL and
 subscribes to `app_mention`, `message.channels`, `message.groups`, `message.im`,
 and `message.mpim`. The receiver resolves
-`identities.<agentId>.credentials.signingSecret` just in time. For normal
+`identities.<agentId>.slack.credentials.signingSecret` just in time. For normal
 callbacks it extracts bounded `team_id` and `api_app_id` values as untrusted
 routing hints, resolves only the exactly routed identity's secret, and verifies
 the untouched raw body before trusting or dispatching the full envelope.

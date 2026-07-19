@@ -2,13 +2,18 @@ import { z, type PluginContext } from "@paperclipai/plugin-sdk";
 import { createHash, randomBytes } from "node:crypto";
 import {
   createSlackSecretRef,
+  readSlackIdentityConfigEntry,
+  slackHostIdentityConfigSchema,
   slackIdentityConfigPath,
   slackSecretIdSchema,
 } from "./config.js";
 import { discoverSlackAppId, verifySlackToken } from "./credentials.js";
 import { getIdentityKey } from "../../shared/types.js";
 import { normalizeSettingsState, BOT_IDENTITY_SETTINGS_VERSION, type AgentIdentitySettingsState } from "../../core/identity-config.js";
-import { CONFIG_SCOPE } from "../../config-source.js";
+import { CONFIG_SCOPE, configMutationLockKeys } from "../../config-source.js";
+import { withProcessLocalLocks } from "../../core/process-local-mutation-queue.js";
+import { requireHumanSettingsActor } from "../../core/settings-action-authorization.js";
+import { contributeLegacySlackRebindAction } from "./legacy-rebind.js";
 import type {
   CreateSlackAppManifestInput,
   CreateSlackAppManifestResult,
@@ -110,10 +115,46 @@ function slackSetupBindingScope(companyId: string, secretId: string) {
   };
 }
 
-function readSetupBindingPath(value: unknown): string[] | null {
+interface SlackSetupBindingMarker {
+  readonly version?: 1;
+  readonly owner?: string;
+  readonly path: string[];
+}
+
+function readSetupBindingMarker(value: unknown): SlackSetupBindingMarker | null {
   if (!isRecord(value) || !Array.isArray(value.path)) return null;
   const path = value.path.filter((segment): segment is string => typeof segment === "string");
-  return path.length === value.path.length && path.length > 0 ? path : null;
+  if (
+    path.length !== value.path.length
+    || path.length !== 4
+    || path[0] !== "setup"
+    || path[1] !== "slack"
+    || path[2] !== "metadata"
+    || !/^[0-9a-f]{32}$/.test(path[3] ?? "")
+  ) return null;
+  if (value.version === undefined && value.owner === undefined) return { path };
+  const owner = readString(value.owner);
+  return value.version === 1 && owner ? { version: 1, owner, path } : null;
+}
+
+function setupBindingMarkersMatch(left: SlackSetupBindingMarker, right: SlackSetupBindingMarker): boolean {
+  return left.version === right.version
+    && left.owner === right.owner
+    && left.path.length === right.path.length
+    && left.path.every((segment, index) => segment === right.path[index]);
+}
+
+async function deleteSetupBindingMarkerIfOwned(
+  ctx: PluginContext,
+  scope: ReturnType<typeof slackSetupBindingScope>,
+  marker: SlackSetupBindingMarker,
+): Promise<boolean> {
+  const current = readSetupBindingMarker(await ctx.state.get(scope));
+  if (current && setupBindingMarkersMatch(current, marker)) {
+    await ctx.state.delete(scope);
+    return true;
+  }
+  return false;
 }
 
 // Slack's App Manifest schema gives the app name and bot display name
@@ -321,7 +362,10 @@ async function loadUnexpiredUnconsumedFlow(
 }
 
 export function contributeSlackAppManifestActions(ctx: PluginContext): void {
+  contributeLegacySlackRebindAction(ctx);
+
   ctx.actions.register("create-slack-app-manifest", async (params, context) => {
+    requireHumanSettingsActor(context);
     const companyId = requireCompanyId(context as { companyId?: string | null } | undefined);
     const flow = createSlackAppManifestFlow(params as CreateSlackAppManifestInput, companyId);
     await requireCompanyAgent(ctx, companyId, flow.agentId);
@@ -334,6 +378,7 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
   });
 
   ctx.actions.register("get-slack-app-manifest-flow", async (params, context) => {
+    requireHumanSettingsActor(context);
     const companyId = requireCompanyId(context as { companyId?: string | null } | undefined);
     const input = params as GetSlackAppManifestFlowInput;
     const state = readRequiredString(input.state, "state");
@@ -342,6 +387,7 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
   });
 
   ctx.actions.register("discover-slack-install-metadata", async (params, context) => {
+    requireHumanSettingsActor(context);
     const companyId = requireCompanyId(context as { companyId?: string | null } | undefined);
     const input = params as DiscoverSlackInstallMetadataInput;
     const secretIdResult = slackSecretIdSchema.safeParse(input.botTokenSecretId);
@@ -349,53 +395,68 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       throw new Error("botTokenSecretId must be a valid UUID.");
     }
 
-    // The host resolves only exact, company-scoped secret bindings. Create a
-    // short-lived setup binding, use it once for auth.test, and always delete
-    // the whole subtree before returning. The random hash is a safe config
-    // path segment and prevents concurrent setup requests from colliding.
-    const setupKey = createHash("sha256")
-      .update(`${companyId}:${Date.now()}:${randomBytes(16).toString("hex")}`)
-      .digest("hex")
-      .slice(0, 32);
-    const setupPath = ["setup", "slack", "metadata", setupKey];
-    const setupBindingState = slackSetupBindingScope(companyId, secretIdResult.data);
-    const staleSetupPath = readSetupBindingPath(await ctx.state.get(setupBindingState));
-    if (staleSetupPath) {
-      await ctx.config.patchSecretRefs({ companyId, path: staleSetupPath, value: null }).catch(() => undefined);
-      await ctx.state.delete(setupBindingState).catch(() => undefined);
-    }
-    const botTokenRef = createSlackSecretRef(secretIdResult.data);
-    const configPath = [...setupPath, "botToken"].join(".");
-
-    // Record the path before creating the binding. If the worker exits after
-    // the patch, the next discovery attempt can remove the stale binding.
-    await ctx.state.set(setupBindingState, { path: setupPath });
-
-    try {
-      await ctx.config.patchSecretRefs({
-        companyId,
-        path: setupPath,
-        value: { botToken: botTokenRef },
-      });
-      const token = await ctx.secrets.resolve(botTokenRef, { companyId, configPath });
-      const verified = await verifySlackToken(token, ctx.http.fetch);
-      if (!verified.botId) {
-        throw new Error("The selected Paperclip secret does not contain a Slack bot token.");
+    const discoveryLockKey = `slack-install-discovery:${JSON.stringify([companyId, secretIdResult.data])}`;
+    return await withProcessLocalLocks(ctx.state, [discoveryLockKey], async () => {
+      // The host resolves only exact, company-scoped secret bindings. Record
+      // a versioned owner/path marker before creating the binding so a later
+      // attempt can recover after a worker crash. Legacy `{ path }` markers
+      // from the previous release remain readable for this compatibility cycle.
+      const setupKey = createHash("sha256")
+        .update(`${companyId}:${Date.now()}:${randomBytes(16).toString("hex")}`)
+        .digest("hex")
+        .slice(0, 32);
+      const setupPath = ["setup", "slack", "metadata", setupKey];
+      const setupBindingState = slackSetupBindingScope(companyId, secretIdResult.data);
+      const staleMarker = readSetupBindingMarker(await ctx.state.get(setupBindingState));
+      if (staleMarker) {
+        await ctx.config.patchSecretRefs({ companyId, path: staleMarker.path, value: null });
+        if (!await deleteSetupBindingMarkerIfOwned(ctx, setupBindingState, staleMarker)) {
+          throw new Error("Slack metadata discovery ownership changed during stale-binding cleanup; retry safely.");
+        }
       }
-      const appId = await discoverSlackAppId(token, verified.botId, ctx.http.fetch);
-      const result: DiscoverSlackInstallMetadataResult = {
-        teamId: verified.teamId,
-        botUserId: verified.userId,
-        appId,
+
+      const marker: SlackSetupBindingMarker = {
+        version: 1,
+        owner: randomBytes(16).toString("hex"),
+        path: setupPath,
       };
-      return result;
-    } finally {
-      await ctx.config.patchSecretRefs({ companyId, path: setupPath, value: null });
-      await ctx.state.delete(setupBindingState).catch(() => undefined);
-    }
+      const botTokenRef = createSlackSecretRef(secretIdResult.data);
+      const configPath = [...setupPath, "botToken"].join(".");
+      await ctx.state.set(setupBindingState, marker);
+      const recordedMarker = readSetupBindingMarker(await ctx.state.get(setupBindingState));
+      if (!recordedMarker || !setupBindingMarkersMatch(recordedMarker, marker)) {
+        throw new Error("Slack metadata discovery could not claim its setup marker; retry safely.");
+      }
+
+      try {
+        await ctx.config.patchSecretRefs({
+          companyId,
+          path: setupPath,
+          value: { botToken: botTokenRef },
+        });
+        const token = await ctx.secrets.resolve(botTokenRef, { companyId, configPath });
+        const verified = await verifySlackToken(token, ctx.http.fetch);
+        if (!verified.botId) {
+          throw new Error("The selected Paperclip secret does not contain a Slack bot token.");
+        }
+        const appId = await discoverSlackAppId(token, verified.botId, ctx.http.fetch);
+        const result: DiscoverSlackInstallMetadataResult = {
+          teamId: verified.teamId,
+          botUserId: verified.userId,
+          appId,
+        };
+        return result;
+      } finally {
+        // Keep the marker when config cleanup fails. Delete it only after the
+        // exact binding is gone and only while this request still owns it.
+        await ctx.config.patchSecretRefs({ companyId, path: setupPath, value: null });
+        await deleteSetupBindingMarkerIfOwned(ctx, setupBindingState, marker);
+      }
+    });
   });
 
   ctx.actions.register("save-slack-install-metadata", async (params, context) => {
+    requireHumanSettingsActor(context);
     const companyId = requireCompanyId(context as { companyId?: string | null } | undefined);
     const input = params as SaveSlackInstallMetadataInput;
     const state = readRequiredString(input.state, "state");
@@ -431,140 +492,124 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       defaultChannel = defaultChannelResult.data;
     }
 
-    const flow = await loadUnexpiredUnconsumedFlow(ctx, companyId, state);
-    // Idempotency / anti-replay: a duplicate or replayed callback bound to a
-    // different agent than the flow was created for must not be able to
-    // overwrite that other agent's identity.
-    if (flow.agentId !== agentId) {
-      throw new Error("Slack App manifest flow state does not match the requested agentId.");
-    }
+    return await withProcessLocalLocks(
+      ctx.state,
+      configMutationLockKeys(companyId, agentId),
+      async (): Promise<SaveSlackInstallMetadataResult> => {
+        const flow = await loadUnexpiredUnconsumedFlow(ctx, companyId, state);
+        // Idempotency / anti-replay: a duplicate or replayed callback bound to a
+        // different agent than the flow was created for must not be able to
+        // overwrite that other agent's identity.
+        if (flow.agentId !== agentId) {
+          throw new Error("Slack App manifest flow state does not match the requested agentId.");
+        }
 
-    // Re-check company membership immediately before claiming the flow.
-    // Membership was already checked at create time, but the flow's 30-minute
-    // TTL means the agent could be deleted or moved to another company
-    // before this save runs. Enforcing it again here means authorization is
-    // checked at the point the write actually happens, not just at an
-    // earlier point in time.
-    await requireCompanyAgent(ctx, companyId, agentId);
+        // Re-check company membership immediately before claiming the flow.
+        await requireCompanyAgent(ctx, companyId, agentId);
+        await ctx.state.set(slackAppManifestFlowScope(companyId, state), { ...flow, consumed: true });
 
-    // Claim the flow (mark it consumed) BEFORE performing any further
-    // mutations. `ctx.state` has no compare-and-swap/setIfAbsent primitive,
-    // so this cannot be made fully atomic against a concurrent duplicate
-    // save — both could still race between the `loadUnexpiredUnconsumedFlow`
-    // read above and this write. Moving the consumed-write to be the first
-    // mutation (instead of the last) shrinks that race window to a single
-    // read-then-write instead of spanning the CONFIG_SCOPE and company
-    // config writes too.
-    await ctx.state.set(slackAppManifestFlowScope(companyId, state), { ...flow, consumed: true });
-
-    const identityId = getIdentityKey(agentId, SLACK_PROVIDER);
-    let settingsWritten = false;
-    let previousIdentity: AgentIdentitySettingsState["identities"][string] | undefined;
-    try {
-      // Re-read CONFIG_SCOPE immediately before writing (not the value read
-      // earlier, if any) and patch in only this identity's key. Restoring an
-      // entire earlier snapshot on rollback could clobber unrelated identity
-      // changes committed concurrently after this read; compensating only
-      // this one key preserves any such newer entries.
-      const currentState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
-      previousIdentity = currentState.identities[identityId];
-      const nextState: AgentIdentitySettingsState = {
-        version: BOT_IDENTITY_SETTINGS_VERSION,
-        identities: {
-          ...currentState.identities,
-          [identityId]: {
-            provider: "slack",
-            id: identityId,
-            agentId,
-            label: flow.label,
-            slack: {
-              teamId,
-              appId,
-              botUserId,
-              ...(defaultChannel ? { defaultChannel } : {}),
+        const identityId = getIdentityKey(agentId, SLACK_PROVIDER);
+        let settingsWritten = false;
+        let previousIdentity: AgentIdentitySettingsState["identities"][string] | undefined;
+        try {
+          const currentState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+          previousIdentity = currentState.identities[identityId];
+          const nextState: AgentIdentitySettingsState = {
+            ...currentState,
+            version: BOT_IDENTITY_SETTINGS_VERSION,
+            identities: {
+              ...currentState.identities,
+              [identityId]: {
+                provider: "slack",
+                id: identityId,
+                agentId,
+                label: flow.label,
+                slack: {
+                  teamId,
+                  appId,
+                  botUserId,
+                  ...(defaultChannel ? { defaultChannel } : {}),
+                },
+              },
             },
-          },
-        },
-      };
-      await ctx.state.set(CONFIG_SCOPE, nextState);
-      settingsWritten = true;
+          };
+          await ctx.state.set(CONFIG_SCOPE, nextState);
+          settingsWritten = true;
 
-      // This host operation atomically persists the company-scoped identity
-      // subtree and synchronizes bindings for only this identity prefix.
-      await ctx.config.patchSecretRefs({
-        companyId,
-        path: slackIdentityConfigPath(agentId),
-        value: {
-          label: flow.label,
+          const slackConfig = slackHostIdentityConfigSchema.parse({
+            label: flow.label,
+            teamId,
+            appId,
+            botUserId,
+            eventsRequestUrl: flow.eventsRequestUrl,
+            ...(defaultChannel ? { defaultChannel } : {}),
+            credentials: {
+              botToken: createSlackSecretRef(botTokenSecretId),
+              signingSecret: createSlackSecretRef(signingSecretId),
+            },
+          });
+          const companyConfig = await ctx.config.get(companyId);
+          const existingSlackConfig = readSlackIdentityConfigEntry(companyConfig, agentId);
+
+          // New writes touch only the provider subtree, preserving a GitHub
+          // identity in the same per-agent slot. A flat Slack record written by
+          // earlier builds of this PR is migrated as one atomic subtree patch.
+          await ctx.config.patchSecretRefs({
+            companyId,
+            path: existingSlackConfig?.legacy
+              ? ["identities", agentId]
+              : [...slackIdentityConfigPath(agentId)],
+            value: existingSlackConfig?.legacy ? { slack: slackConfig } : slackConfig,
+          });
+        } catch (err) {
+          const rollbackErrors: unknown[] = [];
+          if (settingsWritten) {
+            try {
+              const rollbackState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+              const { [identityId]: _current, ...remainingIdentities } = rollbackState.identities;
+              const restoredIdentities = previousIdentity
+                ? { ...remainingIdentities, [identityId]: previousIdentity }
+                : remainingIdentities;
+              await ctx.state.set(CONFIG_SCOPE, {
+                ...rollbackState,
+                version: BOT_IDENTITY_SETTINGS_VERSION,
+                identities: restoredIdentities,
+              });
+            } catch (rollbackError) {
+              rollbackErrors.push(rollbackError);
+            }
+          }
+          try {
+            await ctx.state.set(slackAppManifestFlowScope(companyId, state), flow);
+          } catch (rollbackError) {
+            rollbackErrors.push(rollbackError);
+          }
+          if (rollbackErrors.length > 0) {
+            throw new AggregateError(
+              [err, ...rollbackErrors],
+              "Slack install metadata save failed and its state could not be fully restored.",
+            );
+          }
+          throw err;
+        }
+
+        // Do not log `state` here either — same short-lived secret material constraint as above.
+        ctx.logger.info("Slack install metadata saved", { agentId, teamId, appId, botUserId });
+        await ctx.state.delete(slackAppManifestFlowScope(companyId, state)).catch(() => undefined);
+
+        return {
+          agentId,
+          provider: SLACK_PROVIDER,
           teamId,
           appId,
           botUserId,
           eventsRequestUrl: flow.eventsRequestUrl,
+          botTokenSecretId,
+          signingSecretId,
           ...(defaultChannel ? { defaultChannel } : {}),
-          credentials: {
-            botToken: createSlackSecretRef(botTokenSecretId),
-            signingSecret: createSlackSecretRef(signingSecretId),
-          },
-        },
-      });
-    } catch (err) {
-      // The flow was already claimed above. If the settings projection was
-      // written before the atomic host config update failed, restore only
-      // this identity and re-open the flow so the operator can retry.
-      const rollbackErrors: unknown[] = [];
-      if (settingsWritten) {
-        try {
-          const rollbackState = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
-          const { [identityId]: _current, ...remainingIdentities } = rollbackState.identities;
-          const restoredIdentities = previousIdentity
-            ? { ...remainingIdentities, [identityId]: previousIdentity }
-            : remainingIdentities;
-          await ctx.state.set(CONFIG_SCOPE, {
-            version: BOT_IDENTITY_SETTINGS_VERSION,
-            identities: restoredIdentities,
-          });
-        } catch (rollbackError) {
-          rollbackErrors.push(rollbackError);
-        }
-      }
-      try {
-        await ctx.state.set(slackAppManifestFlowScope(companyId, state), flow);
-      } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
-      }
-      if (rollbackErrors.length > 0) {
-        throw new AggregateError(
-          [err, ...rollbackErrors],
-          "Slack install metadata save failed and its state could not be fully restored.",
-        );
-      }
-      throw err;
-    }
-
-    // Do not log `state` here either — same short-lived secret material
-    // constraint as above.
-    ctx.logger.info("Slack install metadata saved", { agentId, teamId, appId, botUserId });
-
-    // Success: delete the flow entirely rather than leaving a `consumed`
-    // record behind indefinitely. `ctx.state` has no storage-level TTL, so
-    // without this, both abandoned (never revisited) and successfully
-    // consumed flows would retain the operator/company/agent linkage and
-    // manifest text forever; expiry-driven cleanup in
-    // `loadUnexpiredUnconsumedFlow` only covers flows someone looks up again.
-    await ctx.state.delete(slackAppManifestFlowScope(companyId, state)).catch(() => undefined);
-
-    const result: SaveSlackInstallMetadataResult = {
-      agentId,
-      provider: SLACK_PROVIDER,
-      teamId,
-      appId,
-      botUserId,
-      eventsRequestUrl: flow.eventsRequestUrl,
-      botTokenSecretId,
-      signingSecretId,
-      ...(defaultChannel ? { defaultChannel } : {}),
-      status: "saved",
-    };
-    return result;
+          status: "saved",
+        };
+      },
+    );
   });
 }

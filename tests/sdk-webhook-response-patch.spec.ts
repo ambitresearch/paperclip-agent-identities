@@ -62,7 +62,7 @@ describe("patched plugin SDK RPC", () => {
       secretId: "00000000-0000-4000-8000-000000000012",
       version: "latest" as const,
     };
-    const configPath = "identities.agent-slack.credentials.signingSecret";
+    const configPath = "identities.agent-slack.slack.credentials.signingSecret";
     const hostToWorker = new PassThrough();
     const workerToHost = new PassThrough();
     const hostReadline = createInterface({ input: workerToHost });
@@ -72,7 +72,7 @@ describe("patched plugin SDK RPC", () => {
         await expect(ctx.config.get(companyId)).resolves.toEqual({ identities: {} });
         await ctx.config.patchSecretRefs({
           companyId,
-          path: ["identities", "agent-slack"],
+          path: ["identities", "agent-slack", "slack"],
           value: { credentials: { signingSecret: secretRef } },
         });
         await expect(ctx.secrets.resolve(secretRef, { companyId, configPath })).resolves.toBe("resolved-secret");
@@ -118,7 +118,7 @@ describe("patched plugin SDK RPC", () => {
           method: "config.patchSecretRefs",
           params: {
             companyId,
-            path: ["identities", "agent-slack"],
+            path: ["identities", "agent-slack", "slack"],
             value: { credentials: { signingSecret: secretRef } },
           },
         },

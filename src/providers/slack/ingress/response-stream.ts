@@ -77,8 +77,8 @@ export class SlackResponseStream {
 
   constructor(private readonly options: SlackResponseStreamOptions) {}
 
-  start(): void {
-    void this.serialize(async () => {
+  start(): Promise<void> {
+    return this.serialize(async () => {
       const status = this.options.threadTs
         ? await this.setStatus(DEFAULT_STATUS, DEFAULT_LOADING_MESSAGES)
         : undefined;

@@ -2,7 +2,8 @@ import { z } from "@paperclipai/plugin-sdk";
 import type { SlackAgentIdentityConfig } from "../../core/identity-config.js";
 
 // Public Slack identity metadata. Company-scoped plugin config may also carry
-// a `credentials` sibling whose values are host-validated secret references;
+// a `credentials` sibling under `identities.<agentId>.slack` whose values are
+// host-validated secret references;
 // validation deliberately projects only these public fields.
 export const slackIdentitySchema = z.object({
   label: z.string().trim().min(1),
@@ -25,23 +26,52 @@ export const slackSecretRefSchema = z.object({
 export type SlackSecretRef = z.infer<typeof slackSecretRefSchema>;
 export type SlackCredentialKind = "botToken" | "signingSecret";
 
+export const slackHostIdentityConfigSchema = slackIdentitySchema.extend({
+  eventsRequestUrl: z.string().trim().min(1).optional(),
+  credentials: z.object({
+    botToken: slackSecretRefSchema,
+    signingSecret: slackSecretRefSchema,
+  }),
+});
+
+export type SlackHostIdentityConfig = z.infer<typeof slackHostIdentityConfigSchema>;
+
+interface SlackIdentityConfigEntry {
+  readonly path: readonly string[];
+  readonly value: Record<string, unknown>;
+  readonly legacy: boolean;
+}
+
 function assertSafeConfigSegment(agentId: string): void {
   if (!agentId || /[.\\/]/.test(agentId)) {
     throw new Error("Slack agentId cannot be represented as a safe config path segment.");
   }
 }
 
-export function slackIdentityConfigPath(agentId: string): string[] {
+export function slackIdentityConfigPath(agentId: string): readonly string[] {
   assertSafeConfigSegment(agentId);
-  return ["identities", agentId];
-}
-
-export function slackCredentialConfigPath(agentId: string, credential: SlackCredentialKind): string {
-  return [...slackIdentityConfigPath(agentId), "credentials", credential].join(".");
+  return ["identities", agentId, "slack"];
 }
 
 export function createSlackSecretRef(secretId: string): SlackSecretRef {
   return slackSecretRefSchema.parse({ type: "secret_ref", secretId, version: "latest" });
+}
+
+export function readSlackIdentityConfigEntry(
+  config: Record<string, unknown>,
+  agentId: string,
+): SlackIdentityConfigEntry | undefined {
+  assertSafeConfigSegment(agentId);
+  const identities = isRecord(config.identities) ? config.identities : {};
+  const identity = isRecord(identities[agentId]) ? identities[agentId] : undefined;
+  if (!identity) return undefined;
+  if (isRecord(identity.slack)) {
+    return { path: slackIdentityConfigPath(agentId), value: identity.slack, legacy: false };
+  }
+  if (looksLikeLegacySlackIdentity(identity)) {
+    return { path: ["identities", agentId], value: identity, legacy: true };
+  }
+  return undefined;
 }
 
 export function readSlackSecretRef(
@@ -49,8 +79,7 @@ export function readSlackSecretRef(
   agentId: string,
   credential: SlackCredentialKind,
 ): SlackSecretRef {
-  const identities = isRecord(config.identities) ? config.identities : {};
-  const identity = isRecord(identities[agentId]) ? identities[agentId] : {};
+  const identity = readSlackIdentityConfigEntry(config, agentId)?.value ?? {};
   const credentials = isRecord(identity.credentials) ? identity.credentials : {};
   const parsed = slackSecretRefSchema.safeParse(credentials[credential]);
   if (!parsed.success) {
@@ -59,8 +88,19 @@ export function readSlackSecretRef(
   return parsed.data;
 }
 
+export function slackSecretRefConfigPath(
+  config: Record<string, unknown>,
+  agentId: string,
+  credential: SlackCredentialKind,
+): string {
+  const entry = readSlackIdentityConfigEntry(config, agentId);
+  const identityPath = entry?.path ?? slackIdentityConfigPath(agentId);
+  return [...identityPath, "credentials", credential].join(".");
+}
+
 export function validateSlackConfig(raw: unknown): SlackAgentIdentity | string {
-  const parsed = slackIdentitySchema.safeParse(raw);
+  const candidate = isRecord(raw) && isRecord(raw.slack) ? raw.slack : raw;
+  const parsed = slackIdentitySchema.safeParse(candidate);
   if (!parsed.success) {
     return parsed.error.issues
       .map((issue) => {
@@ -80,6 +120,11 @@ function isSlackIdentityConfig(value: unknown): value is SlackAgentIdentityConfi
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function looksLikeLegacySlackIdentity(value: Record<string, unknown>): boolean {
+  return ["teamId", "appId", "botUserId"]
+    .every((field) => Object.prototype.hasOwnProperty.call(value, field));
 }
 
 function toSlackAgentIdentity(config: SlackAgentIdentityConfig): SlackAgentIdentity {

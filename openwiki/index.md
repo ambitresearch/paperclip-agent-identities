@@ -11,7 +11,7 @@ hero:
       link: /guides/agent-identities-setup
     - theme: alt
       text: View on GitHub
-      link: https://github.com/roshangautam/paperclip-agent-identities
+      link: https://github.com/ambitresearch/paperclip-agent-identities
 
 features:
   - title: Identity mapping

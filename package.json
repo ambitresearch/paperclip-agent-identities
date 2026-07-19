@@ -34,6 +34,14 @@
   ],
   "author": "Roshan Gautam",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ambitresearch/paperclip-agent-identities.git"
+  },
+  "homepage": "https://ambitresearch.github.io/paperclip-agent-identities/",
+  "bugs": {
+    "url": "https://github.com/ambitresearch/paperclip-agent-identities/issues"
+  },
   "devDependencies": {
     "@paperclipai/plugin-sdk": "2026.707.0",
     "@paperclipai/shared": "2026.707.0",

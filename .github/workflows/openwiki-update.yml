@@ -20,12 +20,12 @@ jobs:
     runs-on: [self-hosted]
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -43,17 +43,32 @@ jobs:
           LANGCHAIN_PROJECT: openwiki
           LANGCHAIN_TRACING_V2: ${{ secrets.LANGSMITH_API_KEY != '' && 'true' || 'false' }}
 
-      - name: Create OpenWiki update pull request
-        uses: peter-evans/create-pull-request@v7
-        with:
-          add-paths: |
-            AGENTS.md
-            openwiki
-          branch: openwiki/update-${{ github.ref_name }}
-          delete-branch: true
-          commit-message: "docs: update OpenWiki"
-          title: "docs: update OpenWiki"
-          body: |
-            Automated OpenWiki documentation update for `${{ github.ref_name }}`.
+      - name: Create or update OpenWiki pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          UPDATE_BRANCH: openwiki/update-${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git add AGENTS.md openwiki
+          if git diff --cached --quiet; then
+            echo "OpenWiki is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$UPDATE_BRANCH:refs/remotes/origin/$UPDATE_BRANCH" || true
+          git switch -C "$UPDATE_BRANCH"
+          git commit -m "docs: update OpenWiki"
+          git push --force-with-lease origin "$UPDATE_BRANCH"
+          BODY="$(cat <<EOF
+          Automated OpenWiki documentation update for \`$BASE_BRANCH\`.
 
-            This workflow runs on the self-hosted runner and uses the configured LiteLLM gateway via OpenWiki's OpenAI-compatible provider.
+          This workflow runs on the self-hosted runner and uses the configured LiteLLM gateway via OpenWiki's OpenAI-compatible provider.
+          EOF
+          )"
+          if PR_NUMBER="$(gh pr list --base "$BASE_BRANCH" --head "$UPDATE_BRANCH" --state open --json number --jq '.[0].number // empty')" && [[ -n "$PR_NUMBER" ]]; then
+            gh pr edit "$PR_NUMBER" --title "docs: update OpenWiki" --body "$BODY"
+          else
+            gh pr create --base "$BASE_BRANCH" --head "$UPDATE_BRANCH" --title "docs: update OpenWiki" --body "$BODY"
+          fi

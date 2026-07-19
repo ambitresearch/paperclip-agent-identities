@@ -1,3 +1,10 @@
+---
+type: Guide
+title: Set up agent identities
+description: Guide for connecting Paperclip agent identities to provider accounts, including GitHub App and Slack App setup, credential binding, upgrades, editing, and removal.
+tags: [agent-identities, github, slack, paperclip]
+---
+
 # Set up agent identities
 
 Agent Identities connects a Paperclip agent to a provider account. Each agent can have one GitHub identity and one Slack identity.

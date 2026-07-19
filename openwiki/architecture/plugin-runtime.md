@@ -1,3 +1,9 @@
+---
+type: Architecture Document
+title: Plugin runtime architecture
+description: Describes the Paperclip plugin runtime architecture, including build entrypoints, manifest capabilities, worker setup, provider registry iteration, Slack webhook/session handling, configuration state, UI structure, health checks, and change guidance.
+tags: [architecture, plugin-runtime, paperclip, providers, slack, github]
+---
 # Plugin runtime architecture
 
 ## Build and package entrypoints

@@ -1,3 +1,10 @@
+---
+type: Domain Guide
+title: Agent identity domain
+description: Describes the Agent Identities domain model, versioned settings state, provider authorization boundaries, config resolution behavior, and credential sidecar handling for Paperclip agent identities.
+tags: [agent-identities, identity-config, providers, credentials]
+---
+
 # Agent identity domain
 
 ## Core model

@@ -1,3 +1,10 @@
+---
+type: Tool Reference
+title: GitHub contribution tools
+description: Documents Paperclip GitHub contribution agent tools, including whoami, pull request creation, branch push, and pull request review behavior. Covers safety patterns, validation order, credential handling, redaction, activity logging, tests, and change guidance for GitHub tool maintenance.
+tags: [github, tools, contributions, paperclip, security]
+---
+
 # GitHub contribution tools
 
 The plugin exposes four GitHub-related agent tools. Tool metadata lives in shared definition files so `/src/manifest.ts` and `/src/worker.ts` use consistent names and schemas.

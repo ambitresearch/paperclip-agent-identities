@@ -1,3 +1,10 @@
+---
+type: Product Contract
+title: Slack provider MVP — contract, product boundary, threat model
+description: Specifies the partially implemented Slack provider MVP, including identity shape, company-scoped credential references, HTTP Events API behavior, manifest-assisted setup, and deferred capabilities.
+tags: [slack, identity-provider, mvp, events-api]
+---
+
 # Slack provider MVP — contract, product boundary, threat model
 
 Status: **partially implemented**. The identity config, company-scoped credential refs, Slack tools,

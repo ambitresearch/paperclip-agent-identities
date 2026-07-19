@@ -1,3 +1,10 @@
+---
+type: Quickstart Guide
+title: OpenWiki quickstart
+description: Entry point for understanding the Agent Identities repository, including repository layout, development commands, runtime model, core domain concepts, and guidance for future agents working on the project.
+tags: [openwiki, quickstart, agent-identities]
+---
+
 # OpenWiki quickstart
 
 ## What this repository is

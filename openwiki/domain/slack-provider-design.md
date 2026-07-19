@@ -1,3 +1,10 @@
+---
+type: Design Decision Record
+title: Slack provider MVP contract and threat model
+description: Historical Slack identity provider design record with shipped-behavior annotations covering the MVP product boundary, credentials, tool surface, settings persistence, and threat model.
+tags: [slack, identity-provider, mvp, threat-model]
+---
+
 # Slack provider: MVP contract and threat model
 
 Status: historical design decision record (DRO-966), updated with shipped

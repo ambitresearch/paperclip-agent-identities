@@ -1,3 +1,10 @@
+---
+type: Decision Record
+title: Slack app manifests and per-agent provisioning
+description: Records the decision to provision one Slack app and bot user per Paperclip agent using manual manifest copy/paste, HTTPS Events API transport, and company-scoped Slack credential references.
+tags: [slack, app-manifests, provisioning, events-api]
+---
+
 # Slack app manifests and per-agent provisioning — decision record
 
 Status: **decided and implemented for HTTP Events API**. Generated manifests require an

@@ -18,7 +18,7 @@ export default defineConfig({
     },
     nav: [
       { text: "Guide", link: "/quickstart" },
-      { text: "GitHub", link: "https://github.com/roshangautam/paperclip-agent-identities" },
+      { text: "GitHub", link: "https://github.com/ambitresearch/paperclip-agent-identities" },
     ],
     sidebar: [
       {
@@ -56,7 +56,7 @@ export default defineConfig({
       },
     ],
     socialLinks: [
-      { icon: "github", link: "https://github.com/roshangautam/paperclip-agent-identities" },
+      { icon: "github", link: "https://github.com/ambitresearch/paperclip-agent-identities" },
     ],
     footer: {
       message: "Generated from OpenWiki Markdown and published with VitePress.",

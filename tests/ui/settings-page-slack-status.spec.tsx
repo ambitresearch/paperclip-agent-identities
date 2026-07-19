@@ -56,6 +56,10 @@ const providers = [
   { id: SLACK_IDENTITY_PROVIDER_ID, name: "Slack", status: "coming-soon", description: "Slack" },
 ];
 
+const EVENTS_REQUEST_URL = "https://paperclip-test.trycloudflare.com/events";
+const BOT_TOKEN_SECRET_ID = "11111111-1111-4111-8111-111111111111";
+const SIGNING_SECRET_ID = "22222222-2222-4222-8222-222222222222";
+
 function slackIdentityEntry() {
   return {
     id: "id-1",
@@ -174,7 +178,7 @@ function rerenderSettingsPage() {
 function openNewSlackCredentialStep() {
   renderSettingsPage();
   const addButton = Array.from(container.querySelectorAll("button")).find((button) =>
-    button.textContent?.match(/New identity|Add identity/),
+    button.textContent === "Add identity",
   );
   click(addButton ?? null);
 
@@ -193,6 +197,17 @@ function openNewSlackCredentialStep() {
   );
   click(nextButton ?? null);
 }
+
+describe("Configured identity rows", () => {
+  it("shows the provider type instead of its account identifier", () => {
+    bridgeData = baseBridgeData([slackIdentityEntry()]);
+    renderSettingsPage();
+
+    const row = container.querySelector(".agent-identities-list-row");
+    expect(row?.children[1]?.textContent).toBe("Slack");
+    expect(row?.textContent).not.toContain("T0123456789");
+  });
+});
 
 describe("Slack status panel (slack_bot_whoami)", () => {
   it("shows a loading state while slack_bot_whoami is in flight", async () => {
@@ -282,7 +297,7 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     openNewSlackCredentialStep();
 
     change(container.querySelector('input[placeholder="e.g. T0123456789"]'), "T0123456789");
-    change(container.querySelector('input[placeholder="e.g. A0123456789"]'), "A0123456789");
+    change(container.querySelector('input[placeholder^="A0123456789"]'), "A0123456789");
     await act(async () => {
       await Promise.resolve();
     });
@@ -327,6 +342,7 @@ describe("Slack status panel (slack_bot_whoami)", () => {
       manifest: '{"name":"slack-demo"}',
       createAppUrl: "https://api.slack.com/apps?new_app=1",
       label: "Release Bot",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
     });
     actionFor("save-slack-install-metadata").mockResolvedValue({
       agentId: "agent-0",
@@ -334,7 +350,9 @@ describe("Slack status panel (slack_bot_whoami)", () => {
       teamId: "T0123456789",
       appId: "A0123456789",
       botUserId: "U0123456789",
-      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+      botTokenSecretId: BOT_TOKEN_SECRET_ID,
+      signingSecretId: SIGNING_SECRET_ID,
       status: "saved",
     });
 
@@ -348,6 +366,10 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     expect(Array.from(container.querySelectorAll("button")).some((button) =>
       button.textContent === "Create Slack App manifest",
     )).toBe(false);
+    change(
+      container.querySelector('input[placeholder="https://your-public-tunnel.example/events"]'),
+      EVENTS_REQUEST_URL,
+    );
     const reinstallSummary = Array.from(container.querySelectorAll("summary")).find((summary) =>
       summary.textContent?.match(/reinstall/i),
     );
@@ -362,7 +384,11 @@ describe("Slack status panel (slack_bot_whoami)", () => {
     });
     change(
       container.querySelector('input[placeholder="Company secret UUID containing the Slack bot token"]'),
-      "11111111-1111-4111-8111-111111111111",
+      BOT_TOKEN_SECRET_ID,
+    );
+    change(
+      container.querySelector('input[placeholder="Company secret UUID containing the Slack signing secret"]'),
+      SIGNING_SECRET_ID,
     );
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) =>
@@ -402,6 +428,10 @@ describe("Slack reinstall action", () => {
       button.textContent === "Next",
     );
     click(nextButton ?? null);
+    change(
+      container.querySelector('input[placeholder="https://your-public-tunnel.example/events"]'),
+      EVENTS_REQUEST_URL,
+    );
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
@@ -440,6 +470,7 @@ describe("Slack reinstall action", () => {
       manifest: '{"name":"slack-demo"}',
       createAppUrl: "https://api.slack.com/apps?new_app=1",
       label: "Release Bot",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
     });
 
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
@@ -449,6 +480,10 @@ describe("Slack reinstall action", () => {
     expect(Array.from(container.querySelectorAll("button")).some((button) =>
       button.textContent === "Create Slack App manifest",
     )).toBe(false);
+    change(
+      container.querySelector('input[placeholder="https://your-public-tunnel.example/events"]'),
+      EVENTS_REQUEST_URL,
+    );
 
     const detailsSummary = Array.from(container.querySelectorAll("summary")).find((s) =>
       s.textContent?.match(/reinstall/i),
@@ -478,6 +513,55 @@ describe("Slack reinstall action", () => {
       await Promise.resolve();
     });
     expect(actionFor("create-slack-app-manifest")).toHaveBeenCalled();
+    expect(actionFor("create-slack-app-manifest")).toHaveBeenCalledWith(expect.objectContaining({
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+    }));
+  });
+});
+
+describe("Released Slack credential recovery", () => {
+  it("offers rebind instead of reinstall and submits only agentId plus an operator signing-secret UUID", async () => {
+    bridgeData = baseBridgeData([{
+      ...slackIdentityEntry(),
+      credentialStatus: "rebind-required",
+      slackSetup: {
+        legacyCredential: { status: "rebind-required", signingSecretRequired: true },
+      },
+    }]);
+    actionFor("slack_bot_whoami").mockResolvedValue({ error: "Host binding not configured" });
+    actionFor("rebind-legacy-slack-credentials").mockResolvedValue({
+      agentId: "agent-0",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      status: "rebound",
+    });
+    renderSettingsPage();
+    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Edit") ?? null);
+    click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Next") ?? null);
+
+    expect(text()).toContain("Upgrade action required");
+    expect(text()).toContain("v0.1.7/v0.1.8");
+    expect(text()).not.toContain("xoxb-");
+    expect(text()).not.toContain("Reinstall the Slack App for this identity");
+    expect(container.querySelector('input[placeholder="Company secret UUID containing the Slack bot token"]')).toBeNull();
+
+    change(
+      container.querySelector('input[placeholder="Company secret UUID containing the Slack signing secret"]'),
+      SIGNING_SECRET_ID,
+    );
+    const rebind = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent === "Rebind released credentials",
+    );
+    await act(async () => {
+      click(rebind ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("rebind-legacy-slack-credentials")).toHaveBeenCalledWith({
+      agentId: "agent-0",
+      signingSecretId: SIGNING_SECRET_ID,
+    });
+    expect(text()).toContain("Released Slack credentials rebound successfully");
   });
 });
 
@@ -505,7 +589,7 @@ describe("Slack removal confirmation copy", () => {
     const confirmMessage = confirmSpy.mock.calls[0]?.[0] as string;
     expect(confirmMessage).toMatch(/Slack install metadata/i);
     expect(confirmMessage).toMatch(/not.*deleted|are not deleted/i);
-    expect(confirmMessage).toMatch(/New identity/i);
+    expect(confirmMessage).toMatch(/Add identity/i);
     expect(actionFor("delete-bot-identity-config")).not.toHaveBeenCalled();
 
     confirmSpy.mockReturnValue(true);
@@ -551,7 +635,7 @@ describe("Slack removal confirmation copy", () => {
 
     const confirmMessage = confirmSpy.mock.calls[0]?.[0] as string;
     expect(confirmMessage).toMatch(/GitHub App/i);
-    expect(confirmMessage).toMatch(/New identity/i);
+    expect(confirmMessage).toMatch(/Add identity/i);
     expect(confirmMessage).not.toMatch(/Slack/i);
   });
 });

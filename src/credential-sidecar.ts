@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { z } from "@paperclipai/plugin-sdk";
+import { withProcessLocalLocks } from "./core/process-local-mutation-queue.js";
 import type { ResolvedAgentIdentity } from "./providers/github/config.js";
 import { GITHUB_IDENTITY_PROVIDER_ID, getIdentityKey, type IdentityProviderId } from "./shared/types.js";
 
@@ -23,21 +24,15 @@ const githubAppCredentialSchema = z.object({
   message: "Expected either privateKeySecretId or privateKeyFile for GitHub App credentials"
 });
 
-// Slack MVP credential source: a Paperclip-secret-backed bot token, with an
-// optional signing secret. No tokenFile fallback — see
-// openwiki/domain/slack-provider-mvp.md §2: the signing secret is used for
-// per-request HMAC verification, not bearer auth, so it must not be written
-// to a file the way a GitHub PEM is. Rotation is deliberately unimplemented
-// (design decision) — see that same section.
-// Exported so callers that must validate a `botTokenSecretId` up front (e.g.
-// before persisting any state, so a bad reference fails atomically rather
-// than after other mutations) can reuse the exact same UUID format check
-// that `upsertCredentialSidecarIdentity` enforces later.
+// Legacy Slack entries remain parseable so an upgrade does not invalidate a
+// sidecar that also contains active GitHub credentials. Slack runtime code no
+// longer reads from or writes to this shape.
 export const slackBotTokenSecretIdSchema = z.string().trim().uuid();
+export const slackSigningSecretIdSchema = z.string().trim().uuid();
 
 const slackBotTokenCredentialSchema = z.object({
   botTokenSecretId: slackBotTokenSecretIdSchema,
-  signingSecretId: z.string().trim().uuid().optional(),
+  signingSecretId: slackSigningSecretIdSchema.optional(),
 });
 
 const sidecarIdentitySchema = z.object({
@@ -59,8 +54,10 @@ export type GitHubAppCredentialConfig = z.infer<typeof githubAppCredentialSchema
 export type ResolveSecret = (secretRef: string) => Promise<string>;
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export type CredentialSidecarIdentity = z.infer<typeof sidecarIdentitySchema>;
+export type LegacySlackCredentialSidecarEntry = z.infer<typeof slackBotTokenCredentialSchema>;
 
 type SystemErrorWithCode = Error & { code?: string };
+const sidecarMutationOwner = {};
 
 export interface ResolvedIdentityToken {
   token: string;
@@ -127,17 +124,19 @@ export async function upsertCredentialSidecarIdentity(
 ): Promise<GitHubBotIdentityCredentialSidecar> {
   const sidecarPath = path ?? await resolveCredentialSidecarPath();
   const parsedIdentity = sidecarIdentitySchema.parse(identity);
-  const identityKey = getIdentityKey(agentId, provider);
-  const existing = await readCredentialSidecarIfExists(sidecarPath) ?? { version: 1 as const, identities: {} };
-  const next: GitHubBotIdentityCredentialSidecar = {
-    version: 1,
-    identities: {
-      ...existing.identities,
-      [identityKey]: parsedIdentity,
-    },
-  };
-  await writeCredentialSidecar(next, sidecarPath);
-  return next;
+  return await withProcessLocalLocks(sidecarMutationOwner, [sidecarPath], async () => {
+    const identityKey = getIdentityKey(agentId, provider);
+    const existing = await readCredentialSidecarIfExists(sidecarPath) ?? { version: 1 as const, identities: {} };
+    const next: GitHubBotIdentityCredentialSidecar = {
+      version: 1,
+      identities: {
+        ...existing.identities,
+        [identityKey]: parsedIdentity,
+      },
+    };
+    await writeCredentialSidecar(next, sidecarPath);
+    return next;
+  });
 }
 
 export async function deleteCredentialSidecarIdentity(
@@ -146,16 +145,58 @@ export async function deleteCredentialSidecarIdentity(
   path?: string
 ): Promise<GitHubBotIdentityCredentialSidecar | null> {
   const sidecarPath = path ?? await resolveCredentialSidecarPath();
-  const existing = await readCredentialSidecarIfExists(sidecarPath);
-  const identityKey = getIdentityKey(agentId, provider);
-  if (!existing || !existing.identities[identityKey]) {
-    return existing;
-  }
+  return await withProcessLocalLocks(sidecarMutationOwner, [sidecarPath], async () => {
+    const existing = await readCredentialSidecarIfExists(sidecarPath);
+    const identityKey = getIdentityKey(agentId, provider);
+    if (!existing || !existing.identities[identityKey]) {
+      return existing;
+    }
 
-  const { [identityKey]: _removed, ...identities } = existing.identities;
-  const next: GitHubBotIdentityCredentialSidecar = { version: 1, identities };
-  await writeCredentialSidecar(next, sidecarPath);
-  return next;
+    const { [identityKey]: _removed, ...identities } = existing.identities;
+    const next: GitHubBotIdentityCredentialSidecar = { version: 1, identities };
+    await writeCredentialSidecar(next, sidecarPath);
+    return next;
+  });
+}
+
+export function readLegacySlackCredentialSidecarEntry(
+  sidecar: GitHubBotIdentityCredentialSidecar | null,
+  agentId: string,
+): LegacySlackCredentialSidecarEntry | undefined {
+  return sidecar?.identities[getIdentityKey(agentId, "slack")]?.slackBotToken;
+}
+
+export async function deleteLegacySlackCredentialSidecarEntry(
+  agentId: string,
+  expected: LegacySlackCredentialSidecarEntry,
+  path?: string,
+): Promise<GitHubBotIdentityCredentialSidecar | null> {
+  const sidecarPath = path ?? await resolveCredentialSidecarPath();
+  const parsedExpected = slackBotTokenCredentialSchema.parse(expected);
+  return await withProcessLocalLocks(sidecarMutationOwner, [sidecarPath], async () => {
+    const existing = await readCredentialSidecarIfExists(sidecarPath);
+    const identityKey = getIdentityKey(agentId, "slack");
+    const current = existing?.identities[identityKey]?.slackBotToken;
+    if (!existing || !current) return existing;
+    if (
+      current.botTokenSecretId !== parsedExpected.botTokenSecretId
+      || current.signingSecretId !== parsedExpected.signingSecretId
+    ) {
+      throw new Error("Legacy Slack credential sidecar entry changed before cleanup; it was not deleted.");
+    }
+
+    const currentIdentity = existing.identities[identityKey];
+    const { slackBotToken: _removedSlack, ...remainingIdentity } = currentIdentity;
+    const identities = { ...existing.identities };
+    if (Object.keys(remainingIdentity).length > 0) {
+      identities[identityKey] = remainingIdentity;
+    } else {
+      delete identities[identityKey];
+    }
+    const next: GitHubBotIdentityCredentialSidecar = { version: 1, identities };
+    await writeCredentialSidecar(next, sidecarPath);
+    return next;
+  });
 }
 
 async function writeCredentialSidecar(
@@ -206,12 +247,7 @@ async function readSidecarIdentity(resolvedIdentity: ResolvedAgentIdentity, side
   return readSidecarIdentityForProvider(resolvedIdentity.agentId, GITHUB_IDENTITY_PROVIDER_ID, sidecarPath);
 }
 
-/**
- * Generic (provider-agnostic) sidecar identity lookup. Reused by non-GitHub
- * providers (e.g. Slack, `src/providers/slack/credentials.ts`) so they read
- * through the same atomic-write/0600 sidecar primitives without duplicating
- * the identity-key lookup or fail-closed error path.
- */
+/** Generic sidecar lookup retained for GitHub and one-release migration code. */
 export async function readSidecarIdentityForProvider(
   agentId: string,
   provider: IdentityProviderId,

@@ -1,4 +1,9 @@
-import type { PluginContext, PluginWebhookInput, ToolRunContext } from "@paperclipai/plugin-sdk";
+import type {
+  PluginContext,
+  PluginWebhookInput,
+  PluginWebhookResponse,
+  ToolRunContext,
+} from "@paperclipai/plugin-sdk";
 import type { ResolvedAgentIdentity } from "./agent-identity.js";
 import type { ResourceReference } from "./resource-reference.js";
 
@@ -126,6 +131,7 @@ export interface ProviderToolSpec<TIdentity, TRef extends ResourceReference> {
 export interface CredentialResolverInput<TIdentity> {
   readonly identity: ResolvedAgentIdentity<TIdentity>;
   readonly ctx: PluginContext;
+  readonly runCtx: ToolRunContext;
 }
 
 export interface IdentityProvider<
@@ -147,5 +153,5 @@ export interface IdentityProvider<
   // hook by matching `input.endpointKey` against each provider's declared
   // `endpointKey`s -- no provider-specific branch in either file.
   readonly webhooks?: ReadonlyArray<ProviderWebhookDeclaration>;
-  handleWebhook?(input: PluginWebhookInput, ctx: PluginContext): Promise<void>;
+  handleWebhook?(input: PluginWebhookInput, ctx: PluginContext): Promise<PluginWebhookResponse | void>;
 }

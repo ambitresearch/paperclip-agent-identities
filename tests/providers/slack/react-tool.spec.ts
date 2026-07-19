@@ -45,6 +45,18 @@ describe("slackAddReactionToolSpec / slackRemoveReactionToolSpec — validatePar
     });
   });
 
+  it("accepts a direct-message conversation ID", () => {
+    const result = slackAddReactionToolSpec.validateParams({
+      channelId: "D0123456789",
+      messageTs: "1719000000.123456",
+      reaction: "thumbsup"
+    });
+    expect(result).toEqual({
+      ok: true,
+      params: { channelId: "D0123456789", messageTs: "1719000000.123456", reaction: "thumbsup" }
+    });
+  });
+
   it("accepts valid params without channelId (falls back to default channel later)", () => {
     const result = slackAddReactionToolSpec.validateParams({
       messageTs: "1719000000.123456",

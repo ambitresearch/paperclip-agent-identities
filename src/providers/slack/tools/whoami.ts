@@ -16,9 +16,8 @@ import {
  * pipeline never resolves a token before calling `perform`, and this handler
  * only ever reads the already-validated, public `SlackAgentIdentity` fields
  * (label, teamId, appId, botUserId, defaultChannel) — no bot token, signing
- * secret, or any other credential is touched. See
- * openwiki/domain/slack-provider-mvp.md for why the bot token/signing secret
- * never leave the credential sidecar.
+ * secret, or any other credential is touched. Slack secret refs stay in
+ * company-scoped host config, and resolved values never enter this tool.
  *
  * `live: true` composes this tool into the worker/manifest surface even
  * though the Slack PROVIDER is still `status: "coming-soon"` (the

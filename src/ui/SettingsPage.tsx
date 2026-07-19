@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
-import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
+import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, REBIND_LEGACY_SLACK_CREDENTIALS_ACTION, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
 import { slackBotWhoamiToolName } from "../shared/slack-bot-whoami-tool.js";
 import { buildProviderSettingsRegistry } from "../core/provider-settings-contract.js";
 import { ALL_SETTINGS_ADAPTERS } from "../providers/settings-index.js";
@@ -13,7 +13,6 @@ import {
   uiDanger,
   uiInput,
   uiLink,
-  uiMutedPanel,
   uiMutedText,
   uiOverlay,
   uiPanel,
@@ -66,10 +65,13 @@ export type IdentityFormState = {
   slackAppId: string;
   slackBotUserId: string;
   slackDefaultChannel: string;
+  slackEventsRequestUrl: string;
   slackBotTokenSecretId: string;
+  slackSigningSecretId: string;
+  slackLegacyCredentialStatus: string;
+  slackLegacySigningSecretRequired: string;
 };
 
-type SettingsSection = "identities" | "setup" | "environment";
 type IdentityFormSection = "identity" | "github" | "slack" | "commit";
 type IdentityFormValidation = {
   identityComplete: boolean;
@@ -94,7 +96,9 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const convertGitHubAppManifest = usePluginAction("convert-github-app-manifest");
   const createSlackAppManifest = usePluginAction("create-slack-app-manifest");
   const getSlackAppManifestFlow = usePluginAction("get-slack-app-manifest-flow");
+  const discoverSlackInstallMetadata = usePluginAction("discover-slack-install-metadata");
   const saveSlackInstallMetadata = usePluginAction("save-slack-install-metadata");
+  const rebindLegacySlackCredentials = usePluginAction(REBIND_LEGACY_SLACK_CREDENTIALS_ACTION);
   // Credential-free identity self-check tool (DRO-972) invoked the same way
   // as the plugin actions above. `usePluginAction` only calls
   // `ctx.actions.register` handlers, not `ctx.tools.register` handlers -- this
@@ -112,11 +116,10 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [secretOptions, setSecretOptions] = useState<PaperclipSecretOption[]>([]);
   const [secretsLoading, setSecretsLoading] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
-  const [activeSection, setActiveSection] = useState<SettingsSection>("identities");
   const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
   const agentOptions = agentsData?.agents ?? [];
-  const summary = summarizeIdentitySettings(identities, Boolean(data?.credentialSidecarError));
+  const summary = summarizeIdentitySettings(identities);
 
   useEffect(() => {
     if (!companyId) {
@@ -183,7 +186,9 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     companyId,
     createSlackAppManifest,
     getSlackAppManifestFlow,
+    discoverSlackInstallMetadata,
     saveSlackInstallMetadata,
+    rebindLegacySlackCredentials,
     slackBotWhoami,
   });
 
@@ -266,7 +271,11 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   // before it resolves, letting that stale response's state updates land on
   // a different form (Copilot finding on settings-adapter-ui.tsx:454).
   const slackSaveInFlight =
-    activeProviderId === SLACK_IDENTITY_PROVIDER_ID && (slackUIState.slackSaveBusy || slackUIState.slackCleanupBusy);
+    activeProviderId === SLACK_IDENTITY_PROVIDER_ID && (
+      slackUIState.slackSaveBusy
+      || slackUIState.slackCleanupBusy
+      || slackUIState.legacySlackRebindBusy
+    );
 
   if (loading) return <div>Loading settings...</div>;
   if (error) return <div>Error loading settings: {error.message}</div>;
@@ -461,22 +470,14 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         <div>
           <h2 style={pageTitleStyle}>Agent Identities</h2>
           <p style={descriptionStyle}>
-            Connect agents in {companyDisplayName || "this company"} to service-specific identity providers. GitHub is the first provider.
+            Connect agents in {companyDisplayName || "this company"} to GitHub and Slack identities.
           </p>
         </div>
-        <button
-          onClick={startCreate}
-          style={primaryButtonStyle}
-          title="Add identity"
-          aria-label="Add identity"
-        >
-          New identity
-        </button>
       </div>
 
       <div className="agent-identities-summary-grid" style={summaryGridStyle}>
         <SummaryTile label="Identities" value={summary.total} />
-        <SummaryTile label="GitHub Apps" value={summary.githubApps} tone="good" />
+        <SummaryTile label="Ready" value={summary.ready} tone="good" />
         <SummaryTile label="Need setup" value={summary.needsSetup} tone={summary.needsSetup > 0 ? "warn" : "good"} />
       </div>
 
@@ -486,106 +487,53 @@ export function SettingsPage(props: PluginSettingsPageProps) {
         </div>
       )}
 
-      <div className="agent-identities-settings-shell" style={settingsShellStyle}>
-        <nav className="agent-identities-sidebar" style={sidebarStyle} aria-label="Agent identity settings sections">
-          <SidebarButton
-            active={activeSection === "identities"}
-            title="Identities"
-            detail={`${identities.length} configured`}
-            onClick={() => setActiveSection("identities")}
-          />
-          <SidebarButton
-            active={activeSection === "setup"}
-            title="GitHub App setup"
-            detail="Create and install apps"
-            onClick={() => setActiveSection("setup")}
-          />
-          <SidebarButton
-            active={activeSection === "environment"}
-            title="Environment"
-            detail="Credential propagation"
-            onClick={() => setActiveSection("environment")}
-          />
-        </nav>
-
-        <main style={workspaceStyle}>
-          {activeSection === "identities" && (
-            <section style={sectionStyle}>
-              <div className="agent-identities-section-header" style={sectionHeaderStyle}>
-                <div>
-                  <h3 style={sectionTitleStyle}>Configured identities</h3>
-                  <p style={sectionDescriptionStyle}>Each row maps one Paperclip agent to a provider account and credential source.</p>
+      <section style={sectionStyle}>
+        <div className="agent-identities-section-header" style={sectionHeaderStyle}>
+          <div>
+            <h3 style={sectionTitleStyle}>Configured identities</h3>
+            <p style={sectionDescriptionStyle}>Each row maps one Paperclip agent to a provider account and credential source.</p>
+          </div>
+          <button onClick={startCreate} style={secondaryButtonStyle}>Add identity</button>
+        </div>
+        {saveError && !formState && <div style={errorStyle}>{saveError}</div>}
+        {saveSuccess && !formState && <div style={successStyle}>Saved successfully.</div>}
+        {identities.length === 0 ? (
+          <div style={emptyStateStyle}>
+            <strong>No identities configured</strong>
+            <span>Pick an agent, connect its first provider account, then save. Defaults are filled from the selected agent and company.</span>
+            <button onClick={startCreate} style={primaryButtonStyle}>Create first identity</button>
+          </div>
+        ) : (
+          <div style={listStyle}>
+            <div className="agent-identities-list-header" style={listHeaderStyle}>
+              <span>Agent</span>
+              <span>Provider</span>
+              <span>Status</span>
+              <span />
+            </div>
+            {identities.map((entry) => (
+              <div key={entry.id} className="agent-identities-list-row" style={rowStyle}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={rowTitleStyle}>{entry.label}</div>
+                  <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
                 </div>
-                <button onClick={startCreate} style={secondaryButtonStyle}>Add identity</button>
-              </div>
-              {saveError && !formState && <div style={errorStyle}>{saveError}</div>}
-              {saveSuccess && !formState && <div style={successStyle}>Saved successfully.</div>}
-              {identities.length === 0 ? (
-                <div style={emptyStateStyle}>
-                  <strong>No identities configured</strong>
-                  <span>Pick an agent, connect its first provider account, then save. Defaults are filled from the selected agent and company.</span>
-                  <button onClick={startCreate} style={primaryButtonStyle}>Create first identity</button>
+                <div style={rowMetaStyle}>{getProviderDisplayName(entry.provider, data?.providers)}</div>
+                <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
+                <div className="agent-identities-row-actions" style={rowActionsStyle}>
+                  <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
+                  <button
+                    onClick={() => void handleDelete(entry)}
+                    disabled={deletingAgentId === entry.agentId}
+                    style={dangerButtonStyle}
+                  >
+                    {deletingAgentId === entry.agentId ? "Deleting..." : "Delete"}
+                  </button>
                 </div>
-              ) : (
-                <div style={listStyle}>
-                  <div className="agent-identities-list-header" style={listHeaderStyle}>
-                    <span>Agent</span>
-                    <span>Provider identity</span>
-                    <span>Status</span>
-                    <span />
-                  </div>
-                  {identities.map((entry) => (
-                    <div key={entry.id} className="agent-identities-list-row" style={rowStyle}>
-                      <div style={{ minWidth: 0 }}>
-                        <div style={rowTitleStyle}>{entry.label}</div>
-                        <div style={rowMetaStyle}>{formatAgentName(entry.agentId, agentOptions)}</div>
-                      </div>
-                      <div style={rowMetaStyle}>{entry.provider === "github" ? entry.github.username : entry.provider === "slack" ? `Team ${entry.slack.teamId}` : ""}</div>
-                      <span style={statusBadgeStyle(getIdentityTone(entry))}>{formatCredentialStatus(entry.credentialStatus)}</span>
-                      <div className="agent-identities-row-actions" style={rowActionsStyle}>
-                        <button onClick={() => startEdit(entry)} style={secondaryButtonStyle}>Edit</button>
-                        <button
-                          onClick={() => void handleDelete(entry)}
-                          disabled={deletingAgentId === entry.agentId}
-                          style={dangerButtonStyle}
-                        >
-                          {deletingAgentId === entry.agentId ? "Deleting..." : "Delete"}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
-
-          {activeSection === "setup" && (
-            <section style={sectionStyle}>
-              <h3 style={sectionTitleStyle}>GitHub App setup</h3>
-              <div style={setupStepsStyle}>
-                <SetupStep index="1" title="Select the Paperclip agent" text="The label, GitHub login, commit name, and private-key file path are prefilled from the agent and company." />
-                <SetupStep index="2" title="Create the GitHub App" text="Paperclip opens GitHub with the required permissions and stores the generated private key in the sidecar path." />
-                <SetupStep index="3" title="Install, return, save" text="GitHub redirects back with the installation ID. Save the identity to propagate the environment values." />
               </div>
-              <button onClick={startCreate} style={primaryButtonStyle}>Start setup</button>
-            </section>
-          )}
-
-          {activeSection === "environment" && (
-            <section style={sectionStyle}>
-              <h3 style={sectionTitleStyle}>Environment propagation</h3>
-              <div style={inlineNoticeStyle}>
-                Saving an identity updates the selected agent environment with <code>GITHUB_APP_ID</code>, <code>GITHUB_INSTALLATION_ID</code>, and either <code>GITHUB_APP_PRIVATE_KEY</code> or <code>GITHUB_APP_PRIVATE_KEY_FILE</code>.
-              </div>
-              <div style={setupStepsStyle}>
-                <SetupStep index="A" title="Secret first" text="When a Paperclip secret is selected, the agent gets a secret reference instead of a raw private key." />
-                <SetupStep index="B" title="File fallback" text="If secrets are not available, the generated private-key file path keeps the tools working." />
-                <SetupStep index="C" title="Safe removal" text="Deleting an identity removes only matching GitHub App values from that agent." />
-              </div>
-            </section>
-          )}
-        </main>
-      </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       {config && (
         <div style={dialogBackdropStyle} role="presentation">
@@ -599,7 +547,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
           <header className="agent-identities-dialog-header" style={dialogHeaderStyle}>
             <div>
               <h3 id="agent-identity-dialog-title" style={dialogTitleStyle}>{isEditingExistingIdentity ? "Edit agent identity" : "Add agent identity"}</h3>
-              <p style={sectionDescriptionStyle}>Configure the agent, GitHub App credential, and optional commit metadata.</p>
+              <p style={sectionDescriptionStyle}>Configure the agent and its provider-specific credentials.</p>
             </div>
             <button onClick={() => setFormState(null)} disabled={saving || slackSaveInFlight} style={closeButtonStyle} aria-label="Close identity editor">x</button>
           </header>
@@ -664,7 +612,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
                   </option>
                 ))}
               </select>
-              <span style={hintStyle}>Each agent can have one identity per provider. GitHub is fully available; Slack identities can be set up here and Slack agent tools (post message, whoami) are already live.</span>
+              <span style={hintStyle}>Each agent can have one identity per provider. GitHub and Slack are available, with additional providers coming soon.</span>
             </label>
 
             {duplicateIdentity && <div style={validationNoticeStyle}>This agent already has a {getProviderDisplayName(config.provider, data?.providers)} identity. Edit the existing row instead.</div>}
@@ -798,27 +746,6 @@ function SummaryTile(props: { label: string; value: number; tone?: IdentityTone 
   );
 }
 
-function SidebarButton(props: { active: boolean; title: string; detail: string; onClick: () => void }) {
-  return (
-    <button type="button" onClick={props.onClick} style={sidebarButtonStyle(props.active)}>
-      <span style={sidebarTitleStyle}>{props.title}</span>
-      <span style={sidebarDetailStyle}>{props.detail}</span>
-    </button>
-  );
-}
-
-function SetupStep(props: { index: string; title: string; text: string }) {
-  return (
-    <div style={setupStepStyle}>
-      <span style={setupStepIndexStyle}>{props.index}</span>
-      <div>
-        <strong>{props.title}</strong>
-        <p style={setupStepTextStyle}>{props.text}</p>
-      </div>
-    </div>
-  );
-}
-
 function WizardStepIndicator(props: { index: number; label: string; active: boolean; complete: boolean }) {
   return (
     <div style={wizardStepStyle(props.active)}>
@@ -916,7 +843,15 @@ export function toFormState(entry?: BotIdentitySettingsEntry): IdentityFormState
     slackAppId: entry?.provider === "slack" ? entry.slack.appId : "",
     slackBotUserId: entry?.provider === "slack" ? entry.slack.botUserId : "",
     slackDefaultChannel: entry?.provider === "slack" ? entry.slack.defaultChannel ?? "" : "",
-    slackBotTokenSecretId: "",
+    slackEventsRequestUrl: entry?.provider === "slack" ? entry.slackSetup?.eventsRequestUrl ?? "" : "",
+    slackBotTokenSecretId: entry?.provider === "slack" ? entry.slackSetup?.botTokenSecretId ?? "" : "",
+    slackSigningSecretId: entry?.provider === "slack" ? entry.slackSetup?.signingSecretId ?? "" : "",
+    slackLegacyCredentialStatus: entry?.provider === "slack"
+      ? entry.slackSetup?.legacyCredential?.status ?? ""
+      : "",
+    slackLegacySigningSecretRequired: entry?.provider === "slack" && entry.slackSetup?.legacyCredential?.signingSecretRequired
+      ? "true"
+      : "",
   };
 }
 
@@ -1112,25 +1047,25 @@ function readString(value: unknown): string {
 
 function formatCredentialStatus(status: BotIdentitySettingsEntry["credentialStatus"]): string {
   if (status === "configured") return "Configured";
+  if (status === "rebind-required") return "Rebind required";
+  if (status === "cleanup-pending") return "Cleanup pending";
+  if (status === "conflict") return "Conflict";
   if (status === "sidecar-unavailable") return "Unavailable";
   return "Missing";
 }
 
 function getIdentityTone(entry: BotIdentitySettingsEntry): IdentityTone {
   if (entry.credentialStatus === "configured") return "good";
-  if (entry.credentialStatus === "sidecar-unavailable") return "warn";
+  if (entry.credentialStatus !== "missing") return "warn";
   return "neutral";
 }
 
-function summarizeIdentitySettings(identities: BotIdentitySettingsEntry[], sidecarUnavailable: boolean) {
-  const githubApps = identities.filter((identity) => {
-    const githubApp = identity.credential?.githubApp;
-    return Boolean(githubApp?.appId && githubApp.installationId && (githubApp.privateKeySecretId || githubApp.privateKeyFile));
-  }).length;
+function summarizeIdentitySettings(identities: BotIdentitySettingsEntry[]) {
+  const ready = identities.filter((identity) => identity.credentialStatus === "configured").length;
   return {
     total: identities.length,
-    githubApps,
-    needsSetup: sidecarUnavailable ? identities.length : identities.filter((identity) => identity.credentialStatus !== "configured").length,
+    ready,
+    needsSetup: identities.filter((identity) => identity.credentialStatus !== "configured").length,
   };
 }
 
@@ -1402,13 +1337,9 @@ const responsiveSettingsStyle = `
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.agent-identities-settings-shell {
-  grid-template-columns: 220px minmax(0, 1fr);
-}
-
 .agent-identities-list-header,
 .agent-identities-list-row {
-  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(90px, auto) auto;
+  grid-template-columns: minmax(0, 1fr) 8rem 8rem 13rem;
 }
 
 .agent-identities-row-actions {
@@ -1420,22 +1351,6 @@ const responsiveSettingsStyle = `
 }
 
 @container (max-width: 720px) {
-  .agent-identities-settings-shell {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .agent-identities-sidebar {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
-@container (max-width: 520px) {
-  .agent-identities-summary-grid,
-  .agent-identities-sidebar,
-  .agent-identities-wizard-steps {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .agent-identities-list-header {
     display: none !important;
   }
@@ -1463,6 +1378,13 @@ const responsiveSettingsStyle = `
     grid-column: 1 / -1;
     grid-row: 3;
     justify-content: flex-start;
+  }
+}
+
+@container (max-width: 520px) {
+  .agent-identities-summary-grid,
+  .agent-identities-wizard-steps {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 `;
@@ -1533,52 +1455,6 @@ const credentialErrorStyle: CSSProperties = {
   borderRadius: 10,
   color: uiDanger,
   fontSize: "0.875rem",
-};
-
-const settingsShellStyle: CSSProperties = {
-  display: "grid",
-  gap: "1rem",
-  alignItems: "start",
-  minWidth: 0,
-};
-
-const sidebarStyle: CSSProperties = {
-  display: "grid",
-  gap: "0.35rem",
-  padding: "0.5rem",
-  border: `1px solid ${uiBorder}`,
-  borderRadius: 14,
-  backgroundColor: uiPanel,
-};
-
-function sidebarButtonStyle(active: boolean): CSSProperties {
-  return {
-    display: "grid",
-    gap: "0.15rem",
-    width: "100%",
-    minHeight: 54,
-    padding: "0.65rem 0.75rem",
-    border: `1px solid ${active ? uiBorderStrong : "transparent"}`,
-    borderRadius: 10,
-    backgroundColor: active ? uiSurface : "transparent",
-    color: uiText,
-    textAlign: "left",
-    cursor: "pointer",
-  };
-}
-
-const sidebarTitleStyle: CSSProperties = {
-  fontWeight: 650,
-  fontSize: "0.875rem",
-};
-
-const sidebarDetailStyle: CSSProperties = {
-  color: uiMutedText,
-  fontSize: "0.8125rem",
-};
-
-const workspaceStyle: CSSProperties = {
-  minWidth: 0,
 };
 
 const sectionStyle: CSSProperties = {
@@ -1662,40 +1538,6 @@ const emptyStateStyle: CSSProperties = {
   borderRadius: 12,
   color: uiMutedText,
   backgroundColor: uiPanel,
-};
-
-const setupStepsStyle: CSSProperties = {
-  display: "grid",
-  gap: "0.5rem",
-};
-
-const setupStepStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "2rem minmax(0, 1fr)",
-  gap: "0.75rem",
-  alignItems: "start",
-  padding: "0.75rem",
-  border: `1px solid ${uiBorder}`,
-  borderRadius: 10,
-  backgroundColor: uiPanel,
-};
-
-const setupStepIndexStyle: CSSProperties = {
-  display: "inline-grid",
-  placeItems: "center",
-  width: "2rem",
-  height: "2rem",
-  borderRadius: 999,
-  backgroundColor: uiMutedPanel,
-  color: uiMutedText,
-  fontWeight: 700,
-  fontSize: "0.8125rem",
-};
-
-const setupStepTextStyle: CSSProperties = {
-  margin: "0.2rem 0 0",
-  color: uiMutedText,
-  fontSize: "0.875rem",
 };
 
 const dialogBackdropStyle: CSSProperties = {

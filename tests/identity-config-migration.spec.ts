@@ -6,9 +6,9 @@ import {
   type AgentIdentitySettingsState,
 } from "../src/core/identity-config.js";
 
-describe("identity-config v4 migration", () => {
-  it("exposes version 4", () => {
-    expect(BOT_IDENTITY_SETTINGS_VERSION).toBe(4);
+describe("identity-config v5 migration", () => {
+  it("exposes version 5", () => {
+    expect(BOT_IDENTITY_SETTINGS_VERSION).toBe(5);
   });
 
   it("lifts flat v3 github fields into the nested github sub-object", () => {
@@ -69,8 +69,8 @@ describe("identity-config v4 migration", () => {
     });
   });
 
-  it("passes a well-formed v4 state through normalizeSettingsState unchanged", () => {
-    const v4: AgentIdentitySettingsState = {
+  it("normalizes a well-formed v4 state into v5 with empty cleanup tombstones", () => {
+    const v4 = {
       version: 4,
       identities: {
         "agent-1:github": {
@@ -83,13 +83,17 @@ describe("identity-config v4 migration", () => {
       },
     };
 
-    expect(normalizeSettingsState(v4)).toEqual(v4);
+    expect(normalizeSettingsState(v4)).toEqual({
+      version: 5,
+      identities: v4.identities,
+      cleanupTombstones: {},
+    });
   });
 
-  it("resets unknown/garbage input to an empty v4 state", () => {
-    expect(normalizeSettingsState(null)).toEqual({ version: 4, identities: {} });
-    expect(normalizeSettingsState({ version: 2 })).toEqual({ version: 4, identities: {} });
-    expect(normalizeSettingsState({ nope: true })).toEqual({ version: 4, identities: {} });
+  it("resets unknown/garbage input to an empty v5 state", () => {
+    expect(normalizeSettingsState(null)).toEqual({ version: 5, identities: {}, cleanupTombstones: {} });
+    expect(normalizeSettingsState({ version: 2 })).toEqual({ version: 5, identities: {}, cleanupTombstones: {} });
+    expect(normalizeSettingsState({ nope: true })).toEqual({ version: 5, identities: {}, cleanupTombstones: {} });
   });
 
   it("drops malformed v4 entries rather than returning unvalidated persisted data", () => {
@@ -101,7 +105,7 @@ describe("identity-config v4 migration", () => {
           provider: "github", id: "agent-1:github", agentId: "agent-1", label: "Bot", github: {}
         }
       }
-    })).toEqual({ version: 4, identities: {} });
+    })).toEqual({ version: 5, identities: {}, cleanupTombstones: {} });
   });
 
   it("restores canonical identity keys and rejects incomplete v3 GitHub records", () => {
@@ -148,7 +152,25 @@ describe("identity-config v4 migration", () => {
       },
     });
 
-    expect(normalized.version).toBe(4);
+    expect(normalized.version).toBe(5);
     expect(normalized.identities["agent-1:github"].provider).toBe("github");
+  });
+
+  it("passes a well-formed v5 state through normalizeSettingsState unchanged", () => {
+    const v5: AgentIdentitySettingsState = {
+      version: 5,
+      identities: {
+        "agent-1:github": {
+          provider: "github",
+          id: "agent-1:github",
+          agentId: "agent-1",
+          label: "Bot",
+          github: { username: "bot" },
+        },
+      },
+      cleanupTombstones: {},
+    };
+
+    expect(normalizeSettingsState(v5)).toEqual(v5);
   });
 });

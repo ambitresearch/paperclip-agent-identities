@@ -76,6 +76,10 @@ const providers = [
   { id: SLACK_IDENTITY_PROVIDER_ID, name: "Slack", status: "coming-soon", description: "Slack" },
 ];
 
+const EVENTS_REQUEST_URL = "https://paperclip-test.trycloudflare.com/events";
+const BOT_TOKEN_SECRET_ID = "11111111-1111-4111-8111-111111111111";
+const SIGNING_SECRET_ID = "22222222-2222-4222-8222-222222222222";
+
 function baseBridgeData() {
   return {
     "bot-identity-config": {
@@ -154,11 +158,23 @@ function text(): string {
 }
 
 function openNewIdentityDialog() {
-  const newButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "New identity");
+  const newButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Add identity");
   click(newButton ?? null);
 }
 
 describe("SettingsPage interactions: setup launch", () => {
+  it("keeps the settings page focused on configured identities", () => {
+    renderSettingsPage();
+
+    expect(text()).toContain("Configured identities");
+    expect(text()).not.toContain("GitHub Apps");
+    expect(text()).not.toContain("GitHub App setup");
+    expect(text()).not.toContain("Environment propagation");
+    expect(container.querySelector('nav[aria-label="Agent identity settings sections"]')).toBeNull();
+    expect(Array.from(container.querySelectorAll("button")).filter((button) => button.textContent === "Add identity")).toHaveLength(1);
+    expect(text()).not.toContain("New identity");
+  });
+
   it("opens the wizard on the first ('Identity') step when starting a new identity", () => {
     renderSettingsPage();
     openNewIdentityDialog();
@@ -269,6 +285,7 @@ describe("SettingsPage interactions: reinstall (resume a Slack manifest flow)", 
       manifest: '{"name":"slack-demo"}',
       createAppUrl: "https://api.slack.com/apps?new_app=1",
       agentId: "agent-1",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
     });
 
     renderSettingsPage();
@@ -303,6 +320,7 @@ describe("SettingsPage interactions: reinstall (resume a Slack manifest flow)", 
     });
 
     expect(actionFor("get-slack-app-manifest-flow")).toHaveBeenCalledWith({ state: "resumed-state" });
+    expect(fieldByPlaceholder("https://your-public-tunnel.example/events")?.value).toBe(EVENTS_REQUEST_URL);
     expect(text()).toContain("slack-demo");
   });
 });
@@ -448,6 +466,8 @@ async function openSlackWizardOnCredentialStep() {
   const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
   click(nextButton ?? null);
 
+  setValue(fieldByPlaceholder("https://your-public-tunnel.example/events") ?? null, EVENTS_REQUEST_URL);
+
   actionFor("create-slack-app-manifest").mockResolvedValue({
     agentId: "agent-1",
     provider: SLACK_IDENTITY_PROVIDER_ID,
@@ -455,6 +475,7 @@ async function openSlackWizardOnCredentialStep() {
     manifest: '{"name":"slack-demo"}',
     createAppUrl: "https://api.slack.com/apps?new_app=1",
     label: "Release Bot",
+    eventsRequestUrl: EVENTS_REQUEST_URL,
   });
   const createButton = Array.from(container.querySelectorAll("button")).find(
     (b) => b.textContent === "Create Slack App manifest",
@@ -464,12 +485,20 @@ async function openSlackWizardOnCredentialStep() {
     await Promise.resolve();
     await Promise.resolve();
   });
+  expect(actionFor("create-slack-app-manifest")).toHaveBeenCalledWith({
+    agentId: "agent-1",
+    provider: SLACK_IDENTITY_PROVIDER_ID,
+    label: "Release Bot",
+    eventsRequestUrl: EVENTS_REQUEST_URL,
+  });
 
   setValue(fieldByPlaceholder("T0123456789") ?? null, "T0123456789");
   setValue(fieldByPlaceholder("A0123456789") ?? null, "A0123456789");
   setValue(fieldByPlaceholder("U0123456789") ?? null, "U0123456789");
   const secretInput = fieldByPlaceholder("Company secret UUID containing the Slack bot token");
-  setValue(secretInput ?? null, "11111111-1111-4111-8111-111111111111");
+  setValue(secretInput ?? null, BOT_TOKEN_SECRET_ID);
+  const signingSecretInput = fieldByPlaceholder("Company secret UUID containing the Slack signing secret");
+  setValue(signingSecretInput ?? null, SIGNING_SECRET_ID);
 }
 
 function slackSaveButton() {
@@ -479,15 +508,69 @@ function slackSaveButton() {
 }
 
 describe("SettingsPage interactions: save-slack-install-metadata", () => {
+  it("detects workspace, app, and bot IDs from the selected bot token secret", async () => {
+    await openSlackWizardOnCredentialStep();
+    actionFor("discover-slack-install-metadata").mockResolvedValue({
+      teamId: "T0DETECTED",
+      appId: "A0DETECTED",
+      botUserId: "U0DETECTED",
+    });
+
+    const detectButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Detect Slack installation IDs",
+    );
+    await act(async () => {
+      click(detectButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("discover-slack-install-metadata")).toHaveBeenCalledWith({
+      botTokenSecretId: BOT_TOKEN_SECRET_ID,
+    });
+    expect(fieldByPlaceholder("T0123456789")?.value).toBe("T0DETECTED");
+    expect(fieldByPlaceholder("https://api.slack.com/apps/")?.value).toBe("A0DETECTED");
+    expect(fieldByPlaceholder("U0123456789")?.value).toBe("U0DETECTED");
+  });
+
+  it("surfaces an actionable Slack bridge error when metadata discovery needs a reinstall", async () => {
+    await openSlackWizardOnCredentialStep();
+    actionFor("discover-slack-install-metadata").mockRejectedValue({
+      code: "WORKER_ERROR",
+      message: "Slack App ID discovery failed: missing_scope. Apply the latest generated manifest, reinstall the app to grant users:read, then retry.",
+    });
+
+    const detectButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Detect Slack installation IDs",
+    );
+    await act(async () => {
+      click(detectButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).toContain("Apply the latest generated manifest, reinstall the app to grant users:read, then retry.");
+  });
+
+  it("extracts the App ID when the Slack app settings URL is pasted", async () => {
+    await openSlackWizardOnCredentialStep();
+    const appIdInput = fieldByPlaceholder("https://api.slack.com/apps/");
+    setValue(appIdInput ?? null, "https://api.slack.com/apps/A0BHV2SA8E6/general?");
+    expect(appIdInput?.value).toBe("A0BHV2SA8E6");
+  });
+
   it("shows the saved confirmation after a successful save", async () => {
     await openSlackWizardOnCredentialStep();
+    expect(text()).toContain("Do not verify the Request URL in Slack yet");
     actionFor("save-slack-install-metadata").mockResolvedValue({
       agentId: "agent-1",
       provider: SLACK_IDENTITY_PROVIDER_ID,
       teamId: "T0123456789",
       appId: "A0123456789",
       botUserId: "U0123456789",
-      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+      botTokenSecretId: BOT_TOKEN_SECRET_ID,
+      signingSecretId: SIGNING_SECRET_ID,
       status: "saved",
     });
 
@@ -498,8 +581,13 @@ describe("SettingsPage interactions: save-slack-install-metadata", () => {
       await Promise.resolve();
     });
 
-    expect(actionFor("save-slack-install-metadata")).toHaveBeenCalled();
+    expect(actionFor("save-slack-install-metadata")).toHaveBeenCalledWith(expect.objectContaining({
+      botTokenSecretId: BOT_TOKEN_SECRET_ID,
+      signingSecretId: SIGNING_SECRET_ID,
+    }));
     expect(text()).toContain("Slack install metadata saved for team T0123456789");
+    expect(text()).toContain("Return to Slack's App Manifest page now");
+    expect(text()).not.toContain("Create the manifest above first");
   });
 
   it("shows an error when save-slack-install-metadata fails", async () => {
@@ -543,7 +631,9 @@ describe("SettingsPage interactions: save-slack-install-metadata", () => {
         teamId: "T0123456789",
         appId: "A0123456789",
         botUserId: "U0123456789",
-        botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+        eventsRequestUrl: EVENTS_REQUEST_URL,
+        botTokenSecretId: BOT_TOKEN_SECRET_ID,
+        signingSecretId: SIGNING_SECRET_ID,
         status: "saved",
       });
       await Promise.resolve();
@@ -578,6 +668,7 @@ describe("SettingsPage interactions: retry safety while save-slack-install-metad
     expect(fieldByPlaceholder("A0123456789")?.disabled).toBe(true);
     expect(fieldByPlaceholder("U0123456789")?.disabled).toBe(true);
     expect(fieldByPlaceholder("Company secret UUID containing the Slack bot token")?.disabled).toBe(true);
+    expect(fieldByPlaceholder("Company secret UUID containing the Slack signing secret")?.disabled).toBe(true);
 
     // Navigation that would let the operator leave/alter the identity while
     // the save is still resolving must also be locked.
@@ -662,7 +753,9 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
       manifest: '{"name":"slack-demo"}',
       createAppUrl: "https://api.slack.com/apps?new_app=1",
       label: "Release Bot",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
     });
+    setValue(fieldByPlaceholder("https://your-public-tunnel.example/events") ?? null, EVENTS_REQUEST_URL);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const reinstallSummary = Array.from(container.querySelectorAll("summary")).find(
       (summary) => summary.textContent?.match(/reinstall/i),
@@ -682,7 +775,11 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
     setValue(fieldByPlaceholder("U0123456789") ?? null, "U0123456789");
     setValue(
       fieldByPlaceholder("Company secret UUID containing the Slack bot token") ?? null,
-      "11111111-1111-4111-8111-111111111111",
+      BOT_TOKEN_SECRET_ID,
+    );
+    setValue(
+      fieldByPlaceholder("Company secret UUID containing the Slack signing secret") ?? null,
+      SIGNING_SECRET_ID,
     );
 
     const savedResult = {
@@ -691,7 +788,9 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
       teamId: "T0123456789",
       appId: "A0123456789",
       botUserId: "U0123456789",
-      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+      botTokenSecretId: BOT_TOKEN_SECRET_ID,
+      signingSecretId: SIGNING_SECRET_ID,
       status: "saved",
     };
     actionFor("save-slack-install-metadata").mockResolvedValue(savedResult);
@@ -779,7 +878,9 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
       manifest: '{"name":"slack-demo"}',
       createAppUrl: "https://api.slack.com/apps?new_app=1",
       label: "Release Bot",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
     });
+    setValue(fieldByPlaceholder("https://your-public-tunnel.example/events") ?? null, EVENTS_REQUEST_URL);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const reinstallSummary = Array.from(container.querySelectorAll("summary")).find(
       (summary) => summary.textContent?.match(/reinstall/i),
@@ -799,7 +900,11 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
     setValue(fieldByPlaceholder("U0123456789") ?? null, "U0123456789");
     setValue(
       fieldByPlaceholder("Company secret UUID containing the Slack bot token") ?? null,
-      "11111111-1111-4111-8111-111111111111",
+      BOT_TOKEN_SECRET_ID,
+    );
+    setValue(
+      fieldByPlaceholder("Company secret UUID containing the Slack signing secret") ?? null,
+      SIGNING_SECRET_ID,
     );
 
     actionFor("save-slack-install-metadata").mockResolvedValue({
@@ -808,7 +913,9 @@ describe("SettingsPage interactions: cleanup-only retry after a failed rename re
       teamId: "T0123456789",
       appId: "A0123456789",
       botUserId: "U0123456789",
-      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+      botTokenSecretId: BOT_TOKEN_SECRET_ID,
+      signingSecretId: SIGNING_SECRET_ID,
       status: "saved",
     });
     actionFor("delete-bot-identity-config").mockRejectedValueOnce(new Error("network blip"));
@@ -851,7 +958,9 @@ describe("SettingsPage interactions: consumed manifest flow after a successful s
       teamId: "T0123456789",
       appId: "A0123456789",
       botUserId: "U0123456789",
-      botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+      botTokenSecretId: BOT_TOKEN_SECRET_ID,
+      signingSecretId: SIGNING_SECRET_ID,
       status: "saved",
     });
 

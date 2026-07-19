@@ -6,11 +6,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 // basestring = "v0:" + timestamp + ":" + rawBody
 // signature  = "v0=" + hex(HMAC-SHA256(signingSecret, basestring))
 //
-// This module verifies the signature and the replay window BEFORE any JSON
-// parsing happens (the caller must pass the untouched raw body string) — per
-// DRO-1005's acceptance criteria and openwiki/domain/slack-provider-design.md
-// §T5, an attacker who can reach the ingress endpoint without a valid
-// signature must never have the body parsed/trusted at all.
+// This module always verifies the untouched raw body string. The caller may
+// parse bounded team/app fields as untrusted hints to select a signing secret,
+// but it must not trust or dispatch the full envelope unless verification
+// succeeds. See openwiki/domain/slack-provider-design.md §T5.
 
 const SIGNATURE_VERSION = "v0";
 const REPLAY_WINDOW_SECONDS = 300; // 5 minutes, per Slack's documented tolerance.

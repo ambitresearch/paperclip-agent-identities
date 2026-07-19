@@ -24,6 +24,12 @@ const identity: ResolvedAgentIdentity<GitHubAgentIdentity> = {
   agentId: "agent-1",
   identity: { label: "Bot", githubUsername: "bot-user" },
 };
+const runCtx = {
+  agentId: "agent-1",
+  runId: "run-1",
+  companyId: "company-1",
+  projectId: "project-1",
+};
 
 describe("resolveGitHubCredential", () => {
   beforeEach(() => {
@@ -33,7 +39,7 @@ describe("resolveGitHubCredential", () => {
   it("wraps the resolved token into a ResolvedCredential with the token as its only secret", async () => {
     resolveIdentityTokenMock.mockResolvedValue({ token: "ghs_TOKEN", source: "token-file" });
 
-    const credential = await resolveGitHubCredential({ identity, ctx: fakeCtx() });
+    const credential = await resolveGitHubCredential({ identity, ctx: fakeCtx(), runCtx });
 
     expect(credential).toEqual({ token: "ghs_TOKEN", secrets: ["ghs_TOKEN"] });
     expect(credential.secrets).toHaveLength(1);
@@ -44,7 +50,7 @@ describe("resolveGitHubCredential", () => {
     resolveIdentityTokenMock.mockResolvedValue({ token: "ghs_ABC", source: "plugin-secret" });
     const ctx = fakeCtx();
 
-    await resolveGitHubCredential({ identity, ctx });
+    await resolveGitHubCredential({ identity, ctx, runCtx });
 
     expect(resolveIdentityTokenMock).toHaveBeenCalledTimes(1);
     const [passedIdentity, passedResolveSecret, passedFetch] = resolveIdentityTokenMock.mock.calls[0];

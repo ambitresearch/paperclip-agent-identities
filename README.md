@@ -9,7 +9,7 @@ Per-agent identity providers and contribution tools for Paperclip. GitHub is the
 - Prevent duplicate identities for the same agent/provider pair.
 - Leave repository/resource access decisions to provider permissions such as GitHub App installations and scopes.
 - Create GitHub Apps with GitHub's App Manifest flow from the settings page.
-- Store public identity metadata in plugin state, credential references in a local sidecar file, and GitHub App bindings in the selected agent environment.
+- Store public identity metadata in plugin state; GitHub credential references in a local sidecar; and Slack typed secret refs in company-scoped host config.
 - Mint short-lived GitHub App installation tokens on demand for provider-specific tools.
 
 ## Development
@@ -37,13 +37,80 @@ pnpm build
 paperclipai plugin install . --local
 ```
 
+### Required Paperclip host support for Slack
+
+The Slack setup and Events API paths require a Paperclip host that implements
+the company-scoped plugin contracts used by this branch:
+
+- webhook delivery through
+  `/api/companies/<companyId>/plugins/<pluginId>/webhooks/<endpointKey>`, with
+  the route-derived `companyId` passed to the worker and the worker's HTTP
+  status, headers, and body returned to Slack;
+- company-scoped plugin config reads and atomic secret-reference patches; and
+- company-scoped secret resolution for the configured bot-token and signing-secret refs;
+- `ctx.events.emit(name, companyId, payload)` plus fresh company invocation
+  scope on `plugin.<pluginId>.<name>` handlers and agent-session event
+  callbacks. Slack ingress uses a provider-owned `slack-turn-drain` self-event
+  to move session calls out of the webhook invocation.
+
+For a dispatchable Slack event, the webhook verifies the signature and route,
+persists a bounded turn in the per-conversation plugin-state queue, awaits the
+self-event emit, and then returns HTTP 200. It never calls
+`ctx.agents.sessions.sendMessage` or waits for a prior run in webhook scope. Queue state
+retains up to 32 active/pending turns per conversation, hashes event IDs, and keeps completed
+claims for 24 hours from completion. A full queue or failed self-event emit is
+retryable before acknowledgement.
+
+This path is designed to fit Slack's three-second acknowledgement window, but
+the actual latency still includes host config/secret/state RPCs and the awaited
+event emit. Those host operations must themselves remain available and timely.
+
+The self-event drains one turn under fresh company scope. Accepted runs carry a
+durable 30-minute lease; only a later fresh webhook/self-event or a terminal
+session callback may finalize its accepted run; expired-run retirement and
+session close happen only under a later fresh webhook/self-event scope. Generic
+`sendMessage` failures are ambiguous because the host has no request-key API:
+the provider marks the turn uncertain, retires the session, completes the event
+claim, and never auto-resends. Only the host's definitive `Session not found`
+response is safe to retry on a replacement session. This prevents duplicate
+runs but cannot provide exactly-once delivery beyond that host boundary.
+
+A worker restart is recoverable when a duplicate or new webhook arrives and
+re-kicks the persisted queue. If the worker restarts after acknowledgement and
+no later webhook/event arrives, queued work has no trigger; closing that gap
+requires host-backed durable event scheduling or a request-key/idempotency API.
+Likewise, a failed successor emit after terminal finalization leaves that
+successor durable but waiting for the next duplicate/new webhook trigger.
+Plugin state also has no compare-and-set primitive, so claim-token read-back
+detects observable write races but does not make multi-worker execution atomic.
+
+Slack install metadata and secret refs live under `identities.<agentId>.slack`, so the same
+agent's existing flat GitHub instance config remains intact when Slack is saved or deleted.
+
+Upgrades from released `v0.1.7`/`v0.1.8` may still have a legacy
+`identities.<agentId>:slack.slackBotToken` entry in the local sidecar. Settings
+shows **Rebind required** for that identity. Open **Edit**, select the signing
+secret's Paperclip company-secret UUID when the released entry does not already
+contain one, then choose **Rebind released credentials**. The worker verifies
+the host-authorized company and agent membership, copies only typed UUID refs to
+`identities.<agentId>.slack`, and never resolves either secret value. A matching
+existing binding makes the retry idempotent; a conflicting binding is rejected.
+If sidecar deletion fails after binding, Settings reports **Cleanup pending** and
+the same action safely retries only cleanup. Reinstalling the Slack App is not
+required for this migration.
+
+The stock `2026.707.0` host does not provide those server-side contracts. The
+pnpm patch in this repository updates the plugin worker SDK boundary, but it
+does not make an unmodified Paperclip server compatible. Install this plugin
+only with a host build containing the matching core support.
+
 ## Identity Config Model
 
-Agent Identities uses a provider-aware settings state. Each saved identity is keyed by `agentId + provider`, using the identity key format `${agentId}:${provider}`. The settings page stores a version 3 map in Paperclip plugin state:
+Agent Identities uses a provider-aware settings state. Each saved identity is keyed by `agentId + provider`, using the identity key format `${agentId}:${provider}`. The settings page stores a version 4 map in Paperclip plugin state:
 
 ```ts
 {
-  version: 3,
+  version: 4,
   identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>
 }
 ```
@@ -54,10 +121,11 @@ Core fields:
 - `agentId`: Paperclip agent ID
 - `provider`: provider ID such as `github`
 - `label`: human-facing label, conventionally `Agent Name [Company Name]`
-- `githubUsername`: GitHub App login for GitHub identities, commonly `<app-slug>[bot]`
-- Optional `commitName` and `commitEmail`
+- `github.username`: GitHub App login for GitHub identities, commonly `<app-slug>[bot]`
+- Optional `github.commitName` and `github.commitEmail`
+- `slack.teamId`, `slack.appId`, and `slack.botUserId`: public Slack installation metadata
 
-GitHub tools currently consume only `provider: "github"` identities. At runtime, version 3 settings are filtered to GitHub and projected into the GitHub tool config by `agentId`; the durable settings/sidecar model remains provider-aware. Repository access is controlled by GitHub App installation permissions, scopes, and GitHub API responses, not by Agent Identities.
+Each provider projects its own version 4 identity records into runtime config by `agentId`. Repository and channel access remains controlled by provider permissions and API responses, not by Agent Identities.
 
 ### Supported providers
 
@@ -183,9 +251,9 @@ not require a provider-specific registration branch in either file.
 
 Settings persistence is a separate boundary and is not fully generic today.
 Providers that can be created or edited in the settings UI must also extend the
-persisted identity union and credential-sidecar schema, introduce or extend a
-provider-keyed settings-normalizer dispatch in `src/worker.ts`, and add the
-corresponding UI form/projection. `src/manifest.ts` remains provider-agnostic;
+persisted identity union and the appropriate credential-reference schema,
+introduce or extend a provider-keyed settings-normalizer dispatch in
+`src/worker.ts`, and add the corresponding UI form/projection. `src/manifest.ts` remains provider-agnostic;
 `src/worker.ts` changes only at the settings-persistence boundary, not to
 register runtime tools or actions.
 
@@ -194,7 +262,7 @@ To add a provider:
 1. Create a new module under `src/providers/<id>/` that implements `IdentityProvider<TIdentity, TRef>`.
 2. Write `validateConfig` to parse a single projected identity and return either the typed identity or a joined error string (see `validateGitHubConfig` in `src/providers/github/index.ts` for the pattern).
 3. If the provider is editable in settings, extend the persistence
-   discriminated union and sidecar schema, add its provider-keyed normalization adapter to the
+   discriminated union and credential-reference schema, add its provider-keyed normalization adapter to the
    worker's settings dispatch, and add its UI form/projection. A runtime-only
    provider can skip this step.
 4. Project raw settings-state identities for your provider's key (`${agentId}:<id>`) into that typed identity shape.

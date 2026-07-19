@@ -59,7 +59,7 @@ export function createProviderTool<TIdentity, TRef extends ResourceReference>(
       let credential: ResolvedCredential | null = null;
       if (toolSpec.requiresCredential !== false) {
         try {
-          credential = await provider.resolveCredential({ identity, ctx });
+          credential = await provider.resolveCredential({ identity, ctx, runCtx });
         } catch {
           try {
             await ctx.activity.log({

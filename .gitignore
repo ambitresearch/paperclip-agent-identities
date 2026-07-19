@@ -3,6 +3,7 @@ node_modules
 .paperclip-sdk
 package-lock.json
 .gstack/
+.playwright-mcp/
 docs/
 openwiki/.vitepress/dist/
 openwiki/.vitepress/cache/

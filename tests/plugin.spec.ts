@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
-import manifest from "../src/manifest.js";
+import { createSettingsActionTestHarness as createTestHarness } from "./helpers/settings-action-harness.js";
+import manifest, { SETTINGS_ACTIONS } from "../src/manifest.js";
 import plugin from "../src/worker.js";
 import { CONFIG_SCOPE } from "../src/config-source.js";
 import type { BotIdentityConfig, BotIdentitySettingsData, ConvertGitHubAppManifestResult, CreateGitHubAppManifestResult, GetGitHubAppManifestFlowResult } from "../src/shared/types.js";
@@ -80,6 +80,7 @@ function seedPrimaryWorkspace(harness: ReturnType<typeof createTestHarness>, rep
 describe("plugin scaffold", () => {
   it("declares capabilities for its manifest features", () => {
     expect(manifest.capabilities).toContain("events.subscribe");
+    expect(manifest.capabilities).toContain("events.emit");
     expect(manifest.capabilities).toContain("ui.dashboardWidget.register");
     expect(manifest.capabilities).toContain("agent.tools.register");
     expect(manifest.capabilities).toContain("agents.read");
@@ -99,6 +100,16 @@ describe("plugin scaffold", () => {
 
     const action = await harness.performAction<{ pong: boolean }>("ping");
     expect(action.pong).toBe(true);
+  });
+
+  it("declares the settings action contract, including released Slack credential recovery", () => {
+    expect(SETTINGS_ACTIONS).toContain("rebind-legacy-slack-credentials");
+    expect(SETTINGS_ACTIONS).toEqual(expect.arrayContaining([
+      "create-github-app-manifest",
+      "get-github-app-manifest-flow",
+      "convert-github-app-manifest",
+    ]));
+    expect(new Set(SETTINGS_ACTIONS).size).toBe(SETTINGS_ACTIONS.length);
   });
 
   it("lists Paperclip agents for the settings dropdown", async () => {
@@ -332,9 +343,11 @@ describe("plugin scaffold", () => {
 
     const commands: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];
     let secretResolveCalls = 0;
-    harness.ctx.secrets.resolve = async (secretId: string) => {
+    harness.ctx.secrets.resolve = async (
+      secretRef: string | { type: "secret_ref"; secretId: string; version?: "latest" },
+    ) => {
       secretResolveCalls += 1;
-      return `resolved:${secretId}`;
+      return `resolved:${typeof secretRef === "string" ? secretRef : secretRef.secretId}`;
     };
 
     __setGitCommandRunnerForTests(async ({ args, env }) => {
@@ -629,7 +642,7 @@ describe("agent identity settings", () => {
     await plugin.definition.setup(harness.ctx);
 
     const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config");
-    expect(config.version).toBe(4);
+    expect(config.version).toBe(5);
     expect(config.providers.map((provider) => provider.id)).toContain("github");
     expect(config.identities).toEqual([]);
     expect(config.credentialSidecarPath).toBe(process.env[CREDENTIAL_SIDECAR_PATH_ENV]);
@@ -705,13 +718,13 @@ describe("agent identity settings", () => {
       agentId: "agent-company-1",
       label: "Company One Identity",
       github: { username: "company-one-bot" },
-    });
+    }, { companyId: "company_1" });
     await harness.performAction<BotIdentityConfig>("save-bot-identity-config", {
       provider: "github",
       agentId: "agent-company-2",
       label: "Company Two Identity",
       github: { username: "company-two-bot" },
-    });
+    }, { companyId: "company_2" });
 
     const companyOneConfig = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company_1" });
     const companyTwoConfig = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company_2" });
@@ -722,7 +735,7 @@ describe("agent identity settings", () => {
     expect(unscopedConfig.identities.map((identity) => identity.agentId).sort()).toEqual(["agent-company-1", "agent-company-2"]);
   });
 
-  it("keeps configured identities visible when company agent lookup is empty", async () => {
+  it("does not expose configured identities when the scoped company has no agents", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
 
@@ -735,7 +748,7 @@ describe("agent identity settings", () => {
 
     const config = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: "company-with-empty-agent-list" });
 
-    expect(config.identities.map((identity) => identity.agentId)).toEqual(["agent-with-saved-config"]);
+    expect(config.identities).toEqual([]);
   });
 
   it("persists GitHub App credential propagation agent selections", async () => {
@@ -1066,11 +1079,598 @@ describe("agent identity settings", () => {
     expect(sidecar.identities["agent-delete-me:github"]).toBeUndefined();
   });
 
+  it("deletes only the selected Slack subtree and preserves GitHub config without a sidecar", async () => {
+    const preservedSlackConfig = {
+      label: "Preserved Slack Bot",
+      teamId: "T12345678",
+      appId: "A12345678",
+      botUserId: "U12345678",
+      credentials: {
+        botToken: { type: "secret_ref", secretId: TEST_SECRET_ID, version: "latest" },
+        signingSecret: { type: "secret_ref", secretId: TEST_SECRET_ID_2, version: "latest" },
+      },
+    };
+    let companyConfig: Record<string, unknown> = {
+      identities: {
+        "agent-delete-slack": {
+          label: "Delete GitHub Bot",
+          githubUsername: "delete-github[bot]",
+          slack: {
+            ...preservedSlackConfig,
+            label: "Delete Slack Bot",
+          },
+        },
+        "agent-preserve-slack": { slack: preservedSlackConfig },
+      },
+    };
+    const patchSecretRefs = vi.fn(async (input: {
+      companyId?: string;
+      path: string[];
+      value: Record<string, unknown> | null;
+    }) => {
+      if (input.companyId !== "company_1") throw new Error("Unexpected company scope.");
+      const identities = {
+        ...(companyConfig.identities as Record<string, unknown>),
+      };
+      const agentId = input.path[1];
+      if (
+        input.value === null &&
+        input.path[0] === "identities" &&
+        agentId &&
+        input.path[2] === "slack"
+      ) {
+        const identity = { ...(identities[agentId] as Record<string, unknown>) };
+        delete identity.slack;
+        identities[agentId] = identity;
+      }
+      companyConfig = { ...companyConfig, identities };
+    });
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    Object.assign(harness.ctx.config, {
+      get: vi.fn(async (companyId?: string) => companyId === "company_1" ? structuredClone(companyConfig) : {}),
+      patchSecretRefs,
+    });
+    harness.seed({
+      agents: [
+        { id: "agent-delete-slack", companyId: "company_1", name: "Delete Slack Bot" } as never,
+        { id: "agent-preserve-slack", companyId: "company_1", name: "Preserved Slack Bot" } as never,
+      ],
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-delete-slack:slack": {
+          provider: "slack",
+          id: "agent-delete-slack:slack",
+          agentId: "agent-delete-slack",
+          label: "Delete Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+        "agent-preserve-slack:slack": {
+          provider: "slack",
+          id: "agent-preserve-slack:slack",
+          agentId: "agent-preserve-slack",
+          label: "Preserved Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+      },
+    });
+
+    await writeFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "not valid JSON", "utf8");
+    const result = await harness.performAction<BotIdentitySettingsData>(
+      "delete-bot-identity-config",
+      { provider: "slack", agentId: "agent-delete-slack" },
+      { companyId: "company_1" },
+    );
+
+    expect(patchSecretRefs).toHaveBeenCalledOnce();
+    expect(patchSecretRefs).toHaveBeenCalledWith({
+      companyId: "company_1",
+      path: ["identities", "agent-delete-slack", "slack"],
+      value: null,
+    });
+    expect(companyConfig).toEqual({
+      identities: {
+        "agent-delete-slack": {
+          label: "Delete GitHub Bot",
+          githubUsername: "delete-github[bot]",
+        },
+        "agent-preserve-slack": { slack: preservedSlackConfig },
+      },
+    });
+    expect(result.identities.map((identity) => identity.agentId)).toEqual(["agent-preserve-slack"]);
+    expect(harness.getState(CONFIG_SCOPE)).toEqual({
+      version: 5,
+      cleanupTombstones: {
+        "legacy-slack-sidecar:company_1:agent-delete-slack": {
+          version: 1,
+          cleanupId: "legacy-slack-sidecar:company_1:agent-delete-slack",
+          provider: "slack",
+          companyId: "company_1",
+          agentId: "agent-delete-slack",
+          operation: "legacy-sidecar-delete",
+          source: "identity-delete",
+        },
+      },
+      identities: {
+        "agent-preserve-slack:slack": {
+          provider: "slack",
+          id: "agent-preserve-slack:slack",
+          agentId: "agent-preserve-slack",
+          label: "Preserved Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+      },
+    });
+
+    await harness.performAction(
+      "delete-bot-identity-config",
+      { provider: "slack", agentId: "agent-preserve-slack" },
+      { companyId: "company_1" },
+    );
+    expect(patchSecretRefs).toHaveBeenLastCalledWith({
+      companyId: "company_1",
+      path: ["identities", "agent-preserve-slack", "slack"],
+      value: null,
+    });
+    expect(companyConfig).toHaveProperty("identities.agent-preserve-slack", {});
+  });
+
+  it("deletes the flat Slack config persisted by earlier builds of this PR", async () => {
+    const legacySlackConfig = {
+      label: "Legacy Slack Bot",
+      teamId: "T12345678",
+      appId: "A12345678",
+      botUserId: "U12345678",
+      credentials: {
+        botToken: { type: "secret_ref", secretId: TEST_SECRET_ID, version: "latest" },
+        signingSecret: { type: "secret_ref", secretId: TEST_SECRET_ID_2, version: "latest" },
+      },
+    };
+    const githubConfig = { label: "Preserved GitHub Bot", githubUsername: "preserved[bot]" };
+    let companyConfig: Record<string, unknown> = {
+      identities: {
+        "agent-legacy-slack": legacySlackConfig,
+        "agent-github": githubConfig,
+      },
+    };
+    const patchSecretRefs = vi.fn(async (input: { path: string[]; value: Record<string, unknown> | null }) => {
+      const identities = { ...(companyConfig.identities as Record<string, unknown>) };
+      if (input.value === null && input.path[0] === "identities" && input.path[1]) {
+        delete identities[input.path[1]];
+      }
+      companyConfig = { ...companyConfig, identities };
+    });
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    Object.assign(harness.ctx.config, {
+      get: vi.fn(async () => structuredClone(companyConfig)),
+      patchSecretRefs,
+    });
+    harness.seed({
+      agents: [{ id: "agent-legacy-slack", companyId: "company_1", name: "Legacy Slack Bot" } as never],
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-legacy-slack:slack": {
+          provider: "slack",
+          id: "agent-legacy-slack:slack",
+          agentId: "agent-legacy-slack",
+          label: "Legacy Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+      },
+    });
+    await harness.performAction(
+      "delete-bot-identity-config",
+      { provider: "slack", agentId: "agent-legacy-slack" },
+      { companyId: "company_1" },
+    );
+
+    expect(patchSecretRefs).toHaveBeenCalledWith({
+      companyId: "company_1",
+      path: ["identities", "agent-legacy-slack"],
+      value: null,
+    });
+    expect(companyConfig).toEqual({
+      identities: { "agent-github": githubConfig },
+    });
+  });
+
+  it("deletes a released Slack sidecar entry after host/state deletion and preserves GitHub entries", async () => {
+    await writeFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-delete-legacy:slack": {
+          slackBotToken: { botTokenSecretId: TEST_SECRET_ID },
+        },
+        "agent-delete-legacy:github": { secretId: TEST_SECRET_ID_2 },
+      },
+    }), "utf8");
+    let companyConfig: Record<string, unknown> = {
+      identities: {
+        "agent-delete-legacy": {
+          githubUsername: "preserved[bot]",
+          slack: {
+            label: "Legacy Slack Bot",
+            teamId: "T12345678",
+            appId: "A12345678",
+            botUserId: "U12345678",
+            credentials: {
+              botToken: { type: "secret_ref", secretId: TEST_SECRET_ID, version: "latest" },
+              signingSecret: { type: "secret_ref", secretId: TEST_SECRET_ID_2, version: "latest" },
+            },
+          },
+        },
+      },
+    };
+    const patchSecretRefs = vi.fn(async (input: { path: string[]; value: Record<string, unknown> | null }) => {
+      if (input.value === null) {
+        const identities = { ...(companyConfig.identities as Record<string, unknown>) };
+        const identity = { ...(identities["agent-delete-legacy"] as Record<string, unknown>) };
+        delete identity.slack;
+        identities["agent-delete-legacy"] = identity;
+        companyConfig = { identities };
+      }
+    });
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    Object.assign(harness.ctx.config, {
+      get: vi.fn(async () => structuredClone(companyConfig)),
+      patchSecretRefs,
+    });
+    harness.seed({
+      agents: [{ id: "agent-delete-legacy", companyId: "company_1", name: "Legacy Slack Bot" } as never],
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-delete-legacy:slack": {
+          provider: "slack",
+          id: "agent-delete-legacy:slack",
+          agentId: "agent-delete-legacy",
+          label: "Legacy Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+      },
+    });
+
+    await harness.performAction(
+      "delete-bot-identity-config",
+      { provider: "slack", agentId: "agent-delete-legacy" },
+      { companyId: "company_1" },
+    );
+
+    expect(companyConfig).toEqual({
+      identities: { "agent-delete-legacy": { githubUsername: "preserved[bot]" } },
+    });
+    expect(JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"))).toEqual({
+      version: 1,
+      identities: {
+        "agent-delete-legacy:github": { secretId: TEST_SECRET_ID_2 },
+      },
+    });
+  });
+
+  it("returns cleanup-pending after successful Slack host/state deletion when legacy sidecar cleanup fails", async () => {
+    await writeFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-delete-pending:slack": {
+          slackBotToken: { botTokenSecretId: TEST_SECRET_ID },
+        },
+      },
+    }), "utf8");
+    let companyConfig: Record<string, unknown> = {
+      identities: {
+        "agent-delete-pending": {
+          slack: {
+            label: "Pending Slack Bot",
+            teamId: "T12345678",
+            appId: "A12345678",
+            botUserId: "U12345678",
+            credentials: {
+              botToken: { type: "secret_ref", secretId: TEST_SECRET_ID, version: "latest" },
+              signingSecret: { type: "secret_ref", secretId: TEST_SECRET_ID_2, version: "latest" },
+            },
+          },
+        },
+      },
+    };
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    Object.assign(harness.ctx.config, {
+      get: vi.fn(async () => structuredClone(companyConfig)),
+      patchSecretRefs: vi.fn(async (input: { value: Record<string, unknown> | null }) => {
+        if (input.value === null) {
+          companyConfig = { identities: { "agent-delete-pending": {} } };
+        }
+      }),
+    });
+    harness.seed({
+      agents: [{ id: "agent-delete-pending", companyId: "company_1", name: "Pending Slack Bot" } as never],
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-delete-pending:slack": {
+          provider: "slack",
+          id: "agent-delete-pending:slack",
+          agentId: "agent-delete-pending",
+          label: "Pending Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+      },
+    });
+    const originalStateSet = harness.ctx.state.set.bind(harness.ctx.state);
+    let failCleanup = false;
+    vi.spyOn(harness.ctx.state, "set").mockImplementation(async (scope, value) => {
+      await originalStateSet(scope, value);
+      if (
+        !failCleanup
+        && scope.scopeKind === "instance"
+        && scope.stateKey === CONFIG_SCOPE.stateKey
+        && Object.keys((value as { identities?: Record<string, unknown> }).identities ?? {}).length === 0
+      ) {
+        failCleanup = true;
+        await chmod(credentialSidecarDir!, 0o500);
+      }
+    });
+
+    const result = await harness.performAction<BotIdentitySettingsData>(
+      "delete-bot-identity-config",
+      { provider: "slack", agentId: "agent-delete-pending" },
+      { companyId: "company_1" },
+    ).finally(async () => await chmod(credentialSidecarDir!, 0o700));
+
+    expect(result.identities).toEqual([]);
+    expect(result.cleanupPending).toContainEqual(expect.objectContaining({
+      provider: "slack",
+      agentId: "agent-delete-pending",
+      operation: "legacy-sidecar-delete",
+    }));
+    expect(companyConfig).toEqual({ identities: { "agent-delete-pending": {} } });
+    expect(harness.getState(CONFIG_SCOPE)).toEqual({
+      version: 5,
+      identities: {},
+      cleanupTombstones: {
+        "legacy-slack-sidecar:company_1:agent-delete-pending": expect.objectContaining({
+          provider: "slack",
+          companyId: "company_1",
+          agentId: "agent-delete-pending",
+          operation: "legacy-sidecar-delete",
+        }),
+      },
+    });
+  });
+
+  it("does not interpret a malformed GitHub identity as legacy Slack config", async () => {
+    const malformedGitHubConfig = {
+      label: "Malformed GitHub Bot",
+      githubUsername: "malformed[bot]",
+      credentials: {},
+    };
+    const patchSecretRefs = vi.fn();
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    Object.assign(harness.ctx.config, {
+      get: vi.fn(async () => ({ identities: { "agent-github": malformedGitHubConfig } })),
+      patchSecretRefs,
+    });
+    harness.seed({
+      agents: [{ id: "agent-github", companyId: "company_1", name: "Malformed GitHub Bot" } as never],
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    await harness.performAction(
+      "delete-bot-identity-config",
+      { provider: "slack", agentId: "agent-github" },
+      { companyId: "company_1" },
+    );
+
+    expect(patchSecretRefs).not.toHaveBeenCalled();
+  });
+
+  it("restores the exact Slack company config when the settings-state deletion fails", async () => {
+    const previousSlackConfig = {
+      label: "Rollback Slack Bot",
+      teamId: "T12345678",
+      appId: "A12345678",
+      botUserId: "U12345678",
+      defaultChannel: "C12345678",
+      credentials: {
+        botToken: { type: "secret_ref", secretId: TEST_SECRET_ID, version: "latest" },
+        signingSecret: { type: "secret_ref", secretId: TEST_SECRET_ID_2, version: "latest" },
+      },
+    };
+    let companyConfig: Record<string, unknown> = {
+      identities: {
+        "agent-rollback-slack": {
+          label: "Rollback GitHub Bot",
+          githubUsername: "rollback-github[bot]",
+          slack: structuredClone(previousSlackConfig),
+        },
+      },
+    };
+    const patchSecretRefs = vi.fn(async (input: {
+      companyId?: string;
+      path: string[];
+      value: Record<string, unknown> | null;
+    }) => {
+      const agentId = input.path[1];
+      if (
+        input.companyId !== "company_1" ||
+        input.path[0] !== "identities" ||
+        !agentId ||
+        input.path[2] !== "slack"
+      ) {
+        throw new Error("Unexpected company config patch.");
+      }
+      const identities = {
+        ...(companyConfig.identities as Record<string, unknown>),
+      };
+      const identity = { ...(identities[agentId] as Record<string, unknown>) };
+      if (input.value === null) delete identity.slack;
+      else identity.slack = structuredClone(input.value);
+      identities[agentId] = identity;
+      companyConfig = { ...companyConfig, identities };
+    });
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    Object.assign(harness.ctx.config, {
+      get: vi.fn(async (companyId?: string) => companyId === "company_1" ? structuredClone(companyConfig) : {}),
+      patchSecretRefs,
+    });
+    harness.seed({
+      agents: [
+        { id: "agent-rollback-slack", companyId: "company_1", name: "Rollback Slack Bot" } as never,
+      ],
+    });
+    await plugin.definition.setup(harness.ctx);
+    const previousSettingsState = {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-rollback-slack:slack": {
+          provider: "slack",
+          id: "agent-rollback-slack:slack",
+          agentId: "agent-rollback-slack",
+          label: "Rollback Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+      },
+    };
+    await harness.ctx.state.set(CONFIG_SCOPE, previousSettingsState);
+
+    const originalStateSet = harness.ctx.state.set.bind(harness.ctx.state);
+    let failNextSettingsWrite = true;
+    vi.spyOn(harness.ctx.state, "set").mockImplementation(async (scope, value) => {
+      if (scope === CONFIG_SCOPE && failNextSettingsWrite) {
+        failNextSettingsWrite = false;
+        throw new Error("settings state unavailable");
+      }
+      await originalStateSet(scope, value);
+    });
+
+    await expect(harness.performAction(
+      "delete-bot-identity-config",
+      { provider: "slack", agentId: "agent-rollback-slack" },
+      { companyId: "company_1" },
+    )).rejects.toThrow("settings state unavailable");
+
+    expect(harness.getState(CONFIG_SCOPE)).toEqual(previousSettingsState);
+    expect(companyConfig).toEqual({
+      identities: {
+        "agent-rollback-slack": {
+          label: "Rollback GitHub Bot",
+          githubUsername: "rollback-github[bot]",
+          slack: previousSlackConfig,
+        },
+      },
+    });
+    expect(patchSecretRefs).toHaveBeenCalledTimes(2);
+    expect(patchSecretRefs).toHaveBeenNthCalledWith(1, {
+      companyId: "company_1",
+      path: ["identities", "agent-rollback-slack", "slack"],
+      value: null,
+    });
+    expect(patchSecretRefs).toHaveBeenNthCalledWith(2, {
+      companyId: "company_1",
+      path: ["identities", "agent-rollback-slack", "slack"],
+      value: previousSlackConfig,
+    });
+  });
+
+  it("surfaces both deletion and Slack-subtree rollback failures without changing GitHub config", async () => {
+    const previousSlackConfig = {
+      label: "Rollback Slack Bot",
+      teamId: "T12345678",
+      appId: "A12345678",
+      botUserId: "U12345678",
+      credentials: {
+        botToken: { type: "secret_ref", secretId: TEST_SECRET_ID, version: "latest" },
+        signingSecret: { type: "secret_ref", secretId: TEST_SECRET_ID_2, version: "latest" },
+      },
+    };
+    const githubConfig = {
+      label: "Rollback GitHub Bot",
+      githubUsername: "rollback-github[bot]",
+    };
+    let companyConfig: Record<string, unknown> = {
+      identities: {
+        "agent-rollback-slack": { ...githubConfig, slack: previousSlackConfig },
+      },
+    };
+    const patchSecretRefs = vi.fn(async (input: {
+      companyId?: string;
+      path: string[];
+      value: Record<string, unknown> | null;
+    }) => {
+      if (input.value !== null) throw new Error("Slack rollback failed");
+      companyConfig = {
+        identities: { "agent-rollback-slack": githubConfig },
+      };
+    });
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    Object.assign(harness.ctx.config, {
+      get: vi.fn(async () => structuredClone(companyConfig)),
+      patchSecretRefs,
+    });
+    harness.seed({
+      agents: [{ id: "agent-rollback-slack", companyId: "company_1", name: "Rollback Slack Bot" } as never],
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-rollback-slack:slack": {
+          provider: "slack",
+          id: "agent-rollback-slack:slack",
+          agentId: "agent-rollback-slack",
+          label: "Rollback Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+      },
+    });
+    vi.spyOn(harness.ctx.state, "set").mockRejectedValueOnce(new Error("settings state unavailable"));
+
+    let failure: unknown;
+    try {
+      await harness.performAction(
+        "delete-bot-identity-config",
+        { provider: "slack", agentId: "agent-rollback-slack" },
+        { companyId: "company_1" },
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors.map((error) => (error as Error).message)).toEqual([
+      "settings state unavailable",
+      "Slack rollback failed",
+    ]);
+    expect(companyConfig).toEqual({
+      identities: { "agent-rollback-slack": githubConfig },
+    });
+    expect(patchSecretRefs).toHaveBeenNthCalledWith(2, {
+      companyId: "company_1",
+      path: ["identities", "agent-rollback-slack", "slack"],
+      value: previousSlackConfig,
+    });
+  });
+
   it("uses provider settings-page state for agent tools", async () => {
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
     await plugin.definition.setup(harness.ctx);
     await harness.ctx.state.set(CONFIG_SCOPE, {
-      version: 4,
+      version: 5,
+      cleanupTombstones: {},
       identities: {
         "settings-agent:github": {
           provider: "github", id: "settings-agent:github", agentId: "settings-agent",
@@ -1165,7 +1765,7 @@ describe("agent identity settings", () => {
     expect(saved.provider === "github" && saved.github.username).toBe("v4-bot");
 
     const rawState = await harness.ctx.state.get(CONFIG_SCOPE) as { version: number; identities: Record<string, unknown> };
-    expect(rawState.version).toBe(4);
+    expect(rawState.version).toBe(5);
     expect(rawState.identities["agent-v4:github"]).toMatchObject({
       provider: "github",
       github: { username: "v4-bot", commitName: "V4 Bot", commitEmail: "v4@example.com" },

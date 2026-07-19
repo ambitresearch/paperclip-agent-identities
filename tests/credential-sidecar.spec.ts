@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import {
   CREDENTIAL_SIDECAR_PATH_ENV,
   DEFAULT_CREDENTIAL_SIDECAR_PATH,
+  deleteLegacySlackCredentialSidecarEntry,
   parseCredentialSidecar,
+  readCredentialSidecar,
+  readLegacySlackCredentialSidecarEntry,
   resolveCredentialSidecarPath,
   resolveIdentityToken,
 } from "../src/credential-sidecar.js";
@@ -37,6 +40,68 @@ describe("credential sidecar token resolution", () => {
 
   it("validates sidecar credential sources", () => {
     expect(() => parseCredentialSidecar({ version: 1, identities: { "agent-1:github": {} } })).toThrow();
+  });
+
+  it("keeps the released v0.1.7/v0.1.8 Slack sidecar shape parseable", () => {
+    const parsed = parseCredentialSidecar({
+      version: 1,
+      identities: {
+        "agent-1:slack": {
+          slackBotToken: {
+            botTokenSecretId: "00000000-0000-4000-8000-000000000007",
+          },
+        },
+      },
+    });
+
+    expect(readLegacySlackCredentialSidecarEntry(parsed, "agent-1")).toEqual({
+      botTokenSecretId: "00000000-0000-4000-8000-000000000007",
+    });
+  });
+
+  it("deletes only the exact released Slack entry and preserves sibling credentials", async () => {
+    const sidecar = join(directory, "credentials.json");
+    const legacy = {
+      botTokenSecretId: "00000000-0000-4000-8000-000000000007",
+      signingSecretId: "00000000-0000-4000-8000-000000000008",
+    };
+    await writeFile(sidecar, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1:slack": { slackBotToken: legacy },
+        "agent-1:github": { secretId: "00000000-0000-4000-8000-000000000009" },
+      },
+    }));
+
+    await deleteLegacySlackCredentialSidecarEntry("agent-1", legacy, sidecar);
+
+    expect(await readCredentialSidecar(sidecar)).toEqual({
+      version: 1,
+      identities: {
+        "agent-1:github": { secretId: "00000000-0000-4000-8000-000000000009" },
+      },
+    });
+    expect(await readFile(sidecar, "utf8")).not.toContain("slackBotToken");
+  });
+
+  it("refuses to delete a released Slack entry that changed after it was read", async () => {
+    const sidecar = join(directory, "credentials.json");
+    await writeFile(sidecar, JSON.stringify({
+      version: 1,
+      identities: {
+        "agent-1:slack": {
+          slackBotToken: {
+            botTokenSecretId: "00000000-0000-4000-8000-000000000010",
+          },
+        },
+      },
+    }));
+
+    await expect(deleteLegacySlackCredentialSidecarEntry("agent-1", {
+      botTokenSecretId: "00000000-0000-4000-8000-000000000011",
+    }, sidecar)).rejects.toThrow(/changed before cleanup/);
+    expect(readLegacySlackCredentialSidecarEntry(await readCredentialSidecar(sidecar), "agent-1"))
+      .toEqual({ botTokenSecretId: "00000000-0000-4000-8000-000000000010" });
   });
 
   it("defaults the sidecar to the current runtime home directory", async () => {

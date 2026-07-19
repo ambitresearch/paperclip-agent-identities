@@ -11,7 +11,16 @@ const declaration = { endpointKey: "no-handler-endpoint", displayName: "No Handl
 
 vi.mock("../src/providers/index.js", () => ({
   createProviderRegistry: () => ({
-    webhooks: () => [{ declaration, provider: { id: "no-handler", handleWebhook: undefined } }],
+    webhooks: () => [
+      { declaration, provider: { id: "no-handler", handleWebhook: undefined } },
+      {
+        declaration: { endpointKey: "response-endpoint", displayName: "Response Endpoint" },
+        provider: {
+          id: "response-provider",
+          handleWebhook: async () => ({ status: 429, body: { error: "rate limited" } }),
+        },
+      },
+    ],
     enabled: () => [],
     toolsEnabled: () => [],
     liveTools: () => [],
@@ -38,5 +47,19 @@ describe("worker onWebhook dispatch", () => {
     await expect(
       plugin.definition.onWebhook!({ endpointKey: "no-handler-endpoint", rawBody: "{}", headers: {} } as never),
     ).rejects.toThrow(/no-handler-endpoint.*no handleWebhook implementation/i);
+  });
+
+  it("returns the provider HTTP status and body from the worker webhook hook", async () => {
+    const manifestModule = await import("../src/manifest.js");
+    const workerModule = await import("../src/worker.js");
+    const manifest = manifestModule.default;
+    const plugin = workerModule.default;
+
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
+    await plugin.definition.setup(harness.ctx);
+
+    await expect(
+      plugin.definition.onWebhook!({ endpointKey: "response-endpoint", rawBody: "{}", headers: {} } as never),
+    ).resolves.toEqual({ status: 429, body: { error: "rate limited" } });
   });
 });

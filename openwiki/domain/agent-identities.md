@@ -2,7 +2,7 @@
 
 ## Core model
 
-The canonical v4 identity and settings-state types live in `/src/core/identity-config.ts`; `/src/shared/types.ts` re-exports them as `BotIdentityConfig` / `BotIdentitySettingsState` for the UI and worker action payloads.
+The canonical identity and versioned settings-state types live in `/src/core/identity-config.ts`; `/src/shared/types.ts` re-exports them as `BotIdentityConfig` / `BotIdentitySettingsState` for the UI and worker action payloads.
 
 `AgentIdentityConfig` is a discriminated union keyed on `provider`. Each variant nests its provider-specific fields under a field named after the provider, so `GitHubAgentIdentityConfig` carries a `github` object rather than flat `github*` properties:
 
@@ -23,7 +23,7 @@ type GitHubAgentIdentityConfig = {
 
 - `id`: stable identity key, for example `agent-123:github`.
 - `agentId`: Paperclip agent ID.
-- `provider`: identity provider ID. GitHub is enabled today; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are listed as coming soon.
+- `provider`: identity provider ID. GitHub is enabled for GitHub identities; Slack identity setup and the Slack ingress/tool surface are implemented, while Mattermost, Microsoft Entra, Google Cloud, and AWS remain coming soon.
 - `label`: human-readable name shown in settings and tool output. The UI convention is `Agent Name [Company Name]`.
 - `github.username` / `github.commitName` / `github.commitEmail` / `github.app.credentialPropagationAgentIds`: nested GitHub-specific fields — never accessed as top-level `githubUsername`/`commitName`/etc. anywhere past the persistence boundary.
 
@@ -106,6 +106,13 @@ Supported credential sources:
 
 Sidecar writes use a temp file followed by rename and mode `0600`. The settings worker actions upsert or delete individual sidecar identity entries when the UI saves or deletes identities.
 
+Released `v0.1.7` and `v0.1.8` also wrote Slack secret UUID refs under
+`identities.<agentId>:slack.slackBotToken`. The parser retains that shape for one
+compatibility release. It is not a runtime credential source: Settings projects
+an explicit rebind status, and the company-authorized migration action copies
+typed UUID refs into host config before deleting only the exact Slack entry.
+Sibling GitHub sidecar entries are preserved.
+
 ## GitHub App token minting
 
 `resolveIdentityToken()` in `/src/credential-sidecar.ts` resolves credentials just in time:
@@ -127,6 +134,8 @@ Errors may include sidecar or configured file paths, but the inspected code avoi
 ## Settings UI behavior
 
 `/src/ui/SettingsPage.tsx` is the operator-facing control plane.
+
+The worker treats settings writes and provider setup flows as human control-plane operations. It accepts only the host-authenticated action actor type `user` (including the local implicit-board shape with `userId: null`) and rejects agent/system callers before reading or mutating state, config, secrets, sidecars, or remote APIs. When the host supplies a company scope for GitHub save/delete, the target agent (and both old/new agents for a move) must belong to that company; unscoped local UI/test operation remains supported. Company authorization always comes from the SDK action context rather than action params.
 
 It reads:
 

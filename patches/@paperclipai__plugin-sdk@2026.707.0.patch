@@ -1,0 +1,200 @@
+diff --git a/dist/define-plugin.d.ts b/dist/define-plugin.d.ts
+index a7b557067eae4efff17084ae416923f457b63cf1..4d1ace5d67cfc9f26cd53e28d59d5f6d509e9919 100644
+--- a/dist/define-plugin.d.ts
++++ b/dist/define-plugin.d.ts
+@@ -80,6 +80,8 @@ export interface PluginConfigValidationResult {
+  * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
+  */
+ export interface PluginWebhookInput {
++    /** Host-authorized company scope derived from the webhook route. */
++    companyId?: string;
+     /** Endpoint key matching the manifest declaration. */
+     endpointKey: string;
+     /** Inbound request headers. */
+@@ -91,6 +93,20 @@ export interface PluginWebhookInput {
+     /** Unique request identifier for idempotency checks. */
+     requestId: string;
+ }
++/**
++ * Result returned from the `handleWebhook` RPC method.
++ *
++ * Allows the plugin to control the HTTP response sent back to the external
++ * webhook caller instead of the host always responding with its default
++ * success response.
++ *
++ * @see PLUGIN_SPEC.md §13.7 - `handleWebhook`
++ */
++export interface PluginWebhookResponse {
++    status?: number;
++    headers?: Record<string, string>;
++    body?: unknown;
++}
+ export interface PluginApiRequestInput {
+     routeKey: string;
+     method: string;
+@@ -193,7 +209,7 @@ export interface PluginDefinition {
+      * @param input - Webhook delivery metadata and payload
+      * @see PLUGIN_SPEC.md §13.7 — `handleWebhook`
+      */
+-    onWebhook?(input: PluginWebhookInput): Promise<void>;
++    onWebhook?(input: PluginWebhookInput): Promise<PluginWebhookResponse | void>;
+     /**
+      * Called for manifest-declared scoped JSON API routes under
+      * `/api/plugins/:pluginId/api/*` after the host has enforced auth, company
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index 90360419861a6f2df7371e3afa22f596d5178939..66812dacee913dd4fc61e7294a178fba5c122d59 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -51,7 +51,7 @@ export { startPluginDevServer, getUiBuildSnapshot } from "./dev-server.js";
+ export { startWorkerRpcHost, runWorker } from "./worker-rpc-host.js";
+ export { createHostClientHandlers, getRequiredCapability, CapabilityDeniedError, InvocationScopeDeniedError, } from "./host-client-factory.js";
+ export { JSONRPC_VERSION, JSONRPC_ERROR_CODES, PLUGIN_RPC_ERROR_CODES, HOST_TO_WORKER_REQUIRED_METHODS, HOST_TO_WORKER_OPTIONAL_METHODS, MESSAGE_DELIMITER, createRequest, createSuccessResponse, createErrorResponse, createNotification, isJsonRpcRequest, isJsonRpcNotification, isJsonRpcResponse, isJsonRpcSuccessResponse, isJsonRpcErrorResponse, serializeMessage, parseMessage, JsonRpcParseError, JsonRpcCallError, _resetIdCounter, } from "./protocol.js";
+-export type { PluginDefinition, PaperclipPlugin, PluginHealthDiagnostics, PluginConfigValidationResult, PluginWebhookInput, PluginApiRequestInput, PluginApiResponse, } from "./define-plugin.js";
++export type { PluginDefinition, PaperclipPlugin, PluginHealthDiagnostics, PluginConfigValidationResult, PluginWebhookInput, PluginWebhookResponse, PluginApiRequestInput, PluginApiResponse, } from "./define-plugin.js";
+ export type { TestHarness, TestHarnessOptions, TestHarnessLogEntry, EnvironmentTestHarness, EnvironmentTestHarnessOptions, EnvironmentEventRecord, FakeEnvironmentDriverOptions, } from "./testing.js";
+ export type { PluginBundlerPresetInput, PluginBundlerPresets, EsbuildLikeOptions, RollupLikeConfig, } from "./bundlers.js";
+ export type { PluginDevServer, PluginDevServerOptions } from "./dev-server.js";
+diff --git a/dist/protocol.d.ts b/dist/protocol.d.ts
+index abab8a466119bd311ee25041232336acbbbf6484..b791ad886f241875dce4f4007ca7a8eb9d0890d0 100644
+--- a/dist/protocol.d.ts
++++ b/dist/protocol.d.ts
+@@ -17,7 +17,7 @@
+ import type { PaperclipPluginManifestV1, PluginLauncherBounds, PluginLauncherRenderContextSnapshot, PluginStateScopeKind, Company, Project, Issue, IssueComment, IssueDocument, IssueDocumentSummary, IssueAssigneeAdapterOverrides, IssueThreadInteraction, CreateIssueThreadInteraction, PluginManagedAgentResolution, PluginManagedProjectResolution, PluginManagedRoutineResolution, PluginManagedSkillResolution, Routine, RoutineRun, Agent, Goal, PluginLocalFolderDeclaration, PrincipalPermissionGrant, ExternalObjectStatusCategory, ExternalObjectStatusTone, ExternalObjectLivenessState, ExternalObjectMentionConfidence, ExternalObjectMentionSourceKind } from "@paperclipai/shared";
+ export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
+ import type { PluginEvent, PluginIssueCheckoutOwnership, PluginIssueOrchestrationSummary, PluginIssueRelationSummary, PluginIssueSubtree, PluginIssueWakeupBatchResult, PluginIssueWakeupResult, PluginJobContext, PluginExecutionWorkspaceMetadata, PluginWorkspace, ToolRunContext, ToolResult, PluginLocalFolderListing, PluginLocalFolderStatus, PluginAccessInvite, PluginAccessMember, PluginAssignmentPreviewInput, PluginAuthorizationAuditEntry, PluginAuthorizationDecisionResult, PluginAuthorizationPolicyRecord, PluginAuthorizationPolicySummary } from "./types.js";
+-import type { PluginHealthDiagnostics, PluginApiRequestInput, PluginApiResponse, PluginConfigValidationResult, PluginWebhookInput } from "./define-plugin.js";
++import type { PluginHealthDiagnostics, PluginApiRequestInput, PluginApiResponse, PluginConfigValidationResult, PluginWebhookInput, PluginWebhookResponse } from "./define-plugin.js";
+ /** The JSON-RPC protocol version. Always `"2.0"`. */
+ export declare const JSONRPC_VERSION: "2.0";
+ /**
+@@ -624,7 +624,7 @@ export interface HostToWorkerMethods {
+     /** @see PLUGIN_SPEC.md §13.6 */
+     runJob: [params: RunJobParams, result: void];
+     /** @see PLUGIN_SPEC.md §13.7 */
+-    handleWebhook: [params: PluginWebhookInput, result: void];
++    handleWebhook: [params: PluginWebhookInput, result: PluginWebhookResponse | void];
+     /** Scoped plugin API route dispatch. */
+     handleApiRequest: [params: PluginApiRequestInput, result: PluginApiResponse];
+     /** @see PLUGIN_SPEC.md §13.8 */
+@@ -711,7 +711,14 @@ export declare const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMetho
+  * host to access platform services (state, entities, config, etc.).
+  */
+ export interface WorkerToHostMethods {
+-    "config.get": [params: Record<string, never>, result: Record<string, unknown>];
++    "config.get": [params: {
++        companyId?: string;
++    }, result: Record<string, unknown>];
++    "config.patchSecretRefs": [params: {
++        companyId?: string;
++        path: string[];
++        value: Record<string, unknown> | null;
++    }, result: void];
+     "localFolders.declarations": [
+         params: Record<string, never>,
+         result: PluginLocalFolderDeclaration[]
+@@ -891,7 +898,13 @@ export interface WorkerToHostMethods {
+     ];
+     "secrets.resolve": [
+         params: {
+-            secretRef: string;
++            secretRef: string | {
++                type: "secret_ref";
++                secretId: string;
++                version?: "latest";
++            };
++            companyId?: string;
++            configPath?: string;
+         },
+         result: string
+     ];
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index 6a98a655b4b658901a72cb69e5ea33deae06b71d..e9f2a59797728451899dda75c1fbc0731b6128e8 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -258,7 +258,13 @@ export interface PluginConfigClient {
+      * Values are validated against the plugin's `instanceConfigSchema` by the
+      * host before being passed to the worker.
+      */
+-    get(): Promise<Record<string, unknown>>;
++    get(companyId?: string): Promise<Record<string, unknown>>;
++    /** Atomically update company-scoped config and its secret-reference bindings. */
++    patchSecretRefs(input: {
++        companyId?: string;
++        path: string[];
++        value: Record<string, unknown> | null;
++    }): Promise<void>;
+ }
+ export interface PluginLocalFolderProblem {
+     code: "not_configured" | "not_absolute" | "missing" | "not_directory" | "not_readable" | "not_writable" | "missing_directory" | "missing_file" | "path_traversal" | "symlink_escape" | "atomic_write_failed";
+@@ -457,7 +463,14 @@ export interface PluginSecretsClient {
+      * @param secretRef - The secret reference string from plugin config
+      * @returns The resolved secret value
+      */
+-    resolve(secretRef: string): Promise<string>;
++    resolve(secretRef: string | {
++        type: "secret_ref";
++        secretId: string;
++        version?: "latest";
++    }, options?: {
++        companyId?: string;
++        configPath?: string;
++    }): Promise<string>;
+ }
+ /**
+  * Input for writing a plugin activity log entry.
+diff --git a/dist/worker-rpc-host.js b/dist/worker-rpc-host.js
+index 646b19827d7473c7ca8b368e91e6ebe7b335ac85..d5f97542c19597637fe4ba54b5ba6dc4ee8bfd7a 100644
+--- a/dist/worker-rpc-host.js
++++ b/dist/worker-rpc-host.js
+@@ -229,8 +229,11 @@ export function startWorkerRpcHost(options) {
+                 return manifest;
+             },
+             config: {
+-                async get() {
+-                    return callHost("config.get", {});
++                async get(companyId) {
++                    return callHost("config.get", companyId ? { companyId } : {});
++                },
++                async patchSecretRefs(input) {
++                    await callHost("config.patchSecretRefs", input);
+                 },
+             },
+             localFolders: {
+@@ -368,8 +371,8 @@ export function startWorkerRpcHost(options) {
+                 },
+             },
+             secrets: {
+-                async resolve(secretRef) {
+-                    return callHost("secrets.resolve", { secretRef });
++                async resolve(secretRef, options = {}) {
++                    return callHost("secrets.resolve", { secretRef, ...options });
+                 },
+             },
+             activity: {
+@@ -1187,7 +1190,7 @@ export function startWorkerRpcHost(options) {
+         if (!plugin.definition.onWebhook) {
+             throw Object.assign(new Error("handleWebhook is not implemented by this plugin"), { code: PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED });
+         }
+-        await plugin.definition.onWebhook(params);
++        return plugin.definition.onWebhook(params);
+     }
+     async function handleApiRequest(params) {
+         if (!plugin.definition.onApiRequest) {
+@@ -1432,7 +1435,15 @@ export function startWorkerRpcHost(options) {
+                 const event = notif.params;
+                 const cb = sessionEventCallbacks.get(event.sessionId);
+-                if (cb)
+-                    cb(event);
++                if (cb) {
++                    void Promise.resolve()
++                        .then(() => runNotification(() => cb(event)))
++                        .catch((err) => {
++                        notifyHost("log", {
++                            level: "error",
++                            message: `Failed to handle agent session event notification: ${err instanceof Error ? err.message : String(err)}`,
++                        });
++                    });
++                }
+             }
+             else if (notif.method === "onEvent" && notif.params) {
+                 // Plugin event bus notifications — dispatch to registered event handlers

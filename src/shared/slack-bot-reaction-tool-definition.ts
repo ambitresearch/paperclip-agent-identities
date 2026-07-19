@@ -10,7 +10,7 @@
 
 const channelIdProperty = {
   type: "string",
-  pattern: "^[CG][A-Z0-9]{8,}$"
+  pattern: "^[CDG][A-Z0-9]{8,}$"
 } as const;
 
 const teamIdProperty = {

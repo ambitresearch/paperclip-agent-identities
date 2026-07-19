@@ -1,4 +1,8 @@
-import type { AgentIdentityConfig, AgentIdentitySettingsState, GitHubAgentIdentityConfig } from "../core/identity-config.js";
+import type {
+  AgentIdentityConfig,
+  AgentIdentitySettingsState,
+  GitHubAgentIdentityConfig,
+} from "../core/identity-config.js";
 
 export type IdentityProviderId = "github" | "slack" | "mattermost" | "entra" | "gcp" | "aws";
 
@@ -13,6 +17,8 @@ export type IdentityProviderDefinition = {
 
 export const GITHUB_IDENTITY_PROVIDER_ID = "github" satisfies IdentityProviderId;
 export const SLACK_IDENTITY_PROVIDER_ID = "slack" satisfies IdentityProviderId;
+export const REBIND_LEGACY_SLACK_CREDENTIALS_ACTION = "rebind-legacy-slack-credentials";
+export const RETRY_LEGACY_SLACK_SIDECAR_CLEANUP_ACTION = "retry-legacy-slack-sidecar-cleanup";
 
 export const SUPPORTED_IDENTITY_PROVIDERS: readonly IdentityProviderDefinition[] = [
   {
@@ -86,18 +92,70 @@ export type BotIdentityCredentialConfig = {
 
 export type BotIdentitySettingsState = AgentIdentitySettingsState;
 
+export type BotIdentitySlackSetup = {
+  eventsRequestUrl?: string;
+  botTokenSecretId?: string;
+  signingSecretId?: string;
+  legacyCredential?: LegacySlackCredentialStatus;
+};
+
+export type LegacySlackCredentialStatus = {
+  status: "rebind-required" | "cleanup-pending" | "conflict";
+  signingSecretRequired: boolean;
+};
+
 export type BotIdentitySettingsEntry = BotIdentityConfig & {
   credential?: BotIdentityCredentialConfig;
-  credentialStatus: "configured" | "missing" | "sidecar-unavailable";
+  /** Safe Slack setup projection. Contains secret UUID references, never secret values. */
+  slackSetup?: BotIdentitySlackSetup;
+  credentialStatus:
+    | "configured"
+    | "missing"
+    | "sidecar-unavailable"
+    | LegacySlackCredentialStatus["status"];
 };
 
 export type BotIdentitySettingsData = {
-  version: 4;
+  version: 5;
   identities: BotIdentitySettingsEntry[];
   providers: readonly IdentityProviderDefinition[];
   companyName?: string;
   credentialSidecarPath: string;
   credentialSidecarError?: string;
+  cleanupPending: LegacySlackSidecarCleanupStatus[];
+};
+
+export type LegacySlackSidecarCleanupStatus = {
+  cleanupId: string;
+  companyId: string;
+  provider: "slack";
+  agentId: string;
+  operation: "legacy-sidecar-delete";
+  source: "identity-delete" | "legacy-rebind";
+};
+
+export type RetryLegacySlackSidecarCleanupInput = {
+  cleanupId?: string;
+  agentId?: string;
+};
+
+export type RetryLegacySlackSidecarCleanupResult = {
+  cleanupId: string;
+  provider: "slack";
+  agentId: string;
+  status: "cleaned";
+  settings: BotIdentitySettingsData;
+};
+
+export type DeleteBotIdentityConfigResult = BotIdentitySettingsData;
+
+export type LegacySlackCleanupPendingData = {
+  cleanupPending: Array<{
+    cleanupId: string;
+    provider: "slack";
+    agentId: string;
+    operation: "legacy-sidecar-delete";
+  }>;
 };
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -188,6 +246,7 @@ export type SlackAppManifestFlowState = {
   createdAt: string;
   expiresAt: string;
   label: string;
+  eventsRequestUrl: string;
   consumed?: boolean;
 };
 
@@ -195,7 +254,7 @@ export type CreateSlackAppManifestInput = {
   agentId: string;
   provider?: IdentityProviderId;
   label: string;
-  workerHost?: string;
+  eventsRequestUrl: string;
 };
 
 export type CreateSlackAppManifestResult = {
@@ -207,6 +266,7 @@ export type CreateSlackAppManifestResult = {
   createdAt: string;
   expiresAt: string;
   label: string;
+  eventsRequestUrl: string;
 };
 
 export type GetSlackAppManifestFlowInput = {
@@ -214,6 +274,27 @@ export type GetSlackAppManifestFlowInput = {
 };
 
 export type GetSlackAppManifestFlowResult = CreateSlackAppManifestResult;
+
+export type DiscoverSlackInstallMetadataInput = {
+  botTokenSecretId: string;
+};
+
+export type DiscoverSlackInstallMetadataResult = {
+  teamId: string;
+  botUserId: string;
+  appId: string;
+};
+
+export type LegacySlackCredentialRebindInput = {
+  agentId: string;
+  signingSecretId?: string;
+};
+
+export type LegacySlackCredentialRebindResult = {
+  agentId: string;
+  provider: "slack";
+  status: "rebound" | "cleanup-pending";
+};
 
 export type SaveSlackInstallMetadataInput = {
   state: string;
@@ -223,6 +304,7 @@ export type SaveSlackInstallMetadataInput = {
   botUserId: string;
   defaultChannel?: string;
   botTokenSecretId: string;
+  signingSecretId: string;
 };
 
 export type SaveSlackInstallMetadataResult = {
@@ -231,7 +313,9 @@ export type SaveSlackInstallMetadataResult = {
   teamId: string;
   appId: string;
   botUserId: string;
+  eventsRequestUrl: string;
   botTokenSecretId: string;
+  signingSecretId: string;
   defaultChannel?: string;
   status: "saved";
 };

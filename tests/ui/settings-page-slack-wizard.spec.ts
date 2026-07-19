@@ -18,7 +18,9 @@ function slackConfig(overrides: Partial<IdentityFormState> = {}): IdentityFormSt
     slackAppId: "A0123456789",
     slackBotUserId: "U0123456789",
     slackDefaultChannel: "",
+    slackEventsRequestUrl: "https://paperclip-test.trycloudflare.com/events",
     slackBotTokenSecretId: "11111111-1111-4111-8111-111111111111",
+    slackSigningSecretId: "22222222-2222-4222-8222-222222222222",
     ...overrides,
   };
 }
@@ -32,6 +34,55 @@ describe("Slack setup wizard: provider selection and steps", () => {
   it("shows the GitHub wizard steps (identity, GitHub App, commit) for the github provider", () => {
     const steps = getFormSteps(GITHUB_IDENTITY_PROVIDER_ID);
     expect(steps.map((step) => step.id)).toEqual(["identity", "github", "commit"]);
+  });
+
+  it("restores saved Slack setup URL and secret UUID references into the edit form", () => {
+    const form = toFormState({
+      id: "agent-1:slack",
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      label: "Release Bot",
+      slack: {
+        teamId: "T0123456789",
+        appId: "A0123456789",
+        botUserId: "U0123456789",
+      },
+      slackSetup: {
+        eventsRequestUrl: "https://paperclip-test.trycloudflare.com/events",
+        botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+        signingSecretId: "22222222-2222-4222-8222-222222222222",
+      },
+      credentialStatus: "configured",
+    });
+
+    expect(form.slackEventsRequestUrl).toBe("https://paperclip-test.trycloudflare.com/events");
+    expect(form.slackBotTokenSecretId).toBe("11111111-1111-4111-8111-111111111111");
+    expect(form.slackSigningSecretId).toBe("22222222-2222-4222-8222-222222222222");
+  });
+
+  it("projects released-sidecar recovery status without projecting a bot-token UUID", () => {
+    const form = toFormState({
+      id: "agent-1:slack",
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      label: "Release Bot",
+      slack: {
+        teamId: "T0123456789",
+        appId: "A0123456789",
+        botUserId: "U0123456789",
+      },
+      slackSetup: {
+        legacyCredential: {
+          status: "rebind-required",
+          signingSecretRequired: true,
+        },
+      },
+      credentialStatus: "rebind-required",
+    });
+
+    expect(form.slackLegacyCredentialStatus).toBe("rebind-required");
+    expect(form.slackLegacySigningSecretRequired).toBe("true");
+    expect(form.slackBotTokenSecretId).toBe("");
   });
 });
 
@@ -51,8 +102,11 @@ describe("Slack setup wizard: manifest-create step gating", () => {
 });
 
 describe("Slack setup wizard: paste-back form validation gating save completion", () => {
-  it("gates completion on all required paste-back fields being present", () => {
-    const incomplete = getIdentityFormValidation(slackConfig({ slackBotTokenSecretId: "" }), false, null, false);
+  it.each([
+    ["bot token", { slackBotTokenSecretId: "" }],
+    ["signing secret", { slackSigningSecretId: "" }],
+  ])("gates completion when the required %s reference is missing", (_label, overrides) => {
+    const incomplete = getIdentityFormValidation(slackConfig(overrides), false, null, false);
     expect(incomplete.credentialComplete).toBe(false);
   });
 
@@ -64,7 +118,9 @@ describe("Slack setup wizard: paste-back form validation gating save completion"
       teamId: config.slackTeamId,
       appId: config.slackAppId,
       botUserId: config.slackBotUserId,
+      eventsRequestUrl: config.slackEventsRequestUrl,
       botTokenSecretId: config.slackBotTokenSecretId,
+      signingSecretId: config.slackSigningSecretId,
       status: "saved",
     };
     const validation = getIdentityFormValidation(config, false, matchingResult, false);
@@ -80,7 +136,9 @@ describe("Slack setup wizard: paste-back form validation gating save completion"
       teamId: "T_DIFFERENT_TEAM",
       appId: config.slackAppId,
       botUserId: config.slackBotUserId,
+      eventsRequestUrl: config.slackEventsRequestUrl,
       botTokenSecretId: config.slackBotTokenSecretId,
+      signingSecretId: config.slackSigningSecretId,
       status: "saved",
     };
     const validation = getIdentityFormValidation(config, false, staleResult, false);
@@ -102,7 +160,27 @@ describe("Slack setup wizard: paste-back form validation gating save completion"
       teamId: config.slackTeamId,
       appId: config.slackAppId,
       botUserId: config.slackBotUserId,
+      eventsRequestUrl: config.slackEventsRequestUrl,
       botTokenSecretId: "11111111-1111-4111-8111-111111111111",
+      signingSecretId: config.slackSigningSecretId,
+      status: "saved",
+    };
+    const validation = getIdentityFormValidation(config, false, resultForOldSecret, false);
+    expect(validation.credentialComplete).toBe(false);
+    expect(validation.isComplete).toBe(false);
+  });
+
+  it("treats a save result whose signing secret no longer matches the current field as incomplete", () => {
+    const config = slackConfig({ slackSigningSecretId: "33333333-3333-4333-8333-333333333333" });
+    const resultForOldSecret: SaveSlackInstallMetadataResult = {
+      agentId: config.agentId,
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      teamId: config.slackTeamId,
+      appId: config.slackAppId,
+      botUserId: config.slackBotUserId,
+      eventsRequestUrl: config.slackEventsRequestUrl,
+      botTokenSecretId: config.slackBotTokenSecretId,
+      signingSecretId: "22222222-2222-4222-8222-222222222222",
       status: "saved",
     };
     const validation = getIdentityFormValidation(config, false, resultForOldSecret, false);

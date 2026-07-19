@@ -38,7 +38,7 @@ export interface SlackReactionParams {
 // ../../../shared/slack-bot-reaction-tool-definition.ts — kept in sync by
 // hand since the manifest schema is a plain JSON Schema literal, not a zod
 // schema this module can reuse directly.
-const CHANNEL_ID_PATTERN = /^[CG][A-Z0-9]{8,}$/;
+const CHANNEL_ID_PATTERN = /^[CDG][A-Z0-9]{8,}$/;
 const TEAM_ID_PATTERN = /^T[A-Z0-9]{8,}$/;
 const MESSAGE_TS_PATTERN = /^[0-9]{10,}\.[0-9]{6}$/;
 const REACTION_PATTERN = /^[a-z0-9_+-]+$/;

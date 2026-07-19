@@ -645,6 +645,6 @@ export const githubSettingsUIAdapter: ProviderSettingsUIAdapter<GitHubSettingsUI
   useCredentialStep: useGitHubCredentialStep,
   CredentialStep: GitHubCredentialStep,
   getRemovalConfirmation(entry) {
-    return `Delete agent identity mapping for ${entry.label}? This clears the saved GitHub App binding for this agent; the GitHub App itself and its installation are not deleted, only unlinked from this agent. To reconnect later, create a new GitHub mapping with "New identity".`;
+    return `Delete agent identity mapping for ${entry.label}? This clears the saved GitHub App binding for this agent; the GitHub App itself and its installation are not deleted, only unlinked from this agent. To reconnect later, create a new GitHub mapping with "Add identity".`;
   },
 };

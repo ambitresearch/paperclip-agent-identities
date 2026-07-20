@@ -123,7 +123,9 @@ pnpm pack --pack-destination .
 
 The active CI workflow source is `/.github/workflows/ci.yml`. It runs on pull requests and pushes to `main`, uses Node.js 24, enables `pnpm@10.17.1`, installs with `--frozen-lockfile`, then runs typecheck, tests, build, pack, packaged-output verification, and artifact upload.
 
-OpenWiki documentation automation lives in `/.github/workflows/openwiki-update.yml`. It runs on pushes to `main` using a self-hosted runner and opens a pull request containing regenerated `openwiki/` and `AGENTS.md` changes. The searchable static documentation site is built from the same `openwiki/` Markdown by VitePress and published through `/.github/workflows/pages.yml`.
+Coding agents update affected OpenWiki pages in the same feature or behavior-change pull request as the code. GitHub Actions does not generate OpenWiki content or use a self-hosted documentation runner. A local or cloud coding agent may run weekly or manually to submit catch-up documentation as a normal reviewed pull request.
+
+CI runs `pnpm docs:build` on pull requests and pushes to `main`; VitePress fails the build for broken internal links. The searchable static documentation site is built from the same `openwiki/` Markdown and published through `/.github/workflows/pages.yml`.
 
 The README's CI section describes validation steps equivalent to local checks:
 
@@ -139,7 +141,7 @@ Documentation publishing uses:
 pnpm docs:build
 ```
 
-The Pages artifact is `openwiki/.vitepress/dist`. OpenWiki itself still writes Markdown to `openwiki/`; do not add post-generation folder moves.
+The Pages artifact is `openwiki/.vitepress/dist`. Author or generate OpenWiki Markdown directly in `openwiki/`; do not add post-generation folder moves.
 
 ## Release automation
 

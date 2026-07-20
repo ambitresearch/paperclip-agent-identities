@@ -10,7 +10,6 @@ export default defineConfig({
   srcExclude: [".last-update.json"],
   cleanUrls: true,
   lastUpdated: true,
-  ignoreDeadLinks: true,
   themeConfig: {
     logo: `${base}logo.svg`,
     search: {

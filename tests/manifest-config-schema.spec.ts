@@ -42,6 +42,11 @@ describe("manifest instance config schema", () => {
   addFormatsModule.default(ajv);
   const validate = ajv.compile(manifest.instanceConfigSchema!);
 
+  it("uses the Ambit Research plugin namespace", () => {
+    expect(manifest.id).toBe("ambitresearch.paperclip-agent-identities");
+    expect(manifest.version).toBe("0.2.3");
+  });
+
   it("accepts GitHub and strict Slack config for the same agent", () => {
     expect(validate(slackConfig()), JSON.stringify(validate.errors)).toBe(true);
   });

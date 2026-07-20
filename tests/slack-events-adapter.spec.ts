@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import manifest from "../src/manifest.js";
 
 interface AdapterModule {
   createSlackEventsAdapter(options?: {
@@ -14,9 +16,10 @@ interface AdapterModule {
 
 const adapterModuleUrl = new URL("../scripts/slack-events-adapter.mjs", import.meta.url).href;
 const adapterScriptPath = fileURLToPath(adapterModuleUrl);
+const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
 const COMPANY_ID = "11111111-1111-4111-8111-111111111111";
 const EXPECTED_UPSTREAM_PATH =
-  `/api/companies/${COMPANY_ID}/plugins/roshangautam.paperclip-agent-identities/webhooks/slack-events`;
+  `/api/companies/${COMPANY_ID}/plugins/${manifest.id}/webhooks/slack-events`;
 
 async function loadAdapter(): Promise<AdapterModule> {
   return (await import(adapterModuleUrl)) as AdapterModule;
@@ -44,6 +47,19 @@ describe("temporary Slack events adapter", () => {
 
   afterEach(async () => {
     await Promise.all(servers.splice(0).map(close));
+  });
+
+  it("keeps npm scope, plugin namespace, and adapter routing aligned", () => {
+    const packageMetadata: unknown = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+    if (!packageMetadata || typeof packageMetadata !== "object" || !("name" in packageMetadata)) {
+      throw new TypeError("package.json must declare a package name");
+    }
+    const namespaceSeparator = manifest.id.indexOf(".");
+    if (namespaceSeparator < 1) throw new TypeError("manifest id must include a namespace");
+
+    const namespace = manifest.id.slice(0, namespaceSeparator);
+    expect(packageMetadata.name).toBe(`@${namespace}/paperclip-agent-identities`);
+    expect(EXPECTED_UPSTREAM_PATH).toContain(`/plugins/${manifest.id}/`);
   });
 
   it("proxies the exact body and Slack headers and preserves the upstream response", async () => {
@@ -184,7 +200,7 @@ describe("temporary Slack events adapter", () => {
     })).toThrow(/http:\/\/127\.0\.0\.1 origin/);
     expect(() => createSlackEventsAdapter({
       companyId: COMPANY_ID,
-      upstreamUrl: "http://127.0.0.1:3100/api/plugins/roshangautam.paperclip-agent-identities/webhooks/slack-events",
+      upstreamUrl: "http://127.0.0.1:3100/api/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events",
     } as never)).toThrow(/does not accept a custom upstream URL/);
   });
 

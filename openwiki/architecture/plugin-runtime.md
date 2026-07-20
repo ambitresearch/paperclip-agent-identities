@@ -17,9 +17,9 @@ Do not edit generated `/dist` files directly; change `/src` and rebuild.
 
 `/src/manifest.ts` is the static Paperclip manifest source. It currently declares:
 
-- plugin ID: `roshangautam.paperclip-agent-identities`
+- plugin ID: `ambitresearch.paperclip-agent-identities`
 - display name: `Agent Identities`
-- version: `0.1.3`
+- version: `0.2.3`
 - category: `connector`
 - entrypoints: `./dist/worker.js` and `./dist/ui`
 
@@ -62,7 +62,7 @@ During `setup(ctx)`, the worker registers:
 ### Event handler
 
 - `issue.created`: writes `{ scopeKind: "issue", scopeId: issueId, stateKey: "seen" } = true` and logs the event.
-- `plugin.roshangautam.paperclip-agent-identities.slack-turn-drain`: contributed
+- `plugin.ambitresearch.paperclip-agent-identities.slack-turn-drain`: contributed
   by Slack through the existing provider `contributeActions(ctx)` setup seam;
   drains at most one persisted conversation turn under fresh company scope.
 

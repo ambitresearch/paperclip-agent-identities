@@ -61,7 +61,7 @@ export const SETTINGS_ACTIONS = [
 const manifest: PaperclipPluginManifestV1 = {
   id: "roshangautam.paperclip-agent-identities",
   apiVersion: 1,
-  version: "0.2.1",
+  version: "0.2.2",
   displayName: "Agent Identities",
   description: "Per-agent identity providers and contribution tools for Paperclip",
   author: "Roshan Gautam",

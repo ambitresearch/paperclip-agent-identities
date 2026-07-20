@@ -184,7 +184,7 @@ Deleting an identity removes only matching GitHub App env bindings for that iden
 
 ## Documentation site
 
-OpenWiki-generated Markdown lives in [`openwiki/`](openwiki/quickstart.md). The repository publishes that content as a searchable VitePress site through GitHub Pages without moving OpenWiki's source folder.
+OpenWiki Markdown lives in [`openwiki/`](openwiki/quickstart.md). Coding agents update affected pages in the same feature or behavior-change pull request; local or cloud agents may submit weekly or manual catch-up documentation pull requests. GitHub Actions builds and validates the content, then publishes it as a searchable VitePress site through GitHub Pages.
 
 ```bash
 pnpm docs:dev       # local VitePress server for openwiki/
@@ -203,6 +203,7 @@ GitHub Actions workflows: [CI](.github/workflows/ci.yml), [Release](.github/work
 
 Runs on pull requests and pushes to `main`:
 
+- `pnpm docs:build` (including internal-link validation)
 - `pnpm typecheck`
 - `pnpm test`
 - `pnpm build`
@@ -222,6 +223,7 @@ Run the same validation locally:
 corepack enable
 corepack prepare pnpm@10.17.1 --activate
 pnpm install --frozen-lockfile
+pnpm docs:build
 pnpm typecheck
 pnpm test
 pnpm build

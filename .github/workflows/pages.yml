@@ -43,7 +43,7 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
 
-      - name: Build documentation site
+      - name: Build documentation site and validate links
         run: pnpm docs:build
 
       - name: Archive Pages artifact

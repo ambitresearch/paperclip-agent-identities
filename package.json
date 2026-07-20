@@ -1,6 +1,6 @@
 {
   "name": "@gautamroshan/paperclip-agent-identities",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packageManager": "pnpm@10.17.1",
   "type": "module",
   "private": false,
@@ -44,7 +44,7 @@
     "@types/react-dom": "19",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "esbuild": "^0.27.3",
+    "esbuild": "^0.28.1",
     "jsdom": "^29.1.1",
     "react": "19.2.7",
     "react-dom": "19",

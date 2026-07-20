@@ -51,7 +51,7 @@ const legacyClaimId = (eventHash: string) => `legacy:${eventHash.slice(0, 32)}`;
 
 export const SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY = "slack-events";
 export const SLACK_TURN_DRAIN_EVENT_NAME = "slack-turn-drain";
-const SLACK_PLUGIN_ID = "roshangautam.paperclip-agent-identities" as const;
+const SLACK_PLUGIN_ID = "ambitresearch.paperclip-agent-identities" as const;
 export const SLACK_TURN_DRAIN_EVENT_TYPE =
   `plugin.${SLACK_PLUGIN_ID}.${SLACK_TURN_DRAIN_EVENT_NAME}` as const;
 

@@ -144,7 +144,7 @@ function makeCtx(options: {
   }));
 
   const ctx = {
-    manifest: { id: "roshangautam.paperclip-agent-identities" },
+    manifest: { id: "ambitresearch.paperclip-agent-identities" },
     config: { get: vi.fn(async () => structuredClone(COMPANY_CONFIG)) },
     state: {
       get: vi.fn(async (key: StateKey) => store.get(mapKey(key)) ?? null),

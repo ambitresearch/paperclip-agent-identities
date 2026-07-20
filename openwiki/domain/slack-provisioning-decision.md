@@ -254,7 +254,7 @@ above, including `socket_mode_enabled` and `token_rotation_enabled`).
   `identities.<agentId>.slack.credentials`.
 - `scripts/slack-events-adapter.mjs` is the temporary local testing bridge. It listens only on
   `127.0.0.1:3110`, accepts `POST /events`, and forwards the unchanged body and Slack headers to
-  `http://127.0.0.1:3100/api/companies/<companyId>/plugins/roshangautam.paperclip-agent-identities/webhooks/slack-events`.
+  `http://127.0.0.1:3100/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events`.
   `PAPERCLIP_COMPANY_ID` is required and must be a canonical UUID. A public HTTPS tunnel or proxy
   can target the adapter during tests and can be disabled afterward.
 - Socket Mode, OAuth callback automation, and token rotation remain deferred.

@@ -702,7 +702,7 @@ minutes), bounds request size and unauthenticated work, and never logs or caches
 the signing secret. For temporary local tests,
 `scripts/slack-events-adapter.mjs` accepts loopback `POST /events` and forwards
 the unchanged body and Slack headers to
-`/api/companies/<companyId>/plugins/roshangautam.paperclip-agent-identities/webhooks/slack-events`.
+`/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events`.
 This adapter does not implement Socket Mode.
 
 ### T6 — Secret leakage through tool output or manifest-flow logs

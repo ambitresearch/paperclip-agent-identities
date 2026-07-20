@@ -279,7 +279,7 @@ Implementation (`src/providers/slack/ingress/`):
   snapshot, resolves only the routed signing secret, persists the bounded turn, awaits
   `ctx.events.emit("slack-turn-drain", companyId, payload)`, and returns 200. It never calls
   `ctx.agents.sessions.sendMessage` or waits for a previous terminal event. Slack's provider setup contribution
-  registers one `plugin.roshangautam.paperclip-agent-identities.slack-turn-drain` handler. Under that
+  registers one `plugin.ambitresearch.paperclip-agent-identities.slack-turn-drain` handler. Under that
   fresh event scope it drains one turn, resolves sender profile/session state, sends the bounded
   prompt, accumulates non-stderr output, and relays only filtered user-facing text. Threaded replies
   use Slack streaming; top-level/fallback replies use the provider post-message pipeline. Callbacks
@@ -311,7 +311,7 @@ restart recovery, and worker wiring (`tests/providers/slack/ingress-*.spec.ts`).
 For temporary local testing, `scripts/slack-events-adapter.mjs` listens only on
 `127.0.0.1:3110`, accepts `POST /events`, and forwards the unchanged request body and Slack headers
 to the company-scoped Paperclip route:
-`http://127.0.0.1:3100/api/companies/<companyId>/plugins/roshangautam.paperclip-agent-identities/webhooks/slack-events`.
+`http://127.0.0.1:3100/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events`.
 It requires a valid `PAPERCLIP_COMPANY_ID`. A test-only public HTTPS tunnel or proxy can point its
 `/events` route at this loopback adapter and be disabled after testing.
 

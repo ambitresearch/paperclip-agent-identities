@@ -79,7 +79,7 @@ paperclipai plugin install . --local
 ## Runtime model in one page
 
 1. Paperclip reads the plugin package metadata in `/package.json`, then loads the built manifest, worker, and UI from `dist`.
-2. `/src/manifest.ts` declares plugin ID `roshangautam.paperclip-agent-identities`, version `0.1.3`, required capabilities, three tools, and two UI slots.
+2. `/src/manifest.ts` declares plugin ID `ambitresearch.paperclip-agent-identities`, version `0.2.3`, required capabilities, three tools, and two UI slots.
 3. `/src/worker.ts` calls `definePlugin()` and registers:
    - data loaders: `health`, `bot-identity-config`, `paperclip-agents`
    - actions: `ping`, identity save/delete, GitHub/Slack manifest setup, Slack metadata discovery, and the released-sidecar Slack rebind action

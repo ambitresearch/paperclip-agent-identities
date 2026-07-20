@@ -7,7 +7,7 @@ const DEFAULT_LISTEN_PORT = 3110;
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 10_000;
 const DEFAULT_UPSTREAM_ORIGIN = "http://127.0.0.1:3100";
-const PLUGIN_ID = "roshangautam.paperclip-agent-identities";
+const PLUGIN_ID = "ambitresearch.paperclip-agent-identities";
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const FORWARDED_REQUEST_HEADERS = [

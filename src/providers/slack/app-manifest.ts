@@ -28,6 +28,7 @@ import type {
 const SLACK_APP_MANIFEST_FLOW_STATE_PREFIX = "slack-app-manifest-flow:";
 const SLACK_SETUP_BINDING_NAMESPACE = "slack-setup-bindings";
 const SLACK_PROVIDER = "slack" as const;
+const NO_BOUND_SECRET_REFS_TO_REMOVE_ERROR = "config.patchSecretRefs found no bound secret refs to remove";
 // Setup-state flow is deliberately short-lived: it only needs to survive the
 // operator's manifest-review -> install -> paste-back round trip, not a
 // long-lived session.
@@ -155,6 +156,19 @@ async function deleteSetupBindingMarkerIfOwned(
     return true;
   }
   return false;
+}
+
+async function removeSetupSecretBinding(
+  ctx: PluginContext,
+  companyId: string,
+  path: string[],
+): Promise<void> {
+  try {
+    await ctx.config.patchSecretRefs({ companyId, path, value: null });
+  } catch (error) {
+    if (error instanceof Error && error.message === NO_BOUND_SECRET_REFS_TO_REMOVE_ERROR) return;
+    throw error;
+  }
 }
 
 // Slack's App Manifest schema gives the app name and bot display name
@@ -409,7 +423,7 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       const setupBindingState = slackSetupBindingScope(companyId, secretIdResult.data);
       const staleMarker = readSetupBindingMarker(await ctx.state.get(setupBindingState));
       if (staleMarker) {
-        await ctx.config.patchSecretRefs({ companyId, path: staleMarker.path, value: null });
+        await removeSetupSecretBinding(ctx, companyId, staleMarker.path);
         if (!await deleteSetupBindingMarkerIfOwned(ctx, setupBindingState, staleMarker)) {
           throw new Error("Slack metadata discovery ownership changed during stale-binding cleanup; retry safely.");
         }
@@ -449,7 +463,7 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
       } finally {
         // Keep the marker when config cleanup fails. Delete it only after the
         // exact binding is gone and only while this request still owns it.
-        await ctx.config.patchSecretRefs({ companyId, path: setupPath, value: null });
+        await removeSetupSecretBinding(ctx, companyId, setupPath);
         await deleteSetupBindingMarkerIfOwned(ctx, setupBindingState, marker);
       }
     });

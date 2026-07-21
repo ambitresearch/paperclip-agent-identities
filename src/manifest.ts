@@ -148,7 +148,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.sessions.close",
     "companies.read",
     "http.outbound",
-    "secrets.bind-ref",
+    // The local host supports this capability ahead of the published SDK type union.
+    "secrets.bind-ref" as PaperclipPluginManifestV1["capabilities"][number],
     "secrets.read-ref",
     "activity.log.write",
     "webhooks.receive"

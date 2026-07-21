@@ -166,7 +166,7 @@ UI calls once the operator finishes Slack's own click-through install. Manifest 
 Events Request URL. The save action requires the shareable IDs (`teamId`/`appId`/`botUserId`) and
 both `botTokenSecretId` and `signingSecretId`. There is
 no supported host/plugin API for a worker action to create a Paperclip secret from a raw token
-(`ctx.secrets` exposes only `resolve`, and the manifest capability is only `secrets.read-ref` — see
+(`ctx.secrets` exposes only `resolve`; `secrets.bind-ref` can attach only existing secret refs — see
 §7), so the action cannot mint that secret itself. The explicit sequence is:
 
 1. Operator enters the public HTTPS `/events` URL, generates the manifest, pastes it into Slack,

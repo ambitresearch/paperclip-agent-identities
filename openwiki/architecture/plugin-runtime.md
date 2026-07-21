@@ -33,6 +33,7 @@ Important capabilities include:
 - `agent.sessions.create`, `agent.sessions.list`, `agent.sessions.send`, and `agent.sessions.close` for the Slack inbound
   message reply lifecycle
 - `http.outbound` for GitHub API and host REST calls
+- `secrets.bind-ref` for binding existing Paperclip secret references into company plugin config
 - `secrets.read-ref` for Paperclip secret resolution
 - `activity.log.write` for PR/push audit events
 - `project.workspaces.read` for mediated git push workspace resolution

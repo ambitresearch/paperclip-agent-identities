@@ -148,6 +148,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.sessions.close",
     "companies.read",
     "http.outbound",
+    "secrets.bind-ref",
     "secrets.read-ref",
     "activity.log.write",
     "webhooks.receive"

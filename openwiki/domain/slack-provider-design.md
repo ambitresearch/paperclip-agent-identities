@@ -141,7 +141,9 @@ The handler's batch size is exactly one turn under fresh company scope, records 
 run ID, buffers callbacks received before `sendMessage` returns, and ignores stale
 run/session callbacks. Terminal handling awaits stream/post finalization, then marks
 the event completed, clears active state, and emits the successor kick. No detached
-timer calls host APIs. The persisted `retireAfter` is a 30-minute durable accepted
+timer calls host APIs. Structured adapter output is reduced to user-facing reply text;
+ACPX `acpx.text_delta` records stream only when their channel is `output` and their
+tag is `agent_message_chunk`. The persisted `retireAfter` is a 30-minute durable accepted
 lease and is retired only when a
 later webhook/self-event supplies host scope; a fresh terminal session callback
 can finalize its own accepted run.
@@ -272,6 +274,14 @@ const slackSecretRefSchema = z.object({
   static GitHub fields in the same per-agent object remain intact. Flat Slack
   records written by earlier builds of this PR remain readable and are moved
   into the provider subtree on the next save.
+- The manifest declares each credential as `type: string` with
+  `format: secret-ref`; Paperclip stores typed refs but projects them to their
+  secret UUIDs before validating config patches against that schema. These
+  fields stay on direct object-property paths rather than inside `oneOf` or
+  `anyOf`, because the host rejects ambiguous secret-binding paths.
+- Short-lived discovery metadata entries accept the empty object left when
+  Paperclip removes their bound secret leaf; rejecting that host-produced
+  cleanup shape would make an otherwise successful discovery action fail.
 
 The raw bot token and signing secret live only in Paperclip company secrets.
 The settings form accepts their UUIDs or host-provided secret selections, not
@@ -291,10 +301,14 @@ host binding in place and projects `cleanup-pending` for a safe retry.
 Process-local queues serialize metadata discovery by `(state client,
 companyId, secretId)` and Slack settings mutations by the shared settings
 document plus `(companyId, agentId)`. Discovery markers are versioned and
-owner-qualified, while legacy `{ path }` markers remain recoverable. The host
-state/config APIs expose no compare-and-set transaction, so these guarantees do
-not extend across multiple worker processes; a host CAS/transaction primitive
-is required for cross-worker atomicity.
+owner-qualified, while legacy `{ path }` markers remain recoverable. During
+marker recovery and final cleanup, the exact host error
+`config.patchSecretRefs found no bound secret refs to remove` is treated as an
+idempotent success because a prior binding attempt may have failed before the
+marker could be cleared; other cleanup errors remain fatal and preserve the
+marker. The host state/config APIs expose no compare-and-set transaction, so
+these guarantees do not extend across multiple worker processes; a host
+CAS/transaction primitive is required for cross-worker atomicity.
 
 ## 4. Resource references
 

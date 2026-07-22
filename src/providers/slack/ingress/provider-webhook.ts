@@ -1290,8 +1290,15 @@ async function startClaimedTurn(
         return;
       }
       if (!Number.isSafeInteger(event.seq) || event.seq < 0) return;
-      if (event.seq <= lastSeq) return;
-      lastSeq = event.seq;
+      const terminalEvent = event.eventType === "done" || event.eventType === "error";
+      // Paperclip currently emits streamed chunks with increasing sequence
+      // numbers but resets terminal callbacks to seq 0. Keep monotonic
+      // filtering for non-terminal traffic while allowing the matching run's
+      // one terminal callback to finalize through terminalHandled below.
+      if (!terminalEvent) {
+        if (event.seq <= lastSeq) return;
+        lastSeq = event.seq;
+      }
       if (!await isCurrentAcceptedRun(
         reference,
         accepted.attemptId,
@@ -1306,7 +1313,7 @@ async function startClaimedTurn(
         if (delta && replyStream) await replyStream.append(delta);
         return;
       }
-      if (event.eventType === "done" || event.eventType === "error") {
+      if (terminalEvent) {
         terminalHandled = true;
         await finishAcceptedRun(
           ctx,

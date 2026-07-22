@@ -86,6 +86,7 @@ describe("plugin scaffold", () => {
     expect(manifest.capabilities).toContain("agents.read");
     expect(manifest.capabilities).toContain("companies.read");
     expect(manifest.capabilities).toContain("instance.settings.register");
+    expect(manifest.capabilities).toContain("secrets.bind-ref");
   });
 
   it("registers data + actions and handles events", async () => {

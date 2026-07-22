@@ -20,16 +20,8 @@ function slackConfig() {
           defaultChannel: "C12345678",
           eventsRequestUrl: "https://paperclip-test.trycloudflare.com/events",
           credentials: {
-            botToken: {
-              type: "secret_ref",
-              secretId: BOT_TOKEN_SECRET_ID,
-              version: "latest",
-            },
-            signingSecret: {
-              type: "secret_ref",
-              secretId: SIGNING_SECRET_ID,
-              version: "latest",
-            },
+            botToken: BOT_TOKEN_SECRET_ID,
+            signingSecret: SIGNING_SECRET_ID,
           },
         },
       },
@@ -37,9 +29,35 @@ function slackConfig() {
   };
 }
 
+function containsSecretRef(schema: unknown): boolean {
+  if (Array.isArray(schema)) return schema.some(containsSecretRef);
+  if (!schema || typeof schema !== "object") return false;
+  const record = schema as Record<string, unknown>;
+  return record.format === "secret-ref" || Object.values(record).some(containsSecretRef);
+}
+
+function ambiguousSecretRefKeywords(schema: unknown, path = "$"): string[] {
+  if (Array.isArray(schema)) {
+    return schema.flatMap((child, index) => ambiguousSecretRefKeywords(child, `${path}[${index}]`));
+  }
+  if (!schema || typeof schema !== "object") return [];
+
+  const record = schema as Record<string, unknown>;
+  const ambiguous = ["oneOf", "anyOf"].flatMap((keyword) => {
+    const branches = record[keyword];
+    return Array.isArray(branches) && containsSecretRef(branches) ? [`${path}.${keyword}`] : [];
+  });
+
+  return [
+    ...ambiguous,
+    ...Object.entries(record).flatMap(([key, child]) => ambiguousSecretRefKeywords(child, `${path}.${key}`)),
+  ];
+}
+
 describe("manifest instance config schema", () => {
   const ajv = new Ajv({ allErrors: true });
   addFormatsModule.default(ajv);
+  ajv.addFormat("secret-ref", { validate: () => true });
   const validate = ajv.compile(manifest.instanceConfigSchema!);
 
   it("uses the Ambit Research plugin namespace", () => {
@@ -64,16 +82,28 @@ describe("manifest instance config schema", () => {
         slack: {
           metadata: {
             "0123456789abcdef0123456789abcdef": {
-              botToken: {
-                type: "secret_ref",
-                secretId: BOT_TOKEN_SECRET_ID,
-                version: "latest",
-              },
+              botToken: BOT_TOKEN_SECRET_ID,
             },
           },
         },
       },
     }), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it("accepts the empty metadata container left after host binding cleanup", () => {
+    expect(validate({
+      setup: {
+        slack: {
+          metadata: {
+            "0123456789abcdef0123456789abcdef": {},
+          },
+        },
+      },
+    }), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it("declares secret refs on unambiguous host-visible config paths", () => {
+    expect(ambiguousSecretRefKeywords(manifest.instanceConfigSchema)).toEqual([]);
   });
 
   it("accepts an empty per-agent container after its last provider subtree is deleted", () => {
@@ -89,13 +119,63 @@ describe("manifest instance config schema", () => {
     expect(validate({ identities: { "agent-slack": mixed } })).toBe(false);
   });
 
+  it.each(["defaultChannel", "eventsRequestUrl"] as const)(
+    "rejects a top-level Slack %s on a flat GitHub identity",
+    (field) => {
+      const config = slackConfig();
+      const slack = config.identities["agent-slack"].slack;
+      expect(validate({
+        identities: {
+          "agent-slack": {
+            label: "GitHub QA",
+            githubUsername: "github-qa[bot]",
+            [field]: slack[field],
+          },
+        },
+      })).toBe(false);
+    },
+  );
+
+  it.each(["defaultChannel", "eventsRequestUrl"] as const)(
+    "rejects a stale top-level Slack %s beside the nested Slack identity",
+    (field) => {
+      const config = slackConfig();
+      const identity = config.identities["agent-slack"];
+      expect(validate({
+        identities: {
+          "agent-slack": {
+            ...identity,
+            [field]: identity.slack[field],
+          },
+        },
+      })).toBe(false);
+    },
+  );
+
+  it.each(["commitName", "commitEmail"] as const)(
+    "rejects GitHub %s on the legacy flat Slack shape",
+    (field) => {
+      const config = slackConfig();
+      expect(validate({
+        identities: {
+          "agent-slack": {
+            ...config.identities["agent-slack"].slack,
+            [field]: field === "commitName" ? "GitHub QA" : "github-qa@example.com",
+          },
+        },
+      })).toBe(false);
+    },
+  );
+
   it.each(["botToken", "signingSecret"] as const)(
-    "rejects a bare UUID string for Slack %s",
+    "rejects an unprojected typed ref for Slack %s",
     (credential) => {
       const config = slackConfig();
-      config.identities["agent-slack"].slack.credentials[credential] = (
-        credential === "botToken" ? BOT_TOKEN_SECRET_ID : SIGNING_SECRET_ID
-      ) as never;
+      config.identities["agent-slack"].slack.credentials[credential] = {
+        type: "secret_ref",
+        secretId: credential === "botToken" ? BOT_TOKEN_SECRET_ID : SIGNING_SECRET_ID,
+        version: "latest",
+      } as never;
 
       expect(validate(config)).toBe(false);
       expect(validate.errors).toEqual(expect.arrayContaining([

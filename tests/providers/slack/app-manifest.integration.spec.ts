@@ -357,6 +357,54 @@ describe("Slack manifest-assisted app setup actions", () => {
     expect(harness.getState(setupBindingScope)).toEqual({ path: stalePath });
   });
 
+  it("recovers an orphan setup marker when its secret binding was never created", async () => {
+    const harness = harnessWithSetup();
+    const setupBindingScope = {
+      scopeKind: "company" as const,
+      scopeId: COMPANY_A,
+      namespace: "slack-setup-bindings",
+      stateKey: `metadata:${FAKE_SECRET_ID}`,
+    };
+    const stalePath = ["setup", "slack", "metadata", "0123456789abcdef0123456789abcdef"];
+    await harness.ctx.state.set(setupBindingScope, { path: stalePath });
+    const patchSecretRefs = vi.fn(async (_input: {
+      companyId?: string;
+      path: string[];
+      value: Record<string, unknown> | null;
+    }) => undefined);
+    patchSecretRefs.mockRejectedValueOnce(
+      new Error("config.patchSecretRefs found no bound secret refs to remove"),
+    );
+    Object.assign(harness.ctx.config, { patchSecretRefs });
+    Object.assign(harness.ctx.secrets, { resolve: vi.fn(async () => "xoxb-test-secret-value") });
+    vi.spyOn(harness.ctx.http, "fetch").mockImplementation(async (input) => {
+      if (String(input).endsWith("/auth.test")) {
+        return new Response(JSON.stringify({
+          ok: true,
+          team_id: "T0123ABCD",
+          user_id: "U0123ABCD",
+          bot_id: "B0123ABCD",
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, bot: { app_id: "A0123ABCD" } }), { status: 200 });
+    });
+    await plugin.definition.setup(harness.ctx);
+
+    await expect(harness.performAction(
+      "discover-slack-install-metadata",
+      { botTokenSecretId: FAKE_SECRET_ID },
+      { companyId: COMPANY_A },
+    )).resolves.toEqual({ teamId: "T0123ABCD", appId: "A0123ABCD", botUserId: "U0123ABCD" });
+
+    expect(patchSecretRefs).toHaveBeenCalledTimes(3);
+    expect(patchSecretRefs.mock.calls[0]?.[0]).toEqual({
+      companyId: COMPANY_A,
+      path: stalePath,
+      value: null,
+    });
+    expect(harness.getState(setupBindingScope)).toBeUndefined();
+  });
+
   it("serializes concurrent metadata discovery for one company secret as addA/deleteA/addB/deleteB", async () => {
     const harness = harnessWithSetup();
     const releaseA = deferred();

@@ -119,6 +119,54 @@ describe("manifest instance config schema", () => {
     expect(validate({ identities: { "agent-slack": mixed } })).toBe(false);
   });
 
+  it.each(["defaultChannel", "eventsRequestUrl"] as const)(
+    "rejects a top-level Slack %s on a flat GitHub identity",
+    (field) => {
+      const config = slackConfig();
+      const slack = config.identities["agent-slack"].slack;
+      expect(validate({
+        identities: {
+          "agent-slack": {
+            label: "GitHub QA",
+            githubUsername: "github-qa[bot]",
+            [field]: slack[field],
+          },
+        },
+      })).toBe(false);
+    },
+  );
+
+  it.each(["defaultChannel", "eventsRequestUrl"] as const)(
+    "rejects a stale top-level Slack %s beside the nested Slack identity",
+    (field) => {
+      const config = slackConfig();
+      const identity = config.identities["agent-slack"];
+      expect(validate({
+        identities: {
+          "agent-slack": {
+            ...identity,
+            [field]: identity.slack[field],
+          },
+        },
+      })).toBe(false);
+    },
+  );
+
+  it.each(["commitName", "commitEmail"] as const)(
+    "rejects GitHub %s on the legacy flat Slack shape",
+    (field) => {
+      const config = slackConfig();
+      expect(validate({
+        identities: {
+          "agent-slack": {
+            ...config.identities["agent-slack"].slack,
+            [field]: field === "commitName" ? "GitHub QA" : "github-qa@example.com",
+          },
+        },
+      })).toBe(false);
+    },
+  );
+
   it.each(["botToken", "signingSecret"] as const)(
     "rejects an unprojected typed ref for Slack %s",
     (credential) => {

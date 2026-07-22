@@ -284,7 +284,9 @@ Implementation (`src/providers/slack/ingress/`):
   prompt, accumulates non-stderr output, and relays only filtered user-facing text. Threaded replies
   use Slack streaming; top-level/fallback replies use the provider post-message pipeline. Callbacks
   bind to the persisted accepted run ID, buffer pre-send-result events, ignore stale callbacks, and
-  await reply finalization before completing/clearing/kicking the successor. There is no detached
+  await reply finalization before completing/clearing/kicking the successor. Non-terminal callbacks
+  are sequence-filtered, while the matching run's single terminal callback is accepted even when the
+  Paperclip host resets its sequence to zero after streamed chunks. There is no detached
   host-calling timeout. A later webhook/self-event scope retires an expired 30-minute lease. Generic send errors
   are ambiguous and become uncertain/completed with no resend; only the host's exact
   `Session not found` / `Session not found or closed` class is retried

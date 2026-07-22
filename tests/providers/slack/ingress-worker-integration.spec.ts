@@ -313,7 +313,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
       });
       harness.simulateSessionEvent(sessionId, {
         runId,
-        seq: 5,
+        seq: 0,
         eventType: "done",
         stream: "system",
         message: null,

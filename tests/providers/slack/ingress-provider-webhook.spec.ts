@@ -1035,7 +1035,7 @@ describe("Slack provider durable ingress", () => {
     expect(ctx.events.emit).toHaveBeenCalledTimes(3);
   });
 
-  it("waits for fallback reply finalization before clearing active state", async () => {
+  it("accepts the host terminal sequence reset and waits for reply finalization", async () => {
     let callback!: (event: AgentSessionEvent) => void | Promise<void>;
     const postGate = deferred<unknown>();
     const { ctx, store } = makeCtx({
@@ -1060,7 +1060,7 @@ describe("Slack provider durable ingress", () => {
     const terminal = callback({
       sessionId: "session-1",
       runId: "run-post-gate",
-      seq: 2,
+      seq: 0,
       eventType: "done",
       stream: "system",
       message: null,

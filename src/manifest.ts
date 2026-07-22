@@ -8,36 +8,69 @@ import {
 const registry = createProviderRegistry();
 
 const slackSecretRefConfigSchema = {
-  type: "object",
-  properties: {
-    type: { const: "secret_ref" },
-    secretId: { type: "string", format: "uuid" },
-    version: { const: "latest" },
-  },
-  required: ["type", "secretId", "version"],
-  additionalProperties: false,
+  type: "string",
+  format: "secret-ref",
 } as const;
+
+const slackIdentityConfigProperties = {
+  label: { type: "string" },
+  teamId: { type: "string" },
+  appId: { type: "string" },
+  botUserId: { type: "string" },
+  defaultChannel: { type: "string" },
+  eventsRequestUrl: { type: "string", format: "uri", pattern: "^https://.+/events$" },
+  credentials: {
+    type: "object",
+    properties: {
+      botToken: slackSecretRefConfigSchema,
+      signingSecret: slackSecretRefConfigSchema,
+    },
+    required: ["botToken", "signingSecret"],
+    additionalProperties: false,
+  },
+} as const;
+
+const slackIdentityConfigRequired = ["label", "teamId", "appId", "botUserId", "credentials"] as const;
 
 const slackIdentityConfigSchema = {
   type: "object",
+  properties: slackIdentityConfigProperties,
+  required: slackIdentityConfigRequired,
+  additionalProperties: false,
+} as const;
+
+const agentIdentityConfigSchema = {
+  type: "object",
   properties: {
-    label: { type: "string" },
-    teamId: { type: "string" },
-    appId: { type: "string" },
-    botUserId: { type: "string" },
-    defaultChannel: { type: "string" },
-    eventsRequestUrl: { type: "string", format: "uri", pattern: "^https://.+/events$" },
-    credentials: {
-      type: "object",
-      properties: {
-        botToken: slackSecretRefConfigSchema,
-        signingSecret: slackSecretRefConfigSchema,
-      },
-      required: ["botToken", "signingSecret"],
-      additionalProperties: false,
-    },
+    // Flat Slack fields remain readable for compatibility with earlier builds
+    // of this PR. All new writes migrate them into the `.slack` subtree.
+    ...slackIdentityConfigProperties,
+    githubUsername: { type: "string" },
+    commitName: { type: "string" },
+    commitEmail: { type: "string" },
+    slack: slackIdentityConfigSchema,
   },
-  required: ["label", "teamId", "appId", "botUserId", "credentials"],
+  anyOf: [
+    { maxProperties: 0 },
+    { required: ["label", "githubUsername"] },
+    { required: slackIdentityConfigRequired },
+    { required: ["slack"] },
+  ],
+  // A record is either the legacy flat Slack shape or the current provider
+  // container. Keeping secret-ref fields in direct properties is required by
+  // Paperclip so config.patchSecretRefs can determine one binding path.
+  not: {
+    anyOf: [
+      { required: ["githubUsername", "teamId"] },
+      { required: ["githubUsername", "appId"] },
+      { required: ["githubUsername", "botUserId"] },
+      { required: ["githubUsername", "credentials"] },
+      { required: ["slack", "teamId"] },
+      { required: ["slack", "appId"] },
+      { required: ["slack", "botUserId"] },
+      { required: ["slack", "credentials"] },
+    ],
+  },
   additionalProperties: false,
 } as const;
 
@@ -72,32 +105,7 @@ const manifest: PaperclipPluginManifestV1 = {
       identities: {
         type: "object",
         patternProperties: {
-          "^.+$": {
-            oneOf: [
-              {
-                type: "object",
-                additionalProperties: false,
-              },
-              // Compatibility for flat Slack records persisted by earlier
-              // builds of this PR. All new writes migrate to `.slack`.
-              slackIdentityConfigSchema,
-              {
-                type: "object",
-                properties: {
-                  label: { type: "string" },
-                  githubUsername: { type: "string" },
-                  commitName: { type: "string" },
-                  commitEmail: { type: "string" },
-                  slack: slackIdentityConfigSchema,
-                },
-                anyOf: [
-                  { required: ["label", "githubUsername"] },
-                  { required: ["slack"] },
-                ],
-                additionalProperties: false,
-              },
-            ],
-          },
+          "^.+$": agentIdentityConfigSchema,
         },
         additionalProperties: false,
       },
@@ -115,7 +123,6 @@ const manifest: PaperclipPluginManifestV1 = {
                     properties: {
                       botToken: slackSecretRefConfigSchema,
                     },
-                    required: ["botToken"],
                     additionalProperties: false,
                   },
                 },

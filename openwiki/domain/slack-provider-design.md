@@ -272,6 +272,14 @@ const slackSecretRefSchema = z.object({
   static GitHub fields in the same per-agent object remain intact. Flat Slack
   records written by earlier builds of this PR remain readable and are moved
   into the provider subtree on the next save.
+- The manifest declares each credential as `type: string` with
+  `format: secret-ref`; Paperclip stores typed refs but projects them to their
+  secret UUIDs before validating config patches against that schema. These
+  fields stay on direct object-property paths rather than inside `oneOf` or
+  `anyOf`, because the host rejects ambiguous secret-binding paths.
+- Short-lived discovery metadata entries accept the empty object left when
+  Paperclip removes their bound secret leaf; rejecting that host-produced
+  cleanup shape would make an otherwise successful discovery action fail.
 
 The raw bot token and signing secret live only in Paperclip company secrets.
 The settings form accepts their UUIDs or host-provided secret selections, not

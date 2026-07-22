@@ -141,7 +141,9 @@ The handler's batch size is exactly one turn under fresh company scope, records 
 run ID, buffers callbacks received before `sendMessage` returns, and ignores stale
 run/session callbacks. Terminal handling awaits stream/post finalization, then marks
 the event completed, clears active state, and emits the successor kick. No detached
-timer calls host APIs. The persisted `retireAfter` is a 30-minute durable accepted
+timer calls host APIs. Structured adapter output is reduced to user-facing reply text;
+ACPX `acpx.text_delta` records stream only when their channel is `output` and their
+tag is `agent_message_chunk`. The persisted `retireAfter` is a 30-minute durable accepted
 lease and is retired only when a
 later webhook/self-event supplies host scope; a fresh terminal session callback
 can finalize its own accepted run.

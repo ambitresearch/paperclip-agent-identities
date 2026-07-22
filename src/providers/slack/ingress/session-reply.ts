@@ -43,7 +43,13 @@ export function truncateSlackReply(value: string): string {
 interface StructuredReply {
   readonly text: string;
   readonly priority: number;
-  readonly source: "result" | "codex" | "assistant" | "claude-delta" | "gemini-delta";
+  readonly source:
+    | "result"
+    | "codex"
+    | "assistant"
+    | "claude-delta"
+    | "gemini-delta"
+    | "acpx-delta";
 }
 
 /**
@@ -131,6 +137,17 @@ export class SlackSessionReplyAccumulator {
   }
 
   private consumeStructuredRecord(record: Record<string, unknown>): void {
+    if (
+      record.type === "acpx.text_delta" &&
+      record.channel === "output" &&
+      record.tag === "agent_message_chunk" &&
+      typeof record.text === "string"
+    ) {
+      const previous = this.structured?.source === "acpx-delta" ? this.structured.text : "";
+      this.setStructured(`${previous}${record.text}`, 2, "acpx-delta", true);
+      return;
+    }
+
     if (record.type === "result" && typeof record.result === "string") {
       this.setStructured(record.result, 3, "result", true);
       return;

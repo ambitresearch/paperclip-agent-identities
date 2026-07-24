@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../../../src/manifest.js";
 import plugin from "../../../src/worker.js";
+import { CONFIG_SCOPE } from "../../../src/config-source.js";
 import { SLACK_TURN_DRAIN_EVENT_TYPE } from "../../../src/providers/slack/ingress/provider-webhook.js";
 
 // End-to-end coverage that DRO-1005's Slack HTTP Events API ingress is
@@ -40,6 +41,19 @@ const COMPANY_CONFIG = {
     },
   },
 } as const;
+const SLACK_SETTINGS_STATE = {
+  version: 5,
+  cleanupTombstones: {},
+  identities: {
+    "agent-1:slack": {
+      provider: "slack",
+      id: "agent-1:slack",
+      agentId: "agent-1",
+      label: "Agent One",
+      slack: { teamId: "T111", appId: "A111", botUserId: "U111" },
+    },
+  },
+} as const;
 
 function sign(secret: string, timestamp: string, rawBody: string): string {
   const base = `v0:${timestamp}:${rawBody}`;
@@ -47,7 +61,7 @@ function sign(secret: string, timestamp: string, rawBody: string): string {
   return `v0=${hmac}`;
 }
 
-function createConfiguredHarness() {
+async function createConfiguredHarness() {
   const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities] });
   const emittedEvents: Array<{ name: string; companyId: string; payload: unknown }> = [];
   harness.seed({
@@ -67,10 +81,11 @@ function createConfiguredHarness() {
       emittedEvents.push({ name, companyId, payload });
     }),
   });
+  await harness.ctx.state.set(CONFIG_SCOPE, SLACK_SETTINGS_STATE);
   return { harness, getConfig, resolveSecret, emittedEvents };
 }
 
-function emittedDrainPayload(emittedEvents: ReturnType<typeof createConfiguredHarness>["emittedEvents"]) {
+function emittedDrainPayload(emittedEvents: Awaited<ReturnType<typeof createConfiguredHarness>>["emittedEvents"]) {
   const payload = emittedEvents.at(-1)?.payload;
   if (!payload) throw new Error("Expected a Slack drain event");
   return payload as {
@@ -98,7 +113,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
   });
 
   it("registers exactly one Slack drain self-event through the provider setup seam", async () => {
-    const { harness } = createConfiguredHarness();
+    const { harness } = await createConfiguredHarness();
     const onSpy = vi.spyOn(harness.ctx.events, "on");
     await plugin.definition.setup(harness.ctx);
 
@@ -107,7 +122,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
   });
 
   it("routes a signed event_callback delivery to the matching agent end-to-end", async () => {
-    const { harness, getConfig, resolveSecret, emittedEvents } = createConfiguredHarness();
+    const { harness, getConfig, resolveSecret, emittedEvents } = await createConfiguredHarness();
 
     await plugin.definition.setup(harness.ctx);
     const createSpy = vi.spyOn(harness.ctx.agents.sessions, "create");
@@ -154,7 +169,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
   });
 
   it("acks a second same-conversation delivery before the first session reaches terminal", async () => {
-    const { harness, emittedEvents } = createConfiguredHarness();
+    const { harness, emittedEvents } = await createConfiguredHarness();
     await plugin.definition.setup(harness.ctx);
     const sendSpy = vi.spyOn(harness.ctx.agents.sessions, "sendMessage");
     const timestamp = String(Math.floor(Date.now() / 1000));
@@ -195,7 +210,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
   });
 
   it("streams a threaded session response through Slack's native agent reply APIs", async () => {
-    const { harness, resolveSecret, emittedEvents } = createConfiguredHarness();
+    const { harness, resolveSecret, emittedEvents } = await createConfiguredHarness();
     const slackFetch = vi.fn(async (input: string, _init?: RequestInit) => {
       if (input === "https://slack.com/api/auth.test") {
         return new Response(JSON.stringify({
@@ -372,7 +387,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
   });
 
   it("acks an invalid signature end-to-end without invoking any agent", async () => {
-    const { harness } = createConfiguredHarness();
+    const { harness } = await createConfiguredHarness();
 
     await plugin.definition.setup(harness.ctx);
     const createSpy = vi.spyOn(harness.ctx.agents.sessions, "create");
@@ -395,7 +410,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
   });
 
   it("acks after durable enqueue and treats an ambiguous session send failure as completed without replay", async () => {
-    const { harness, emittedEvents } = createConfiguredHarness();
+    const { harness, emittedEvents } = await createConfiguredHarness();
 
     await plugin.definition.setup(harness.ctx);
 

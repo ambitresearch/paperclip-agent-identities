@@ -58,7 +58,7 @@ describe("worker provider registration", () => {
     );
   });
 
-  it("resolves GitHub and Slack identities for the same agent from one static config entry", async () => {
+  it("resolves GitHub from instance config and Slack from authoritative state for the same agent", async () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
@@ -79,6 +79,19 @@ describe("worker provider registration", () => {
       },
     });
     await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-1:slack": {
+          provider: "slack",
+          id: "agent-1:slack",
+          agentId: "agent-1",
+          label: "Slack Bot",
+          slack: { teamId: "T1", appId: "A1", botUserId: "U1" },
+        },
+      },
+    });
 
     const github = await harness.executeTool<{ data?: { githubUsername: string } }>(
       "github_bot_whoami",
@@ -161,6 +174,36 @@ describe("worker provider registration", () => {
     );
 
     expect(result.data?.teamId).toBe("T1");
+    expect(getConfig).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to legacy instance metadata for an authoritative provider", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {
+        identities: {
+          "agent-1": {
+            slack: {
+              label: "Stale Slack Bot",
+              teamId: "TOLD",
+              appId: "AOLD",
+              botUserId: "UOLD",
+            },
+          },
+        },
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    const getConfig = vi.spyOn(harness.ctx.config, "get");
+
+    const result = await harness.executeTool<{ error?: string }>(
+      "slack_bot_whoami",
+      {},
+      { companyId: "company-1", agentId: "agent-1" },
+    );
+
+    expect(result.error).toContain("No settings-page state is configured");
     expect(getConfig).not.toHaveBeenCalled();
   });
 

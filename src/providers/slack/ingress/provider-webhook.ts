@@ -13,7 +13,6 @@ import { normalizeSettingsState } from "../../../core/identity-config.js";
 import {
   projectSlackPluginConfig,
   readSlackSecretRef,
-  validateSlackConfig,
   type SlackAgentIdentity,
 } from "../config.js";
 import {
@@ -340,16 +339,6 @@ async function buildSlackWebhookConfigSnapshot(
     if (hasCredentials(agentId)) identities[agentId] = identity;
   }
 
-  // Compatibility fallback for full/flat host records written by earlier
-  // releases. Never override a state-backed identity for the same agent.
-  if (!isRecord(config.identities)) return { config, identities };
-  for (const [agentId, rawIdentity] of Object.entries(config.identities)) {
-    if (identities[agentId] || !hasCredentials(agentId)) continue;
-    const validated = validateSlackConfig(rawIdentity);
-    if (typeof validated !== "string" && agentId.trim() === agentId && agentId.length <= SLACK_TURN_FIELD_MAX_LENGTH) {
-      identities[agentId] = validated;
-    }
-  }
   if (Object.keys(identities).length > 1_024) {
     throw new Error("Slack webhook identity set exceeds the safe routing bound.");
   }

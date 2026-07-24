@@ -1,8 +1,8 @@
 import { z, type PluginContext } from "@paperclipai/plugin-sdk";
 import { createHash, randomBytes } from "node:crypto";
 import {
-  createSlackCredentialsConfigPatch,
   createSlackSecretRef,
+  slackCredentialsConfigPath,
   slackCredentialsConfigSchema,
   slackSecretIdSchema,
 } from "./config.js";
@@ -559,11 +559,10 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
           // Public install metadata lives in CONFIG_SCOPE. Company config is
           // only the credential binding sidecar, so patchSecretRefs never sees
           // scalar strings that the host correctly rejects.
-          const credentialPatch = createSlackCredentialsConfigPatch(companyConfig, agentId, credentials);
           await ctx.config.patchSecretRefs({
             companyId,
-            path: [...credentialPatch.path],
-            value: credentialPatch.value,
+            path: [...slackCredentialsConfigPath(companyConfig, agentId)],
+            value: credentials,
           });
         } catch (err) {
           const rollbackErrors: unknown[] = [];

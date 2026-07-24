@@ -122,13 +122,22 @@ function strictHarnessWithSetup(initialIdentity: Record<string, unknown> = {
   });
   const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === "object" && value !== null && !Array.isArray(value);
-  const isSecretRef = (value: unknown) =>
+  const isSecretRef = (value: unknown): value is Record<string, unknown> =>
     isRecord(value)
     && value.type === "secret_ref"
     && typeof value.secretId === "string"
     && value.version === "latest";
+  let refCount = 0;
+  let removalCount = 0;
   const normalizePatch = (value: unknown): Record<string, unknown> | null => {
-    if (value === null || isSecretRef(value)) return structuredClone(value) as Record<string, unknown> | null;
+    if (value === null) {
+      removalCount += 1;
+      return null;
+    }
+    if (isSecretRef(value)) {
+      refCount += 1;
+      return structuredClone(value);
+    }
     if (!isRecord(value)) {
       throw new Error(
         "config.patchSecretRefs values may contain only secret_ref objects, nested containers, or null removals",
@@ -137,7 +146,12 @@ function strictHarnessWithSetup(initialIdentity: Record<string, unknown> = {
     return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, normalizePatch(child)]));
   };
   const mergePatch = (current: unknown, patch: Record<string, unknown> | null): unknown => {
-    if (patch === null) return undefined;
+    if (patch === null) {
+      if (!isSecretRef(current)) {
+        throw new Error("config.patchSecretRefs may remove only currently bound secret refs");
+      }
+      return undefined;
+    }
     if (isSecretRef(patch)) return structuredClone(patch);
     const result = isRecord(current) ? { ...current } : {};
     for (const [key, child] of Object.entries(patch)) {
@@ -147,15 +161,40 @@ function strictHarnessWithSetup(initialIdentity: Record<string, unknown> = {
     }
     return result;
   };
+  const clearBoundRefs = (current: unknown): { value: unknown; removed: number } => {
+    if (isSecretRef(current)) return { value: undefined, removed: 1 };
+    if (!isRecord(current)) return { value: current, removed: 0 };
+    const result = { ...current };
+    let removed = 0;
+    for (const [key, child] of Object.entries(result)) {
+      const cleared = clearBoundRefs(child);
+      removed += cleared.removed;
+      if (cleared.value === undefined) delete result[key];
+      else result[key] = cleared.value;
+    }
+    return { value: result, removed };
+  };
   const patchSecretRefs = vi.fn(async (input: {
     companyId?: string;
     path: string[];
     value: Record<string, unknown> | null;
   }) => {
     if (input.companyId !== COMPANY_A) throw new Error("Unexpected company scope.");
+    refCount = 0;
+    removalCount = 0;
     const patch = normalizePatch(input.value);
+    if (refCount === 0 && removalCount === 0) {
+      throw new Error("config.patchSecretRefs requires at least one secret_ref or null removal");
+    }
     const applyAtPath = (current: unknown, path: string[]): unknown => {
-      if (path.length === 0) return mergePatch(current, patch);
+      if (path.length === 0) {
+        if (patch !== null) return mergePatch(current, patch);
+        const cleared = clearBoundRefs(current);
+        if (cleared.removed === 0) {
+          throw new Error("config.patchSecretRefs found no bound secret refs to remove");
+        }
+        return cleared.value;
+      }
       const [segment, ...rest] = path;
       const result = isRecord(current) ? { ...current } : {};
       const merged = applyAtPath(result[segment], rest);
@@ -181,6 +220,21 @@ function strictHarnessWithSetup(initialIdentity: Record<string, unknown> = {
 }
 
 describe("Slack manifest-assisted app setup actions", () => {
+  it("rejects null deletion of legacy public metadata through the strict host contract", async () => {
+    const harness = strictHarnessWithSetup({
+      label: "Legacy Slack Bot",
+      teamId: "TOLD",
+      appId: "AOLD",
+      botUserId: "UOLD",
+    });
+
+    await expect(harness.patchSecretRefs({
+      companyId: COMPANY_A,
+      path: ["identities", "agent-slack-1"],
+      value: { label: null },
+    })).rejects.toThrow("may remove only currently bound secret refs");
+  });
+
   it("persists only typed credential refs through the strict host config patch contract", async () => {
     const harness = strictHarnessWithSetup();
     await plugin.definition.setup(harness.ctx);
@@ -1091,7 +1145,7 @@ describe("Slack manifest-assisted app setup actions", () => {
     );
   });
 
-  it("migrates the flat Slack company config written by earlier builds of this PR", async () => {
+  it("updates flat legacy credentials without deleting public host metadata", async () => {
     const legacySlackConfig = {
       label: "Legacy Slack Bot",
       teamId: "TOLD",
@@ -1128,31 +1182,19 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     expect(harness.patchSecretRefs).toHaveBeenCalledWith({
       companyId: COMPANY_A,
-      path: ["identities", "agent-slack-1"],
+      path: ["identities", "agent-slack-1", "credentials"],
       value: {
-        label: null,
-        teamId: null,
-        appId: null,
-        botUserId: null,
-        defaultChannel: null,
-        eventsRequestUrl: null,
-        credentials: null,
-        slack: {
-          credentials: {
-            botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID_2, version: "latest" },
-            signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },
-          },
-        },
+        botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID_2, version: "latest" },
+        signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },
       },
     });
     expect(harness.getCompanyConfig()).toEqual({
       identities: {
         "agent-slack-1": {
-          slack: {
-            credentials: {
-              botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID_2, version: "latest" },
-              signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },
-            },
+          ...legacySlackConfig,
+          credentials: {
+            botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID_2, version: "latest" },
+            signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },
           },
         },
       },

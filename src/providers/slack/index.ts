@@ -12,7 +12,6 @@ import { createProviderTool } from "../../core/tool-pipeline.js";
 import { redactSecrets } from "../../lib/redaction.js";
 import {
   validateSlackConfig,
-  validateSlackInstanceConfig,
   projectSlackPluginConfig,
   type SlackAgentIdentity,
 } from "./config.js";
@@ -153,7 +152,6 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
   id: SLACK_PROVIDER_ID,
   definition: slackProviderDefinition,
   validateConfig: validateSlackConfig,
-  validateInstanceConfig: validateSlackInstanceConfig,
   settingsStateIsAuthoritative: true,
   projectPluginConfig: projectSlackPluginConfig,
   resolveCredential: resolveSlackCredential,

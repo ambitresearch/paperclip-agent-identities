@@ -130,8 +130,13 @@ function makeCtx(options: {
   close?: (sessionId: string, companyId: string) => Promise<void>;
   store?: Map<string, unknown>;
   config?: Record<string, unknown>;
+  settingsState?: unknown | null;
 } = {}) {
   const store = options.store ?? new Map<string, unknown>();
+  const settingsState = options.settingsState === undefined ? SLACK_SETTINGS_STATE : options.settingsState;
+  if (settingsState !== null && !store.has(mapKey(CONFIG_SCOPE))) {
+    store.set(mapKey(CONFIG_SCOPE), structuredClone(settingsState));
+  }
   const eventHandlers = new Map<string, (event: PluginEvent) => Promise<void>>();
   const activeSessions = new Map<string, {
     sessionId: string;
@@ -313,6 +318,16 @@ describe("Slack provider durable ingress", () => {
       body: { ok: true },
     });
     expect(queueState(store).pending.map((turn) => turn.eventId)).toEqual(["Ev-state"]);
+  });
+
+  it("ignores legacy public host metadata when settings state has no identity", async () => {
+    const { ctx } = makeCtx({ config: COMPANY_CONFIG, settingsState: null });
+
+    await expect(handleSlackProviderWebhook(delivery("Ev-stale-host"), ctx as never)).resolves.toEqual({
+      status: 401,
+      body: { error: "unauthorized" },
+    });
+    expect(ctx.events.emit).not.toHaveBeenCalled();
   });
 
   it.each(["botToken", "signingSecret"] as const)(
@@ -761,16 +776,19 @@ describe("Slack provider durable ingress", () => {
     const { ctx, store, sendMessage } = makeCtx();
     await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
     const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
-    ctx.config.get.mockResolvedValueOnce({
+    await ctx.state.set(CONFIG_SCOPE, {
+      ...SLACK_SETTINGS_STATE,
       identities: {
-        "agent-1": {
+        ...SLACK_SETTINGS_STATE.identities,
+        "agent-1:slack": {
+          ...SLACK_SETTINGS_STATE.identities["agent-1:slack"],
           slack: {
-            ...COMPANY_CONFIG.identities["agent-1"].slack,
+            ...SLACK_SETTINGS_STATE.identities["agent-1:slack"].slack,
             appId: "A222",
           },
         },
       },
-    } as never);
+    });
 
     await expect(drainSlackConversationQueue(ctx as never, "co-1", payload, runtime())).rejects.toThrow(
       /route changed/i,
@@ -1022,7 +1040,7 @@ describe("Slack provider durable ingress", () => {
       channel_type: "channel",
       channel: "C111",
     }), ctx as never);
-    expect(store.size).toBe(0);
+    expect([...store.keys()]).toEqual([mapKey(CONFIG_SCOPE)]);
     expect(ctx.events.emit).not.toHaveBeenCalled();
   });
 
@@ -1616,7 +1634,7 @@ describe("Slack provider durable ingress", () => {
       rawBody,
       requestId: "req-challenge",
     }, ctx as never)).resolves.toEqual({ status: 200, body: "challenge" });
-    expect(store.size).toBe(0);
+    expect([...store.keys()]).toEqual([mapKey(CONFIG_SCOPE)]);
     expect(ctx.events.emit).not.toHaveBeenCalled();
   });
 
@@ -1628,7 +1646,7 @@ describe("Slack provider durable ingress", () => {
       status: 401,
       body: { error: "unauthorized" },
     });
-    expect(store.size).toBe(0);
+    expect([...store.keys()]).toEqual([mapKey(CONFIG_SCOPE)]);
     expect(ctx.events.emit).not.toHaveBeenCalled();
   });
 

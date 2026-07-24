@@ -33,17 +33,9 @@ export const slackCredentialsConfigSchema = z.object({
 
 export type SlackCredentialsConfig = z.infer<typeof slackCredentialsConfigSchema>;
 
-export const slackHostIdentityConfigSchema = slackIdentitySchema.extend({
-  eventsRequestUrl: z.string().trim().min(1).optional(),
-  credentials: slackCredentialsConfigSchema,
-});
-
-export type SlackHostIdentityConfig = z.infer<typeof slackHostIdentityConfigSchema>;
-
 interface SlackIdentityConfigEntry {
   readonly path: readonly string[];
   readonly value: Record<string, unknown>;
-  readonly legacy: boolean;
 }
 
 function assertSafeConfigSegment(agentId: string): void {
@@ -65,53 +57,6 @@ export function slackCredentialsConfigPath(
   return [...identityPath, "credentials"];
 }
 
-export function createSlackCredentialsConfigPatch(
-  config: Record<string, unknown>,
-  agentId: string,
-  credentials: SlackCredentialsConfig,
-): { path: readonly string[]; value: Record<string, unknown>; migratesLegacyMetadata: boolean } {
-  const entry = readSlackIdentityConfigEntry(config, agentId);
-  if (!entry) {
-    return {
-      path: [...slackIdentityConfigPath(agentId), "credentials"],
-      value: credentials,
-      migratesLegacyMetadata: false,
-    };
-  }
-
-  const metadataRemoval = {
-    label: null,
-    teamId: null,
-    appId: null,
-    botUserId: null,
-    defaultChannel: null,
-    eventsRequestUrl: null,
-  };
-  if (entry.legacy) {
-    return {
-      path: entry.path,
-      value: {
-        ...metadataRemoval,
-        credentials: null,
-        slack: { credentials },
-      },
-      migratesLegacyMetadata: true,
-    };
-  }
-  if (Object.keys(metadataRemoval).some((field) => Object.prototype.hasOwnProperty.call(entry.value, field))) {
-    return {
-      path: entry.path,
-      value: { ...metadataRemoval, credentials },
-      migratesLegacyMetadata: true,
-    };
-  }
-  return {
-    path: [...entry.path, "credentials"],
-    value: credentials,
-    migratesLegacyMetadata: false,
-  };
-}
-
 export function createSlackSecretRef(secretId: string): SlackSecretRef {
   return slackSecretRefSchema.parse({ type: "secret_ref", secretId, version: "latest" });
 }
@@ -125,10 +70,10 @@ export function readSlackIdentityConfigEntry(
   const identity = isRecord(identities[agentId]) ? identities[agentId] : undefined;
   if (!identity) return undefined;
   if (isRecord(identity.slack)) {
-    return { path: slackIdentityConfigPath(agentId), value: identity.slack, legacy: false };
+    return { path: slackIdentityConfigPath(agentId), value: identity.slack };
   }
   if (looksLikeLegacySlackIdentity(identity)) {
-    return { path: ["identities", agentId], value: identity, legacy: true };
+    return { path: ["identities", agentId], value: identity };
   }
   return undefined;
 }
@@ -191,27 +136,6 @@ export function validateSlackConfig(raw: unknown): SlackAgentIdentity | string {
       .join("; ");
   }
   return parsed.data;
-}
-
-export function validateSlackInstanceConfig(raw: unknown): SlackAgentIdentity | string {
-  const candidate = isRecord(raw) && isRecord(raw.slack) ? raw.slack : raw;
-  const parsed = slackHostIdentityConfigSchema.safeParse(candidate);
-  if (!parsed.success) {
-    return parsed.error.issues
-      .map((issue) => {
-        const path = issue.path.join(".");
-        return path ? `${path}: ${issue.message}` : issue.message;
-      })
-      .join("; ");
-  }
-  const { label, teamId, appId, botUserId, defaultChannel } = parsed.data;
-  return {
-    label,
-    teamId,
-    appId,
-    botUserId,
-    ...(defaultChannel ? { defaultChannel } : {}),
-  };
 }
 
 function isSlackIdentityConfig(value: unknown): value is SlackAgentIdentityConfig {

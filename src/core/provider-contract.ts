@@ -142,12 +142,10 @@ export interface IdentityProvider<
   readonly definition: IdentityProviderDefinition;
   validateConfig(raw: unknown): TIdentity | string;
   // Providers whose public settings metadata is persisted in plugin state can
-  // opt into state-first identity resolution while retaining instance config
-  // as a compatibility fallback.
+  // make that state the sole identity source. Instance config may still hold
+  // provider credentials, but it is never used to reconstruct public identity.
   readonly settingsStateIsAuthoritative?: boolean;
-  // Instance config may have a stricter shape than the public state
-  // projection (for example, Slack's legacy fallback must also contain valid
-  // credential refs so deleting those refs cannot resurrect an identity).
+  // Instance config may have a stricter shape than the public state projection.
   validateInstanceConfig?(raw: unknown): TIdentity | string;
   projectPluginConfig(identities: Record<string, unknown>): Record<string, TIdentity>;
   resolveCredential(input: CredentialResolverInput<TIdentity>): Promise<ResolvedCredential>;

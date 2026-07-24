@@ -36,7 +36,7 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
   manifest.ts                         Paperclip manifest: capabilities, tool declarations, UI slots
   worker.ts                           Worker setup: data loaders, actions, tools, manifest-flow actions
   shared/types.ts                     Shared identity/settings/provider/GitHub App flow types
-  config-source.ts                    Resolves identity config from instance config, then settings state fallback
+  config-source.ts                    Declares the settings-state scope used by the worker resolver
   identity-policy.ts                  Agent identity parsing and GitHub repo normalization
   credential-sidecar.ts               Local credential reference sidecar and GitHub App token minting
   github-bot-push-branch*.ts          Mediated push tool definition and implementation

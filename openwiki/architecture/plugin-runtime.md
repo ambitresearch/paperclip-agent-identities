@@ -146,23 +146,24 @@ There are two identity configuration paths:
 2. **Settings-page state** under `CONFIG_SCOPE`, defined in `/src/config-source.ts` as `{ scopeKind: "instance", stateKey: "bot-identity-config" }`. `/src/config-source.ts` exports only this constant — it does not implement any resolution logic itself.
 
 The instance-config manifest accepts the current per-agent provider container, where new Slack
-writes contain only the required credential refs, and the temporary full nested or flat Slack
-compatibility shapes. It rejects mixed records, including stale top-level Slack fields beside a
+records contain only the required credential refs, and the temporary full nested or flat Slack
+compatibility shapes. Existing flat records keep their layout when credential refs are updated. It rejects mixed records, including stale top-level Slack fields beside a
 GitHub or nested Slack identity and GitHub commit metadata on the legacy flat Slack shape, so the
 runtime never silently ignores provider-specific values.
 
-`resolveIdentityForProvider()` in `/src/worker.ts` is the provider-agnostic resolver every provider tool goes through. Providers use instance config first by default. A provider may opt into state-first resolution and a stricter instance-config validator; Slack does this because public metadata is authoritative in state while instance config contains only credential refs. State-first resolution does not fetch instance config unless the state lookup or projection fails, so credential-free tools remain available during a config-read outage. Both orders retain the other source as a compatibility fallback.
+`resolveIdentityForProvider()` in `/src/worker.ts` is the provider-agnostic resolver every provider tool goes through. Providers use instance config first and settings state as a fallback by default. A provider may instead mark settings state authoritative; Slack does this because public metadata lives in state while instance config contains credential refs. Authoritative providers never read or fall back to instance identity metadata, so stale host scalars cannot resurrect a deleted identity and credential-free tools remain available during a config-read outage.
 
-Settings state is normalized to version 4 nested provider records (`BOT_IDENTITY_SETTINGS_VERSION` from `/src/core/identity-config.ts`):
+Settings state is normalized to version 5 nested provider records (`BOT_IDENTITY_SETTINGS_VERSION` from `/src/core/identity-config.ts`):
 
 ```ts
 {
-  version: 4,
-  identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>
+  version: 5,
+  identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>,
+  cleanupTombstones: Record<string, LegacySlackSidecarCleanupTombstone>
 }
 ```
 
-`normalizeSettingsState()` migrates any stored v3 (flat `githubUsername`/`commitName`/etc.) state forward automatically; there is no v3 runtime read/write path. Each provider's `projectPluginConfig` narrows this same v4 map to its own `provider` discriminant and reads its own nested fields (GitHub reads `identity.github.username`, etc.) — the worker loop itself stays provider-agnostic.
+`normalizeSettingsState()` migrates stored v3 (flat `githubUsername`/`commitName`/etc.) and v4 state into v5 automatically; there is no v3 or v4 runtime read/write path. `cleanupTombstones` retains retry state for released Slack-sidecar cleanup. Each provider's `projectPluginConfig` narrows the v5 identity map to its own `provider` discriminant and reads its nested fields (GitHub reads `identity.github.username`, etc.) — the worker loop itself stays provider-agnostic.
 
 ## UI architecture
 

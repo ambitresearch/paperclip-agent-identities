@@ -51,8 +51,8 @@ const slackIdentityConfigSchema = {
 const agentIdentityConfigSchema = {
   type: "object",
   properties: {
-    // Flat Slack fields remain readable for compatibility with earlier builds
-    // of this PR. All new writes migrate them into the `.slack` subtree.
+    // Flat Slack fields remain schema-compatible with earlier builds of this
+    // PR. Their credential refs are updated in place; public scalars are ignored.
     ...slackIdentityConfigProperties,
     githubUsername: { type: "string" },
     commitName: { type: "string" },

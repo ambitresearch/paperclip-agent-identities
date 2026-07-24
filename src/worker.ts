@@ -36,7 +36,6 @@ import { createProviderRegistry } from "./providers/index.js";
 import {
   readSlackCredentialRefs,
   slackCredentialsConfigPath,
-  readSlackIdentityConfigEntry,
   readSlackSecretRef,
   type SlackCredentialsConfig,
 } from "./providers/slack/config.js";
@@ -449,16 +448,7 @@ async function resolveIdentityForProvider<TIdentity>(
   };
 
   if (provider.settingsStateIsAuthoritative) {
-    try {
-      return await resolveFromState();
-    } catch (stateError) {
-      const validated = await resolveFromInstance();
-      if (typeof validated !== "string") {
-        return { agentId: runCtx.agentId, identity: validated };
-      }
-      const stateReason = stateError instanceof Error ? stateError.message : String(stateError);
-      throw new Error(`${stateReason}; instance-config fallback failed: ${validated}`);
-    }
+    return await resolveFromState();
   }
 
   const validated = await resolveFromInstance();
@@ -552,9 +542,7 @@ function readSlackSetupProjection(
   legacyCredential?: NonNullable<BotIdentitySettingsEntry["slackSetup"]>["legacyCredential"],
 ): BotIdentitySettingsEntry["slackSetup"] | undefined {
   const agentId = identityConfig.agentId;
-  const hostIdentity = readSlackIdentityConfigEntry(config, agentId)?.value ?? {};
-  const eventsRequestUrl = identityConfig.slack.eventsRequestUrl
-    ?? readString(hostIdentity.eventsRequestUrl);
+  const eventsRequestUrl = identityConfig.slack.eventsRequestUrl;
   let botTokenSecretId = "";
   let signingSecretId = "";
   try {

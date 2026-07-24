@@ -22,8 +22,8 @@ shipped Slack settings adapter adds the Slack form and public settings-state
 projection, while `save-slack-install-metadata` owns Slack installation
 persistence. That action writes the public identity fields to settings state
 and calls `ctx.config.patchSecretRefs` to write only the company-scoped refs at
-`identities.<agentId>.slack.credentials.botToken` and
-`identities.<agentId>.slack.credentials.signingSecret`. Current
+the credential path selected by `slackCredentialsConfigPath`: the nested path
+for current records or the existing flat path for a legacy record. Current
 runtime credential resolution does not use the local credential sidecar; it is
 inspected only by the one-release legacy migration path described below.
 
@@ -266,9 +266,10 @@ const slackSecretRefSchema = z.object({
 - `save-slack-install-metadata` validates both submitted UUIDs before mutation,
   converts them to typed refs, and writes only the credential subtree with one
   `ctx.config.patchSecretRefs` call scoped to
-  `identities.<agentId>.slack.credentials`. Public install metadata remains in
-  plugin state. Full nested and flat Slack records written by earlier releases
-  remain readable as compatibility fallbacks.
+  `identities.<agentId>.slack.credentials` for current records and the existing
+  flat credential path for a legacy record. Public install metadata remains in
+  plugin state. Public fields retained in earlier host records are ignored at
+  runtime because settings state is authoritative.
 - Identity deletion clears the credential subtree whenever it contains at
   least one valid bound ref, including incomplete legacy bindings. It skips an
   empty or wholly invalid container because the host rejects a secret-ref patch
@@ -381,8 +382,8 @@ The production implementation factors this sequence through
 `resolveSlackBotToken`, but the boundaries above are exact: read the
 host-authorized company snapshot with `ctx.config.get(runCtx.companyId)`, read
 only the calling agent's typed ref with `readSlackSecretRef`, and pass both the
-company ID and exact nested config path into `ctx.secrets.resolve`. The path
-helper retains the flat legacy path only while reading a record written by an
+company ID and exact config path into `ctx.secrets.resolve`. The path helper
+retains the flat legacy path while reading or updating a record written by an
 earlier build of this PR. Missing, malformed,
 revoked, or cross-bound refs fail closed. `verifySlackToken` calls `auth.test`
 and parses only the documented team, user, and bot identity fields without

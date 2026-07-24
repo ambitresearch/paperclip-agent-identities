@@ -84,9 +84,12 @@ successor durable but waiting for the next duplicate/new webhook trigger.
 Plugin state also has no compare-and-set primitive, so claim-token read-back
 detects observable write races but does not make multi-worker execution atomic.
 
-Slack public install metadata lives in plugin state. Company config contains only the typed
-refs under `identities.<agentId>.slack.credentials`, so `config.patchSecretRefs` never receives
-ordinary strings and the same agent's existing flat GitHub instance config remains intact.
+Slack public install metadata lives in plugin state and is authoritative at runtime. Current
+company-config records contain only typed refs under
+`identities.<agentId>.slack.credentials`, so `config.patchSecretRefs` never receives ordinary
+strings and the same agent's existing flat GitHub instance config remains intact. Earlier flat or
+full Slack records may retain inert public metadata because the host secret-ref API cannot delete
+scalar fields; the runtime ignores those fields and updates only their existing credential path.
 
 Upgrades from released `v0.1.7`/`v0.1.8` may still have a legacy
 `identities.<agentId>:slack.slackBotToken` entry in the local sidecar. Settings
@@ -107,12 +110,13 @@ only with a host build containing the matching core support.
 
 ## Identity Config Model
 
-Agent Identities uses a provider-aware settings state. Each saved identity is keyed by `agentId + provider`, using the identity key format `${agentId}:${provider}`. The settings page stores a version 4 map in Paperclip plugin state:
+Agent Identities uses a provider-aware settings state. Each saved identity is keyed by `agentId + provider`, using the identity key format `${agentId}:${provider}`. The settings page stores a version 5 map in Paperclip plugin state:
 
 ```ts
 {
-  version: 4,
-  identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>
+  version: 5,
+  identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>,
+  cleanupTombstones: Record<string, LegacySlackSidecarCleanupTombstone>
 }
 ```
 
@@ -125,8 +129,9 @@ Core fields:
 - `github.username`: GitHub App login for GitHub identities, commonly `<app-slug>[bot]`
 - Optional `github.commitName` and `github.commitEmail`
 - `slack.teamId`, `slack.appId`, `slack.botUserId`, and `slack.eventsRequestUrl`: public Slack installation metadata
+- `cleanupTombstones`: retry state for deleting released `v0.1.7`/`v0.1.8` Slack sidecar entries after host refs are bound
 
-Each provider projects its own version 4 identity records into runtime config by `agentId`. Repository and channel access remains controlled by provider permissions and API responses, not by Agent Identities.
+Each provider projects its own version 5 identity records into runtime config by `agentId`. Repository and channel access remains controlled by provider permissions and API responses, not by Agent Identities.
 
 ### Supported providers
 

@@ -37,7 +37,7 @@ secret refs.
 
 Separates public identity metadata from host-managed credential references:
 
-- **Public identity config** (`identities[agentId:slack]` in `bot-identity-config`, v4 settings
+- **Public identity config** (`identities[agentId:slack]` in `bot-identity-config`, v5 settings
   state): `teamId`, `appId`, `botUserId`, `eventsRequestUrl`, `defaultChannel` — all shareable per the decision
   record's shareable/secret table.
 - **Company-scoped host config** (`identities.<agentId>.slack.credentials`): typed `secret_ref`
@@ -71,7 +71,8 @@ Separates public identity metadata from host-managed credential references:
   `resolveSlackSigningSecret` read the company config snapshot and resolve only the required ref
   through `ctx.secrets.resolve`. There is no plaintext or token-file fallback for Slack.
   Existing static GitHub fields stay at `identities.<agentId>` and can coexist with this Slack
-  subtree. Full nested and flat Slack host records remain readable as compatibility fallbacks. Released
+  subtree. Public fields retained in full nested or flat legacy Slack host records are ignored;
+  only their existing credential paths remain readable and writable. Released
   `v0.1.7`/`v0.1.8` local-sidecar entries are separately recoverable through the explicit
   company-authorized rebind action; they are never used as a runtime token fallback.
 

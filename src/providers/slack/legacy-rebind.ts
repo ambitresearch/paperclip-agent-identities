@@ -18,9 +18,9 @@ import type {
 } from "../../shared/types.js";
 import { getIdentityKey, REBIND_LEGACY_SLACK_CREDENTIALS_ACTION } from "../../shared/types.js";
 import {
-  createSlackCredentialsConfigPatch,
   createSlackSecretRef,
   readSlackCredentialsConfig,
+  slackCredentialsConfigPath,
   slackCredentialsConfigSchema,
   slackSecretIdSchema,
   type SlackCredentialsConfig,
@@ -150,7 +150,6 @@ export function contributeLegacySlackRebindAction(ctx: PluginContext): void {
           botToken: createSlackSecretRef(legacy.botTokenSecretId),
           signingSecret: createSlackSecretRef(signingSecretId),
         });
-        const credentialPatch = createSlackCredentialsConfigPatch(companyConfig, agentId, desired);
         let wroteHostBinding = false;
 
         if (existingCredentials) {
@@ -163,11 +162,11 @@ export function contributeLegacySlackRebindAction(ctx: PluginContext): void {
             );
           }
         }
-        if (!existingCredentials || credentialPatch.migratesLegacyMetadata) {
+        if (!existingCredentials) {
           await ctx.config.patchSecretRefs({
             companyId,
-            path: [...credentialPatch.path],
-            value: credentialPatch.value,
+            path: [...slackCredentialsConfigPath(companyConfig, agentId)],
+            value: desired,
           });
           wroteHostBinding = true;
         }

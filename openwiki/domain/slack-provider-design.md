@@ -287,11 +287,13 @@ create both company secrets through the host first.
 Released-sidecar migration is explicit, not a bare-UUID runtime fallback.
 `rebind-legacy-slack-credentials` requires the host-authorized `companyId`,
 revalidates agent membership, requires an existing public Slack settings
-identity, and rejects a conflicting host binding. It copies the released bot
-token UUID and either the released signing-secret UUID or an operator-supplied
-signing-secret UUID into typed refs. It then deletes only the exact legacy Slack
-entry, preserving sibling GitHub entries. Cleanup failure leaves the working
-host binding in place and projects `cleanup-pending` for a safe retry.
+identity, and rejects a conflicting complete host binding. A metadata-only or
+incomplete host record remains eligible for rebind. The action copies the
+released bot token UUID and either the released signing-secret UUID or an
+operator-supplied signing-secret UUID into typed refs. It then deletes only the
+exact legacy Slack entry, preserving sibling GitHub entries. Cleanup failure
+leaves the working host binding in place and projects `cleanup-pending` for a
+safe retry.
 
 Process-local queues serialize metadata discovery by `(state client,
 companyId, secretId)` and Slack settings mutations by the shared settings

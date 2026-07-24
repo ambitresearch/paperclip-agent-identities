@@ -702,7 +702,7 @@ describe("Slack manifest-assisted app setup actions", () => {
     });
   });
 
-  it("rebinds the released v0.1.7/v0.1.8 sidecar refs without resolving secrets", async () => {
+  it("rebinds the released v0.1.7/v0.1.8 sidecar refs over metadata-only host config", async () => {
     const directory = await mkdtemp(join(tmpdir(), "slack-legacy-rebind-"));
     const previousPath = process.env[CREDENTIAL_SIDECAR_PATH_ENV];
     const sidecarPath = join(directory, "credentials.json");
@@ -718,6 +718,17 @@ describe("Slack manifest-assisted app setup actions", () => {
         },
       }));
       const harness = harnessWithSetup();
+      const originalPatch = harness.patchSecretRefs.getMockImplementation()!;
+      await originalPatch({
+        companyId: COMPANY_A,
+        path: ["identities", "agent-slack-1", "slack"],
+        value: {
+          label: "Released Slack Bot",
+          teamId: "TOLD",
+          appId: "AOLD",
+          botUserId: "UOLD",
+        },
+      });
       const resolve = vi.fn();
       Object.assign(harness.ctx.secrets, { resolve });
       await plugin.definition.setup(harness.ctx);
@@ -755,6 +766,10 @@ describe("Slack manifest-assisted app setup actions", () => {
           "agent-slack-1": {
             githubUsername: "shared-agent[bot]",
             slack: {
+              label: "Released Slack Bot",
+              teamId: "TOLD",
+              appId: "AOLD",
+              botUserId: "UOLD",
               credentials: {
                 botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID, version: "latest" },
                 signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },

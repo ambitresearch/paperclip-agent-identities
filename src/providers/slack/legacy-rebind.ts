@@ -20,7 +20,6 @@ import { getIdentityKey, REBIND_LEGACY_SLACK_CREDENTIALS_ACTION } from "../../sh
 import {
   createSlackSecretRef,
   readSlackCredentialsConfig,
-  readSlackIdentityConfigEntry,
   slackCredentialsConfigPath,
   slackCredentialsConfigSchema,
   slackSecretIdSchema,
@@ -63,16 +62,15 @@ export function getLegacySlackCredentialStatus(
   const legacy = readLegacySlackCredentialSidecarEntry(sidecar, identity.agentId);
   if (!legacy) return undefined;
 
-  const existing = readSlackIdentityConfigEntry(companyConfig, identity.agentId);
-  if (!existing) {
+  const credentials = readSlackCredentialsConfig(companyConfig, identity.agentId);
+  if (!credentials) {
     return {
       status: "rebind-required",
       signingSecretRequired: !legacy.signingSecretId,
     };
   }
 
-  const credentials = readSlackCredentialsConfig(companyConfig, identity.agentId);
-  if (credentials && hostBindingMatches(credentials, legacy)) {
+  if (hostBindingMatches(credentials, legacy)) {
     return { status: "cleanup-pending", signingSecretRequired: false };
   }
   return { status: "conflict", signingSecretRequired: !legacy.signingSecretId };

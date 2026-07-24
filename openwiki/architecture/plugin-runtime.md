@@ -143,14 +143,15 @@ one confirms ownership; cross-worker exactly-once claiming is not promised.
 There are two identity configuration paths:
 
 1. **Plugin instance config** via `ctx.config.get()`.
-2. **Settings-page state fallback** under `CONFIG_SCOPE`, defined in `/src/config-source.ts` as `{ scopeKind: "instance", stateKey: "bot-identity-config" }`. `/src/config-source.ts` exports only this constant — it does not implement any resolution logic itself.
+2. **Settings-page state** under `CONFIG_SCOPE`, defined in `/src/config-source.ts` as `{ scopeKind: "instance", stateKey: "bot-identity-config" }`. `/src/config-source.ts` exports only this constant — it does not implement any resolution logic itself.
 
-The instance-config manifest accepts the current per-agent provider container and the temporary
-legacy flat Slack shape. It rejects mixed records, including stale top-level Slack fields beside a
+The instance-config manifest accepts the current per-agent provider container, where new Slack
+writes contain only the required credential refs, and the temporary full nested or flat Slack
+compatibility shapes. It rejects mixed records, including stale top-level Slack fields beside a
 GitHub or nested Slack identity and GitHub commit metadata on the legacy flat Slack shape, so the
 runtime never silently ignores provider-specific values.
 
-`resolveIdentityForProvider()` in `/src/worker.ts` is the provider-agnostic resolver every provider tool goes through. It tries instance config first (`provider.validateConfig`). If that fails and settings-page state exists, it normalizes the state with `normalizeSettingsState()` and asks the provider to project the v4 `identities` map into its own identity shape (`provider.projectPluginConfig`) before resolving via `resolveAgentIdentity()`. This fallback lets tools use identities saved by the settings page rather than only static instance config.
+`resolveIdentityForProvider()` in `/src/worker.ts` is the provider-agnostic resolver every provider tool goes through. Providers use instance config first by default. A provider may opt into state-first resolution and a stricter instance-config validator; Slack does this because public metadata is authoritative in state while instance config contains only credential refs. Both orders retain the other source as a compatibility fallback.
 
 Settings state is normalized to version 4 nested provider records (`BOT_IDENTITY_SETTINGS_VERSION` from `/src/core/identity-config.ts`):
 

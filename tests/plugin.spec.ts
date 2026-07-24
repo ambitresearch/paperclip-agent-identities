@@ -1080,7 +1080,7 @@ describe("agent identity settings", () => {
     expect(sidecar.identities["agent-delete-me:github"]).toBeUndefined();
   });
 
-  it("deletes only the selected Slack subtree and preserves GitHub config without a sidecar", async () => {
+  it("deletes only the selected Slack credential refs and preserves public and GitHub config", async () => {
     const preservedSlackConfig = {
       label: "Preserved Slack Bot",
       teamId: "T12345678",
@@ -1118,10 +1118,12 @@ describe("agent identity settings", () => {
         input.value === null &&
         input.path[0] === "identities" &&
         agentId &&
-        input.path[2] === "slack"
+        input.path[2] === "slack" &&
+        input.path[3] === "credentials"
       ) {
         const identity = { ...(identities[agentId] as Record<string, unknown>) };
-        delete identity.slack;
+        const slack = { ...(identity.slack as Record<string, unknown>), credentials: {} };
+        identity.slack = slack;
         identities[agentId] = identity;
       }
       companyConfig = { ...companyConfig, identities };
@@ -1169,7 +1171,7 @@ describe("agent identity settings", () => {
     expect(patchSecretRefs).toHaveBeenCalledOnce();
     expect(patchSecretRefs).toHaveBeenCalledWith({
       companyId: "company_1",
-      path: ["identities", "agent-delete-slack", "slack"],
+      path: ["identities", "agent-delete-slack", "slack", "credentials"],
       value: null,
     });
     expect(companyConfig).toEqual({
@@ -1177,6 +1179,11 @@ describe("agent identity settings", () => {
         "agent-delete-slack": {
           label: "Delete GitHub Bot",
           githubUsername: "delete-github[bot]",
+          slack: {
+            ...preservedSlackConfig,
+            label: "Delete Slack Bot",
+            credentials: {},
+          },
         },
         "agent-preserve-slack": { slack: preservedSlackConfig },
       },
@@ -1213,13 +1220,15 @@ describe("agent identity settings", () => {
     );
     expect(patchSecretRefs).toHaveBeenLastCalledWith({
       companyId: "company_1",
-      path: ["identities", "agent-preserve-slack", "slack"],
+      path: ["identities", "agent-preserve-slack", "slack", "credentials"],
       value: null,
     });
-    expect(companyConfig).toHaveProperty("identities.agent-preserve-slack", {});
+    expect(companyConfig).toHaveProperty("identities.agent-preserve-slack", {
+      slack: { ...preservedSlackConfig, credentials: {} },
+    });
   });
 
-  it("deletes the flat Slack config persisted by earlier builds of this PR", async () => {
+  it("deletes credentials from the flat Slack config persisted by earlier builds of this PR", async () => {
     const legacySlackConfig = {
       label: "Legacy Slack Bot",
       teamId: "T12345678",
@@ -1239,8 +1248,11 @@ describe("agent identity settings", () => {
     };
     const patchSecretRefs = vi.fn(async (input: { path: string[]; value: Record<string, unknown> | null }) => {
       const identities = { ...(companyConfig.identities as Record<string, unknown>) };
-      if (input.value === null && input.path[0] === "identities" && input.path[1]) {
-        delete identities[input.path[1]];
+      if (input.value === null && input.path[0] === "identities" && input.path[1] && input.path[2] === "credentials") {
+        identities[input.path[1]] = {
+          ...(identities[input.path[1]] as Record<string, unknown>),
+          credentials: {},
+        };
       }
       companyConfig = { ...companyConfig, identities };
     });
@@ -1274,11 +1286,14 @@ describe("agent identity settings", () => {
 
     expect(patchSecretRefs).toHaveBeenCalledWith({
       companyId: "company_1",
-      path: ["identities", "agent-legacy-slack"],
+      path: ["identities", "agent-legacy-slack", "credentials"],
       value: null,
     });
     expect(companyConfig).toEqual({
-      identities: { "agent-github": githubConfig },
+      identities: {
+        "agent-legacy-slack": { ...legacySlackConfig, credentials: {} },
+        "agent-github": githubConfig,
+      },
     });
   });
 
@@ -1313,7 +1328,10 @@ describe("agent identity settings", () => {
       if (input.value === null) {
         const identities = { ...(companyConfig.identities as Record<string, unknown>) };
         const identity = { ...(identities["agent-delete-legacy"] as Record<string, unknown>) };
-        delete identity.slack;
+        identity.slack = {
+          ...(identity.slack as Record<string, unknown>),
+          credentials: {},
+        };
         identities["agent-delete-legacy"] = identity;
         companyConfig = { identities };
       }
@@ -1348,7 +1366,18 @@ describe("agent identity settings", () => {
     );
 
     expect(companyConfig).toEqual({
-      identities: { "agent-delete-legacy": { githubUsername: "preserved[bot]" } },
+      identities: {
+        "agent-delete-legacy": {
+          githubUsername: "preserved[bot]",
+          slack: {
+            label: "Legacy Slack Bot",
+            teamId: "T12345678",
+            appId: "A12345678",
+            botUserId: "U12345678",
+            credentials: {},
+          },
+        },
+      },
     });
     expect(JSON.parse(await readFile(process.env[CREDENTIAL_SIDECAR_PATH_ENV]!, "utf8"))).toEqual({
       version: 1,
@@ -1388,7 +1417,19 @@ describe("agent identity settings", () => {
       get: vi.fn(async () => structuredClone(companyConfig)),
       patchSecretRefs: vi.fn(async (input: { value: Record<string, unknown> | null }) => {
         if (input.value === null) {
-          companyConfig = { identities: { "agent-delete-pending": {} } };
+          companyConfig = {
+            identities: {
+              "agent-delete-pending": {
+                slack: {
+                  label: "Pending Slack Bot",
+                  teamId: "T12345678",
+                  appId: "A12345678",
+                  botUserId: "U12345678",
+                  credentials: {},
+                },
+              },
+            },
+          };
         }
       }),
     });
@@ -1436,7 +1477,19 @@ describe("agent identity settings", () => {
       agentId: "agent-delete-pending",
       operation: "legacy-sidecar-delete",
     }));
-    expect(companyConfig).toEqual({ identities: { "agent-delete-pending": {} } });
+    expect(companyConfig).toEqual({
+      identities: {
+        "agent-delete-pending": {
+          slack: {
+            label: "Pending Slack Bot",
+            teamId: "T12345678",
+            appId: "A12345678",
+            botUserId: "U12345678",
+            credentials: {},
+          },
+        },
+      },
+    });
     expect(harness.getState(CONFIG_SCOPE)).toEqual({
       version: 5,
       identities: {},
@@ -1508,7 +1561,8 @@ describe("agent identity settings", () => {
         input.companyId !== "company_1" ||
         input.path[0] !== "identities" ||
         !agentId ||
-        input.path[2] !== "slack"
+        input.path[2] !== "slack" ||
+        input.path[3] !== "credentials"
       ) {
         throw new Error("Unexpected company config patch.");
       }
@@ -1516,8 +1570,9 @@ describe("agent identity settings", () => {
         ...(companyConfig.identities as Record<string, unknown>),
       };
       const identity = { ...(identities[agentId] as Record<string, unknown>) };
-      if (input.value === null) delete identity.slack;
-      else identity.slack = structuredClone(input.value);
+      const slack = { ...(identity.slack as Record<string, unknown>) };
+      slack.credentials = structuredClone(input.value ?? {});
+      identity.slack = slack;
       identities[agentId] = identity;
       companyConfig = { ...companyConfig, identities };
     });
@@ -1576,13 +1631,13 @@ describe("agent identity settings", () => {
     expect(patchSecretRefs).toHaveBeenCalledTimes(2);
     expect(patchSecretRefs).toHaveBeenNthCalledWith(1, {
       companyId: "company_1",
-      path: ["identities", "agent-rollback-slack", "slack"],
+      path: ["identities", "agent-rollback-slack", "slack", "credentials"],
       value: null,
     });
     expect(patchSecretRefs).toHaveBeenNthCalledWith(2, {
       companyId: "company_1",
-      path: ["identities", "agent-rollback-slack", "slack"],
-      value: previousSlackConfig,
+      path: ["identities", "agent-rollback-slack", "slack", "credentials"],
+      value: previousSlackConfig.credentials,
     });
   });
 
@@ -1613,7 +1668,18 @@ describe("agent identity settings", () => {
     }) => {
       if (input.value !== null) throw new Error("Slack rollback failed");
       companyConfig = {
-        identities: { "agent-rollback-slack": githubConfig },
+        identities: {
+          "agent-rollback-slack": {
+            ...githubConfig,
+            slack: {
+              label: "Rollback Slack Bot",
+              teamId: "T12345678",
+              appId: "A12345678",
+              botUserId: "U12345678",
+              credentials: {},
+            },
+          },
+        },
       };
     });
     const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
@@ -1657,12 +1723,23 @@ describe("agent identity settings", () => {
       "Slack rollback failed",
     ]);
     expect(companyConfig).toEqual({
-      identities: { "agent-rollback-slack": githubConfig },
+      identities: {
+        "agent-rollback-slack": {
+          ...githubConfig,
+          slack: {
+            label: "Rollback Slack Bot",
+            teamId: "T12345678",
+            appId: "A12345678",
+            botUserId: "U12345678",
+            credentials: {},
+          },
+        },
+      },
     });
     expect(patchSecretRefs).toHaveBeenNthCalledWith(2, {
       companyId: "company_1",
-      path: ["identities", "agent-rollback-slack", "slack"],
-      value: previousSlackConfig,
+      path: ["identities", "agent-rollback-slack", "slack", "credentials"],
+      value: previousSlackConfig.credentials,
     });
   });
 

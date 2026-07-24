@@ -47,7 +47,7 @@ If a row shows **Rebind required**, edit it and choose **Rebind released
 credentials**. When prompted, select or paste the UUID of the existing
 Paperclip company secret containing the Slack signing secret. The action checks
 the host-authorized company and agent membership and copies only typed UUID
-references into `identities.<agentId>.slack`; it never reads or displays either
+references into `identities.<agentId>.slack.credentials`; it never reads or displays either
 secret value. **Cleanup pending** means the host binding works but deleting the
 legacy sidecar entry failed; retry the same action. **Conflict** means an
 existing host Slack binding differs and must be reviewed rather than

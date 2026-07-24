@@ -15,6 +15,7 @@ describe("Slack identity config (v4)", () => {
             teamId: "T123",
             appId: "A123",
             botUserId: "U123",
+            eventsRequestUrl: "https://paperclip.example/events",
             defaultChannel: "C123",
           },
         },
@@ -32,6 +33,7 @@ describe("Slack identity config (v4)", () => {
         teamId: "T123",
         appId: "A123",
         botUserId: "U123",
+        eventsRequestUrl: "https://paperclip.example/events",
         defaultChannel: "C123",
       },
     });

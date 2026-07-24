@@ -21,9 +21,9 @@ Settings persistence remains a separate, provider-specific boundary. The
 shipped Slack settings adapter adds the Slack form and public settings-state
 projection, while `save-slack-install-metadata` owns Slack installation
 persistence. That action writes the public identity fields to settings state
-and calls `ctx.config.patchSecretRefs` to write the company-scoped identity at
-`identities.<agentId>.slack`, including required typed secret refs at
-`slack.credentials.botToken` and `slack.credentials.signingSecret`. Current
+and calls `ctx.config.patchSecretRefs` to write only the company-scoped refs at
+`identities.<agentId>.slack.credentials.botToken` and
+`identities.<agentId>.slack.credentials.signingSecret`. Current
 runtime credential resolution does not use the local credential sidecar; it is
 inspected only by the one-release legacy migration path described below.
 
@@ -228,11 +228,6 @@ Current shipped company config has this shape:
   "identities": {
     "<agent-id>": {
       "slack": {
-        "label": "Paperclip Agent - QA",
-        "teamId": "T0123ABCD",
-        "appId": "A0123ABCD",
-        "botUserId": "U0123ABCD",
-        "defaultChannel": "C0123ABCD",
         "credentials": {
           "botToken": {
             "type": "secret_ref",
@@ -269,11 +264,11 @@ const slackSecretRefSchema = z.object({
   resolves it just in time to verify Slack signatures and the URL-verification
   challenge.
 - `save-slack-install-metadata` validates both submitted UUIDs before mutation,
-  converts them to typed refs, and writes the identity subtree with one
-  `ctx.config.patchSecretRefs` call scoped to `identities.<agentId>.slack`, so
-  static GitHub fields in the same per-agent object remain intact. Flat Slack
-  records written by earlier builds of this PR remain readable and are moved
-  into the provider subtree on the next save.
+  converts them to typed refs, and writes only the credential subtree with one
+  `ctx.config.patchSecretRefs` call scoped to
+  `identities.<agentId>.slack.credentials`. Public install metadata remains in
+  plugin state. Full nested and flat Slack records written by earlier releases
+  remain readable as compatibility fallbacks.
 - The manifest declares each credential as `type: string` with
   `format: secret-ref`; Paperclip stores typed refs but projects them to their
   secret UUIDs before validating config patches against that schema. These

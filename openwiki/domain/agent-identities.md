@@ -63,11 +63,14 @@ For GitHub, repository access is controlled by the GitHub App installation and G
 
 `/src/config-source.ts` now only exports `CONFIG_STATE_KEY` / `CONFIG_SCOPE`. Bridging static (instance) config and settings-page state is a worker-level, provider-agnostic concern implemented by `resolveIdentityForProvider()` in `/src/worker.ts`:
 
-1. calls `ctx.config.get()` and asks the provider (`provider.validateConfig`) to validate the per-agent instance config;
-2. if that fails and settings-page state (`CONFIG_SCOPE`) exists, normalizes it with `normalizeSettingsState()` (v4, migrating v3 automatically) and asks the provider to project its `identities` map (`provider.projectPluginConfig`) before resolving through `resolveAgentIdentity()`;
-3. if both fail, throws an error containing the primary and fallback reasons.
+1. calls `ctx.config.get()` and asks the provider to validate the per-agent instance config, using its optional stricter `validateInstanceConfig` contract when present;
+2. normalizes settings-page state (`CONFIG_SCOPE`) with `normalizeSettingsState()` (v4, migrating v3 automatically) and asks the provider to project its `identities` map (`provider.projectPluginConfig`);
+3. uses instance config first by default, while providers marked `settingsStateIsAuthoritative` use state first and retain valid instance config as a compatibility fallback;
+4. if both sources fail, throws an error containing both reasons.
 
 Because settings-page state is always v4, every provider's `projectPluginConfig` receives the nested `AgentIdentityConfig` union and is responsible for narrowing to its own provider and reading its own nested fields (e.g. `identity.github.username` for GitHub). Disabled or unknown provider records are ignored during projection. The current settings UI cascades GitHub App credentials to the selected agent identity.
+
+Slack opts into state-first resolution because its public install metadata lives in plugin state. Company config contains only `botToken` and `signingSecret` refs under `identities.<agentId>.slack.credentials`; tools and webhooks require both refs before using the state-backed identity. Earlier full nested or flat Slack config records remain readable as compatibility fallbacks.
 
 ## Credential sidecar
 

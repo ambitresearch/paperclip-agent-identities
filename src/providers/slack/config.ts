@@ -26,12 +26,16 @@ export const slackSecretRefSchema = z.object({
 export type SlackSecretRef = z.infer<typeof slackSecretRefSchema>;
 export type SlackCredentialKind = "botToken" | "signingSecret";
 
+export const slackCredentialsConfigSchema = z.object({
+  botToken: slackSecretRefSchema,
+  signingSecret: slackSecretRefSchema,
+});
+
+export type SlackCredentialsConfig = z.infer<typeof slackCredentialsConfigSchema>;
+
 export const slackHostIdentityConfigSchema = slackIdentitySchema.extend({
   eventsRequestUrl: z.string().trim().min(1).optional(),
-  credentials: z.object({
-    botToken: slackSecretRefSchema,
-    signingSecret: slackSecretRefSchema,
-  }),
+  credentials: slackCredentialsConfigSchema,
 });
 
 export type SlackHostIdentityConfig = z.infer<typeof slackHostIdentityConfigSchema>;
@@ -51,6 +55,14 @@ function assertSafeConfigSegment(agentId: string): void {
 export function slackIdentityConfigPath(agentId: string): readonly string[] {
   assertSafeConfigSegment(agentId);
   return ["identities", agentId, "slack"];
+}
+
+export function slackCredentialsConfigPath(
+  config: Record<string, unknown>,
+  agentId: string,
+): readonly string[] {
+  const identityPath = readSlackIdentityConfigEntry(config, agentId)?.path ?? slackIdentityConfigPath(agentId);
+  return [...identityPath, "credentials"];
 }
 
 export function createSlackSecretRef(secretId: string): SlackSecretRef {
@@ -88,6 +100,15 @@ export function readSlackSecretRef(
   return parsed.data;
 }
 
+export function readSlackCredentialsConfig(
+  config: Record<string, unknown>,
+  agentId: string,
+): SlackCredentialsConfig | undefined {
+  const identity = readSlackIdentityConfigEntry(config, agentId)?.value ?? {};
+  const parsed = slackCredentialsConfigSchema.safeParse(identity.credentials);
+  return parsed.success ? parsed.data : undefined;
+}
+
 export function slackSecretRefConfigPath(
   config: Record<string, unknown>,
   agentId: string,
@@ -110,6 +131,27 @@ export function validateSlackConfig(raw: unknown): SlackAgentIdentity | string {
       .join("; ");
   }
   return parsed.data;
+}
+
+export function validateSlackInstanceConfig(raw: unknown): SlackAgentIdentity | string {
+  const candidate = isRecord(raw) && isRecord(raw.slack) ? raw.slack : raw;
+  const parsed = slackHostIdentityConfigSchema.safeParse(candidate);
+  if (!parsed.success) {
+    return parsed.error.issues
+      .map((issue) => {
+        const path = issue.path.join(".");
+        return path ? `${path}: ${issue.message}` : issue.message;
+      })
+      .join("; ");
+  }
+  const { label, teamId, appId, botUserId, defaultChannel } = parsed.data;
+  return {
+    label,
+    teamId,
+    appId,
+    botUserId,
+    ...(defaultChannel ? { defaultChannel } : {}),
+  };
 }
 
 function isSlackIdentityConfig(value: unknown): value is SlackAgentIdentityConfig {

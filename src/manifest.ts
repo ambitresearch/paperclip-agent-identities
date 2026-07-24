@@ -25,17 +25,26 @@ const slackIdentityConfigProperties = {
       botToken: slackSecretRefConfigSchema,
       signingSecret: slackSecretRefConfigSchema,
     },
-    required: ["botToken", "signingSecret"],
+    anyOf: [
+      { maxProperties: 0 },
+      { required: ["botToken", "signingSecret"] },
+    ],
     additionalProperties: false,
   },
 } as const;
 
-const slackIdentityConfigRequired = ["label", "teamId", "appId", "botUserId", "credentials"] as const;
+const legacySlackMetadataRequired = ["label", "teamId", "appId", "botUserId"] as const;
 
 const slackIdentityConfigSchema = {
   type: "object",
   properties: slackIdentityConfigProperties,
-  required: slackIdentityConfigRequired,
+  // New writes contain credentials only. Public Slack install metadata lives
+  // in plugin state; the optional scalar fields remain readable for the
+  // full nested shape written by earlier releases.
+  anyOf: [
+    { required: ["credentials"] },
+    { required: legacySlackMetadataRequired },
+  ],
   additionalProperties: false,
 } as const;
 
@@ -53,7 +62,7 @@ const agentIdentityConfigSchema = {
   anyOf: [
     { maxProperties: 0 },
     { required: ["label", "githubUsername"] },
-    { required: slackIdentityConfigRequired },
+    { required: legacySlackMetadataRequired },
     { required: ["slack"] },
   ],
   // A record is either the legacy flat Slack shape or the current provider

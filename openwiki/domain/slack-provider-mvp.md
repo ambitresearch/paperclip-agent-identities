@@ -23,6 +23,7 @@ type SlackAgentIdentityConfig = {
     teamId: string;       // Slack workspace/team ID — shareable, not secret
     appId: string;        // Slack app ID — shareable
     botUserId: string;    // resulting bot user ID — shareable
+    eventsRequestUrl?: string; // generated manifest Events API URL
     defaultChannel?: string; // optional channel name/ID the agent posts to by default
   };
 };
@@ -37,20 +38,16 @@ secret refs.
 Separates public identity metadata from host-managed credential references:
 
 - **Public identity config** (`identities[agentId:slack]` in `bot-identity-config`, v4 settings
-  state): `teamId`, `appId`, `botUserId`, `defaultChannel` — all shareable per the decision
+  state): `teamId`, `appId`, `botUserId`, `eventsRequestUrl`, `defaultChannel` — all shareable per the decision
   record's shareable/secret table.
-- **Company-scoped host config** (`identities.<agentId>.slack`): shareable install fields plus typed
-  `secret_ref` values for both required Slack credentials.
+- **Company-scoped host config** (`identities.<agentId>.slack.credentials`): typed `secret_ref`
+  values for both required Slack credentials and no public scalar metadata.
 
   ```json
   {
     "identities": {
       "<agent-id>": {
         "slack": {
-          "label": "<agent-label>",
-          "teamId": "<slack-team-id>",
-          "appId": "<slack-app-id>",
-          "botUserId": "<slack-bot-user-id>",
           "credentials": {
             "botToken": {
               "type": "secret_ref",
@@ -69,12 +66,12 @@ Separates public identity metadata from host-managed credential references:
   }
   ```
 
-  `save-slack-install-metadata` validates both secret IDs as UUIDs before mutation and persists this
-  subtree with `ctx.config.patchSecretRefs`. `resolveSlackBotToken` and
+  `save-slack-install-metadata` validates both secret IDs as UUIDs before mutation and persists only
+  this credential subtree with `ctx.config.patchSecretRefs`. `resolveSlackBotToken` and
   `resolveSlackSigningSecret` read the company config snapshot and resolve only the required ref
   through `ctx.secrets.resolve`. There is no plaintext or token-file fallback for Slack.
   Existing static GitHub fields stay at `identities.<agentId>` and can coexist with this Slack
-  subtree. Flat Slack host records remain readable and migrate on the next Slack save. Released
+  subtree. Full nested and flat Slack host records remain readable as compatibility fallbacks. Released
   `v0.1.7`/`v0.1.8` local-sidecar entries are separately recoverable through the explicit
   company-authorized rebind action; they are never used as a runtime token fallback.
 

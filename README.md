@@ -84,8 +84,9 @@ successor durable but waiting for the next duplicate/new webhook trigger.
 Plugin state also has no compare-and-set primitive, so claim-token read-back
 detects observable write races but does not make multi-worker execution atomic.
 
-Slack install metadata and secret refs live under `identities.<agentId>.slack`, so the same
-agent's existing flat GitHub instance config remains intact when Slack is saved or deleted.
+Slack public install metadata lives in plugin state. Company config contains only the typed
+refs under `identities.<agentId>.slack.credentials`, so `config.patchSecretRefs` never receives
+ordinary strings and the same agent's existing flat GitHub instance config remains intact.
 
 Upgrades from released `v0.1.7`/`v0.1.8` may still have a legacy
 `identities.<agentId>:slack.slackBotToken` entry in the local sidecar. Settings
@@ -93,7 +94,7 @@ shows **Rebind required** for that identity. Open **Edit**, select the signing
 secret's Paperclip company-secret UUID when the released entry does not already
 contain one, then choose **Rebind released credentials**. The worker verifies
 the host-authorized company and agent membership, copies only typed UUID refs to
-`identities.<agentId>.slack`, and never resolves either secret value. A matching
+`identities.<agentId>.slack.credentials`, and never resolves either secret value. A matching
 existing binding makes the retry idempotent; a conflicting binding is rejected.
 If sidecar deletion fails after binding, Settings reports **Cleanup pending** and
 the same action safely retries only cleanup. Reinstalling the Slack App is not
@@ -123,7 +124,7 @@ Core fields:
 - `label`: human-facing label, conventionally `Agent Name [Company Name]`
 - `github.username`: GitHub App login for GitHub identities, commonly `<app-slug>[bot]`
 - Optional `github.commitName` and `github.commitEmail`
-- `slack.teamId`, `slack.appId`, and `slack.botUserId`: public Slack installation metadata
+- `slack.teamId`, `slack.appId`, `slack.botUserId`, and `slack.eventsRequestUrl`: public Slack installation metadata
 
 Each provider projects its own version 4 identity records into runtime config by `agentId`. Repository and channel access remains controlled by provider permissions and API responses, not by Agent Identities.
 

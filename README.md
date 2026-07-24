@@ -90,6 +90,10 @@ company-config records contain only typed refs under
 strings and the same agent's existing flat GitHub instance config remains intact. Earlier flat or
 full Slack records may retain inert public metadata because the host secret-ref API cannot delete
 scalar fields; the runtime ignores those fields and updates only their existing credential path.
+Static-config-only Slack identities no longer resolve at runtime; each Slack identity must exist in
+settings state before upgrade. For older v4 state that lacks `eventsRequestUrl`, Settings uses a
+retained host value only to prefill the edit flow so saving can copy it into v5 state. Tools and
+webhooks never use that display-only compatibility value.
 
 Upgrades from released `v0.1.7`/`v0.1.8` may still have a legacy
 `identities.<agentId>:slack.slackBotToken` entry in the local sidecar. Settings

@@ -35,6 +35,7 @@ import {
 import { createProviderRegistry } from "./providers/index.js";
 import {
   readSlackCredentialRefs,
+  readSlackIdentityConfigEntry,
   slackCredentialsConfigPath,
   readSlackSecretRef,
   type SlackCredentialsConfig,
@@ -542,7 +543,9 @@ function readSlackSetupProjection(
   legacyCredential?: NonNullable<BotIdentitySettingsEntry["slackSetup"]>["legacyCredential"],
 ): BotIdentitySettingsEntry["slackSetup"] | undefined {
   const agentId = identityConfig.agentId;
-  const eventsRequestUrl = identityConfig.slack.eventsRequestUrl;
+  const legacyHostIdentity = readSlackIdentityConfigEntry(config, agentId)?.value;
+  const eventsRequestUrl = identityConfig.slack.eventsRequestUrl
+    ?? readString(legacyHostIdentity?.eventsRequestUrl);
   let botTokenSecretId = "";
   let signingSecretId = "";
   try {

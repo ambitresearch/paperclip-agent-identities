@@ -74,6 +74,8 @@ Because settings-page state is always v5, every provider's `projectPluginConfig`
 
 Slack marks settings state authoritative because its public install metadata lives there. Tools and webhook routing never reconstruct a Slack identity from company config. Current company-config records keep `botToken` and `signingSecret` refs under `identities.<agentId>.slack.credentials`; earlier flat or full records may retain public metadata, but those scalar fields are ignored. Saving and rebinding update only the record's existing credential path because `config.patchSecretRefs` cannot remove public scalar metadata; new records use the nested credential path.
 
+This intentionally breaks runtime resolution for static-config-only Slack identities: operators must have a matching Slack identity in settings state before upgrading. The Settings data projection has one narrow migration aid for older v4 state that lacks `eventsRequestUrl`: it prefills the edit flow from a retained host value only when state has no value. Saving the install writes the URL into v5 state. Runtime tools and webhook routing never consume that display-only fallback.
+
 ## Credential sidecar
 
 Private credential references live outside plugin state in a local JSON sidecar handled by `/src/credential-sidecar.ts`.

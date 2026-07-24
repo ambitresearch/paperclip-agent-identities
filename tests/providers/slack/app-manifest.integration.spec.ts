@@ -782,6 +782,7 @@ describe("Slack manifest-assisted app setup actions", () => {
           teamId: "TOLD",
           appId: "AOLD",
           botUserId: "UOLD",
+          eventsRequestUrl: EVENTS_REQUEST_URL,
         },
       });
       const resolve = vi.fn();
@@ -806,6 +807,7 @@ describe("Slack manifest-assisted app setup actions", () => {
         status: "rebind-required",
         signingSecretRequired: true,
       });
+      expect(before.identities[0]?.slackSetup?.eventsRequestUrl).toBe(EVENTS_REQUEST_URL);
       expect(before.identities[0]?.slackSetup?.botTokenSecretId).toBeUndefined();
 
       const result = await harness.performAction(
@@ -1199,6 +1201,8 @@ describe("Slack manifest-assisted app setup actions", () => {
         },
       },
     });
+    const settings = await harness.getData<BotIdentitySettingsData>("bot-identity-config", { companyId: COMPANY_A });
+    expect(settings.identities[0]?.slackSetup?.eventsRequestUrl).toBe(EVENTS_REQUEST_URL);
   });
 
   it("never persists anything when the flow is only created and never saved (cancellation)", async () => {

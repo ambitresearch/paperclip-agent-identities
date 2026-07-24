@@ -38,6 +38,11 @@ If you change the manifest permissions or events after installing the app, reins
 
 ### Upgrade from v0.1.7 or v0.1.8
 
+Before upgrading, confirm every Slack identity appears in Agent Identities settings. Static
+company config is no longer a runtime identity fallback. If older v4 settings state has no Events
+Request URL, the edit form prefills the retained host value; save the install to persist it in v5
+state. That compatibility value is never used by tools or webhook routing.
+
 Those released versions stored the Slack bot-token company-secret UUID, and
 sometimes the signing-secret UUID, under
 `identities.<agentId>:slack.slackBotToken` in the local credential sidecar. The

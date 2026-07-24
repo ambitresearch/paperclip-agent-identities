@@ -34,10 +34,11 @@ import {
 } from "./legacy-slack-sidecar-cleanup.js";
 import { createProviderRegistry } from "./providers/index.js";
 import {
-  readSlackCredentialsConfig,
+  readSlackCredentialRefs,
   slackCredentialsConfigPath,
   readSlackIdentityConfigEntry,
   readSlackSecretRef,
+  type SlackCredentialsConfig,
 } from "./providers/slack/config.js";
 import {
   getLegacySlackCredentialStatus,
@@ -250,7 +251,7 @@ const plugin = definePlugin({
           let slackConfigRollback: {
             companyId: string;
             path: string[];
-            credentials: Record<string, unknown>;
+            credentials: Partial<SlackCredentialsConfig>;
           } | undefined;
           let legacySlackCredential: ReturnType<typeof readLegacySlackCredentialSidecarEntry>;
           let legacySlackCleanupError: unknown;
@@ -264,13 +265,13 @@ const plugin = definePlugin({
               throw new Error("agentId does not belong to the host-authorized company.");
             }
             const companyConfig = await ctx.config.get(companyId);
-            const existingSlackCredentials = readSlackCredentialsConfig(companyConfig, agentId);
-            if (existingSlackCredentials) {
+            const existingSlackCredentialRefs = readSlackCredentialRefs(companyConfig, agentId);
+            if (existingSlackCredentialRefs && Object.keys(existingSlackCredentialRefs).length > 0) {
               const slackConfigPath = [...slackCredentialsConfigPath(companyConfig, agentId)];
               slackConfigRollback = {
                 companyId,
                 path: slackConfigPath,
-                credentials: existingSlackCredentials,
+                credentials: existingSlackCredentialRefs,
               };
               await ctx.config.patchSecretRefs({
                 companyId,
@@ -435,9 +436,11 @@ async function resolveIdentityForProvider<TIdentity>(
   ctx: PluginContext,
   runCtx: ToolRunContext,
 ): Promise<ResolvedAgentIdentity<TIdentity>> {
-  const instanceConfig = await ctx.config.get(runCtx.companyId);
   const validateInstanceConfig = provider.validateInstanceConfig ?? provider.validateConfig;
-  const validated = validateInstanceConfig(readInstanceIdentity(instanceConfig, runCtx.agentId));
+  const resolveFromInstance = async (): Promise<TIdentity | string> => {
+    const instanceConfig = await ctx.config.get(runCtx.companyId);
+    return validateInstanceConfig(readInstanceIdentity(instanceConfig, runCtx.agentId));
+  };
   const resolveFromState = async (): Promise<ResolvedAgentIdentity<TIdentity>> => {
     const stateConfig = await ctx.state.get(CONFIG_SCOPE);
     if (!stateConfig) throw new Error("No settings-page state is configured.");
@@ -449,6 +452,7 @@ async function resolveIdentityForProvider<TIdentity>(
     try {
       return await resolveFromState();
     } catch (stateError) {
+      const validated = await resolveFromInstance();
       if (typeof validated !== "string") {
         return { agentId: runCtx.agentId, identity: validated };
       }
@@ -457,6 +461,7 @@ async function resolveIdentityForProvider<TIdentity>(
     }
   }
 
+  const validated = await resolveFromInstance();
   if (typeof validated !== "string") {
     return { agentId: runCtx.agentId, identity: validated };
   }

@@ -104,9 +104,22 @@ export function readSlackCredentialsConfig(
   config: Record<string, unknown>,
   agentId: string,
 ): SlackCredentialsConfig | undefined {
-  const identity = readSlackIdentityConfigEntry(config, agentId)?.value ?? {};
-  const parsed = slackCredentialsConfigSchema.safeParse(identity.credentials);
+  const parsed = slackCredentialsConfigSchema.safeParse(readSlackCredentialRefs(config, agentId));
   return parsed.success ? parsed.data : undefined;
+}
+
+export function readSlackCredentialRefs(
+  config: Record<string, unknown>,
+  agentId: string,
+): Partial<SlackCredentialsConfig> | undefined {
+  const identity = readSlackIdentityConfigEntry(config, agentId)?.value ?? {};
+  if (!isRecord(identity.credentials)) return undefined;
+  const botToken = slackSecretRefSchema.safeParse(identity.credentials.botToken);
+  const signingSecret = slackSecretRefSchema.safeParse(identity.credentials.signingSecret);
+  return {
+    ...(botToken.success ? { botToken: botToken.data } : {}),
+    ...(signingSecret.success ? { signingSecret: signingSecret.data } : {}),
+  };
 }
 
 export function slackSecretRefConfigPath(

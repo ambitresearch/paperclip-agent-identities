@@ -151,7 +151,7 @@ compatibility shapes. It rejects mixed records, including stale top-level Slack 
 GitHub or nested Slack identity and GitHub commit metadata on the legacy flat Slack shape, so the
 runtime never silently ignores provider-specific values.
 
-`resolveIdentityForProvider()` in `/src/worker.ts` is the provider-agnostic resolver every provider tool goes through. Providers use instance config first by default. A provider may opt into state-first resolution and a stricter instance-config validator; Slack does this because public metadata is authoritative in state while instance config contains only credential refs. Both orders retain the other source as a compatibility fallback.
+`resolveIdentityForProvider()` in `/src/worker.ts` is the provider-agnostic resolver every provider tool goes through. Providers use instance config first by default. A provider may opt into state-first resolution and a stricter instance-config validator; Slack does this because public metadata is authoritative in state while instance config contains only credential refs. State-first resolution does not fetch instance config unless the state lookup or projection fails, so credential-free tools remain available during a config-read outage. Both orders retain the other source as a compatibility fallback.
 
 Settings state is normalized to version 4 nested provider records (`BOT_IDENTITY_SETTINGS_VERSION` from `/src/core/identity-config.ts`):
 

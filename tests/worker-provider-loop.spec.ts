@@ -132,6 +132,38 @@ describe("worker provider registration", () => {
     expect(getState).not.toHaveBeenCalled();
   });
 
+  it("does not read instance config when a state-first provider has valid settings state", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {},
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-1:slack": {
+          provider: "slack",
+          id: "agent-1:slack",
+          agentId: "agent-1",
+          label: "Slack Bot",
+          slack: { teamId: "T1", appId: "A1", botUserId: "U1" },
+        },
+      },
+    });
+    const getConfig = vi.spyOn(harness.ctx.config, "get").mockRejectedValue(new Error("config unavailable"));
+
+    const result = await harness.executeTool<{ data?: { teamId: string } }>(
+      "slack_bot_whoami",
+      {},
+      { companyId: "company-1", agentId: "agent-1" },
+    );
+
+    expect(result.data?.teamId).toBe("T1");
+    expect(getConfig).not.toHaveBeenCalled();
+  });
+
   // Regression test for the changes-requested review on DRO-976: the
   // Settings UI's "check Slack status" readout calls `slack_bot_whoami` via
   // `usePluginAction`, which reaches the worker through `performAction` --

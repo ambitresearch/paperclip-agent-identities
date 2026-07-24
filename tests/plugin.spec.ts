@@ -1530,6 +1530,101 @@ describe("agent identity settings", () => {
     expect(patchSecretRefs).not.toHaveBeenCalled();
   });
 
+  it("deletes and rolls back an incomplete Slack credential binding using only valid refs", async () => {
+    const botToken = { type: "secret_ref", secretId: TEST_SECRET_ID, version: "latest" } as const;
+    const patchSecretRefs = vi.fn(async () => undefined);
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    Object.assign(harness.ctx.config, {
+      get: vi.fn(async () => ({
+        identities: {
+          "agent-partial-slack": {
+            slack: {
+              credentials: {
+                botToken,
+                signingSecret: { type: "secret_ref", secretId: "not-a-uuid", version: "latest" },
+              },
+            },
+          },
+        },
+      })),
+      patchSecretRefs,
+    });
+    harness.seed({
+      agents: [{ id: "agent-partial-slack", companyId: "company_1", name: "Partial Slack Bot" } as never],
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-partial-slack:slack": {
+          provider: "slack",
+          id: "agent-partial-slack:slack",
+          agentId: "agent-partial-slack",
+          label: "Partial Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+      },
+    });
+    vi.spyOn(harness.ctx.state, "set").mockRejectedValueOnce(new Error("settings state unavailable"));
+
+    await expect(harness.performAction(
+      "delete-bot-identity-config",
+      { provider: "slack", agentId: "agent-partial-slack" },
+      { companyId: "company_1" },
+    )).rejects.toThrow("settings state unavailable");
+
+    expect(patchSecretRefs).toHaveBeenNthCalledWith(1, {
+      companyId: "company_1",
+      path: ["identities", "agent-partial-slack", "slack", "credentials"],
+      value: null,
+    });
+    expect(patchSecretRefs).toHaveBeenNthCalledWith(2, {
+      companyId: "company_1",
+      path: ["identities", "agent-partial-slack", "slack", "credentials"],
+      value: { botToken },
+    });
+  });
+
+  it("skips an empty Slack credential container because no secret refs remain bound", async () => {
+    const patchSecretRefs = vi.fn(async () => {
+      throw new Error("config.patchSecretRefs found no bound secret refs to remove");
+    });
+    const harness = createTestHarness({ manifest, capabilities: [...manifest.capabilities, "events.emit"] });
+    Object.assign(harness.ctx.config, {
+      get: vi.fn(async () => ({
+        identities: { "agent-empty-slack": { slack: { credentials: {} } } },
+      })),
+      patchSecretRefs,
+    });
+    harness.seed({
+      agents: [{ id: "agent-empty-slack", companyId: "company_1", name: "Empty Slack Bot" } as never],
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-empty-slack:slack": {
+          provider: "slack",
+          id: "agent-empty-slack:slack",
+          agentId: "agent-empty-slack",
+          label: "Empty Slack Bot",
+          slack: { teamId: "T12345678", appId: "A12345678", botUserId: "U12345678" },
+        },
+      },
+    });
+
+    const result = await harness.performAction<BotIdentitySettingsData>(
+      "delete-bot-identity-config",
+      { provider: "slack", agentId: "agent-empty-slack" },
+      { companyId: "company_1" },
+    );
+
+    expect(patchSecretRefs).not.toHaveBeenCalled();
+    expect(result.identities).toEqual([]);
+  });
+
   it("restores the exact Slack company config when the settings-state deletion fails", async () => {
     const previousSlackConfig = {
       label: "Rollback Slack Bot",

@@ -269,6 +269,12 @@ const slackSecretRefSchema = z.object({
   `identities.<agentId>.slack.credentials`. Public install metadata remains in
   plugin state. Full nested and flat Slack records written by earlier releases
   remain readable as compatibility fallbacks.
+- Identity deletion clears the credential subtree whenever it contains at
+  least one valid bound ref, including incomplete legacy bindings. It skips an
+  empty or wholly invalid container because the host rejects a secret-ref patch
+  when nothing is bound. If the state deletion fails, rollback restores only
+  refs that pass `slackSecretRefSchema`; malformed values are never copied into
+  `patchSecretRefs`.
 - The manifest declares each credential as `type: string` with
   `format: secret-ref`; Paperclip stores typed refs but projects them to their
   secret UUIDs before validating config patches against that schema. These
@@ -702,10 +708,11 @@ without a valid Slack signature could spoof events as if from Slack.
 **Mitigation (implemented by DRO-1005 and the provisioning follow-up):** the
 generated manifest provisions the required HTTPS `/events` Request URL and
 subscribes to `app_mention`, `message.channels`, `message.groups`, `message.im`,
-and `message.mpim`. The receiver resolves
-`identities.<agentId>.slack.credentials.signingSecret` just in time. For normal
-callbacks it extracts bounded `team_id` and `api_app_id` values as untrusted
-routing hints, resolves only the exactly routed identity's secret, and verifies
+and `message.mpim`. For normal callbacks the receiver extracts bounded
+`team_id` and `api_app_id` values as untrusted routing hints, intersects public
+identities from `CONFIG_SCOPE` with company config entries that contain both
+required credential refs, resolves only the exactly routed identity's
+`identities.<agentId>.slack.credentials.signingSecret`, and verifies
 the untouched raw body before trusting or dispatching the full envelope.
 Requests without usable hints use a bounded parallel verification fallback.
 The receiver rejects requests outside Slack's replay window (roughly 5

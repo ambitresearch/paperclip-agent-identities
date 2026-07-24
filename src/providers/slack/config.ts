@@ -65,6 +65,53 @@ export function slackCredentialsConfigPath(
   return [...identityPath, "credentials"];
 }
 
+export function createSlackCredentialsConfigPatch(
+  config: Record<string, unknown>,
+  agentId: string,
+  credentials: SlackCredentialsConfig,
+): { path: readonly string[]; value: Record<string, unknown>; migratesLegacyMetadata: boolean } {
+  const entry = readSlackIdentityConfigEntry(config, agentId);
+  if (!entry) {
+    return {
+      path: [...slackIdentityConfigPath(agentId), "credentials"],
+      value: credentials,
+      migratesLegacyMetadata: false,
+    };
+  }
+
+  const metadataRemoval = {
+    label: null,
+    teamId: null,
+    appId: null,
+    botUserId: null,
+    defaultChannel: null,
+    eventsRequestUrl: null,
+  };
+  if (entry.legacy) {
+    return {
+      path: entry.path,
+      value: {
+        ...metadataRemoval,
+        credentials: null,
+        slack: { credentials },
+      },
+      migratesLegacyMetadata: true,
+    };
+  }
+  if (Object.keys(metadataRemoval).some((field) => Object.prototype.hasOwnProperty.call(entry.value, field))) {
+    return {
+      path: entry.path,
+      value: { ...metadataRemoval, credentials },
+      migratesLegacyMetadata: true,
+    };
+  }
+  return {
+    path: [...entry.path, "credentials"],
+    value: credentials,
+    migratesLegacyMetadata: false,
+  };
+}
+
 export function createSlackSecretRef(secretId: string): SlackSecretRef {
   return slackSecretRefSchema.parse({ type: "secret_ref", secretId, version: "latest" });
 }

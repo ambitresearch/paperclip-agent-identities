@@ -70,7 +70,7 @@ For GitHub, repository access is controlled by the GitHub App installation and G
 
 Because settings-page state is always v4, every provider's `projectPluginConfig` receives the nested `AgentIdentityConfig` union and is responsible for narrowing to its own provider and reading its own nested fields (e.g. `identity.github.username` for GitHub). Disabled or unknown provider records are ignored during projection. The current settings UI cascades GitHub App credentials to the selected agent identity.
 
-Slack opts into state-first resolution because its public install metadata lives in plugin state. Company config contains only `botToken` and `signingSecret` refs under `identities.<agentId>.slack.credentials`; outbound tools require `botToken`, while webhook routing and the legacy instance-config fallback require both refs. Earlier full nested or flat Slack config records remain readable as compatibility fallbacks.
+Slack opts into state-first resolution because its public install metadata lives in plugin state. Company config contains only `botToken` and `signingSecret` refs under `identities.<agentId>.slack.credentials`; outbound tools require `botToken`, while webhook routing and the legacy instance-config fallback require both refs. Earlier full nested or flat Slack config records remain readable as compatibility fallbacks, but saving or rebinding them atomically removes their host-side public metadata and migrates the refs to the credential-only nested shape.
 
 ## Credential sidecar
 

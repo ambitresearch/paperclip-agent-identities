@@ -18,9 +18,9 @@ import type {
 } from "../../shared/types.js";
 import { getIdentityKey, REBIND_LEGACY_SLACK_CREDENTIALS_ACTION } from "../../shared/types.js";
 import {
+  createSlackCredentialsConfigPatch,
   createSlackSecretRef,
   readSlackCredentialsConfig,
-  slackCredentialsConfigPath,
   slackCredentialsConfigSchema,
   slackSecretIdSchema,
   type SlackCredentialsConfig,
@@ -150,6 +150,7 @@ export function contributeLegacySlackRebindAction(ctx: PluginContext): void {
           botToken: createSlackSecretRef(legacy.botTokenSecretId),
           signingSecret: createSlackSecretRef(signingSecretId),
         });
+        const credentialPatch = createSlackCredentialsConfigPatch(companyConfig, agentId, desired);
         let wroteHostBinding = false;
 
         if (existingCredentials) {
@@ -161,11 +162,12 @@ export function contributeLegacySlackRebindAction(ctx: PluginContext): void {
               "Existing Slack host binding conflicts with the released sidecar identity; it was not overwritten.",
             );
           }
-        } else {
+        }
+        if (!existingCredentials || credentialPatch.migratesLegacyMetadata) {
           await ctx.config.patchSecretRefs({
             companyId,
-            path: [...slackCredentialsConfigPath(companyConfig, agentId)],
-            value: desired,
+            path: [...credentialPatch.path],
+            value: credentialPatch.value,
           });
           wroteHostBinding = true;
         }

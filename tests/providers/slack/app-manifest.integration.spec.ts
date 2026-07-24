@@ -107,13 +107,13 @@ function harnessWithSetup() {
   return Object.assign(harness, { getCompanyConfig, getConfig, patchSecretRefs });
 }
 
-function strictHarnessWithSetup() {
+function strictHarnessWithSetup(initialIdentity: Record<string, unknown> = {
+  label: "Preserved GitHub identity for shared agent",
+  githubUsername: "shared-agent[bot]",
+}) {
   let companyConfig: Record<string, unknown> = {
     identities: {
-      "agent-slack-1": {
-        label: "Preserved GitHub identity for shared agent",
-        githubUsername: "shared-agent[bot]",
-      },
+      "agent-slack-1": structuredClone(initialIdentity),
     },
   };
   const harness = createTestHarness({
@@ -174,7 +174,10 @@ function strictHarnessWithSetup() {
       { id: "agent-slack-1", name: "agent-slack-1", companyId: COMPANY_A } as never,
     ],
   });
-  return harness;
+  return Object.assign(harness, {
+    getCompanyConfig: () => structuredClone(companyConfig),
+    patchSecretRefs,
+  });
 }
 
 describe("Slack manifest-assisted app setup actions", () => {
@@ -717,12 +720,10 @@ describe("Slack manifest-assisted app setup actions", () => {
           "agent-slack-1:github": { secretId: FAKE_SECRET_ID_2 },
         },
       }));
-      const harness = harnessWithSetup();
-      const originalPatch = harness.patchSecretRefs.getMockImplementation()!;
-      await originalPatch({
-        companyId: COMPANY_A,
-        path: ["identities", "agent-slack-1", "slack"],
-        value: {
+      const harness = strictHarnessWithSetup({
+        label: "Preserved GitHub identity for shared agent",
+        githubUsername: "shared-agent[bot]",
+        slack: {
           label: "Released Slack Bot",
           teamId: "TOLD",
           appId: "AOLD",
@@ -766,10 +767,6 @@ describe("Slack manifest-assisted app setup actions", () => {
           "agent-slack-1": {
             githubUsername: "shared-agent[bot]",
             slack: {
-              label: "Released Slack Bot",
-              teamId: "TOLD",
-              appId: "AOLD",
-              botUserId: "UOLD",
               credentials: {
                 botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID, version: "latest" },
                 signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },
@@ -1095,21 +1092,19 @@ describe("Slack manifest-assisted app setup actions", () => {
   });
 
   it("migrates the flat Slack company config written by earlier builds of this PR", async () => {
-    const harness = harnessWithSetup();
     const legacySlackConfig = {
       label: "Legacy Slack Bot",
       teamId: "TOLD",
       appId: "AOLD",
       botUserId: "UOLD",
+      defaultChannel: "COLDCHANNEL",
+      eventsRequestUrl: "https://old-slack.example/events",
       credentials: {
         botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID, version: "latest" },
         signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },
       },
     };
-    const getConfig = vi.fn(async (companyId?: string) => companyId === COMPANY_A
-      ? { identities: { "agent-slack-1": legacySlackConfig } }
-      : { identities: {} });
-    Object.assign(harness.ctx.config, { get: getConfig });
+    const harness = strictHarnessWithSetup(legacySlackConfig);
     await plugin.definition.setup(harness.ctx);
 
     const created = await harness.performAction<CreateSlackAppManifestResult>(
@@ -1133,10 +1128,33 @@ describe("Slack manifest-assisted app setup actions", () => {
 
     expect(harness.patchSecretRefs).toHaveBeenCalledWith({
       companyId: COMPANY_A,
-      path: ["identities", "agent-slack-1", "credentials"],
+      path: ["identities", "agent-slack-1"],
       value: {
-        botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID_2, version: "latest" },
-        signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },
+        label: null,
+        teamId: null,
+        appId: null,
+        botUserId: null,
+        defaultChannel: null,
+        eventsRequestUrl: null,
+        credentials: null,
+        slack: {
+          credentials: {
+            botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID_2, version: "latest" },
+            signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },
+          },
+        },
+      },
+    });
+    expect(harness.getCompanyConfig()).toEqual({
+      identities: {
+        "agent-slack-1": {
+          slack: {
+            credentials: {
+              botToken: { type: "secret_ref", secretId: FAKE_SECRET_ID_2, version: "latest" },
+              signingSecret: { type: "secret_ref", secretId: FAKE_SIGNING_SECRET_ID, version: "latest" },
+            },
+          },
+        },
       },
     });
   });

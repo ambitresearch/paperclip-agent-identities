@@ -8,7 +8,13 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import type { ProviderWebhookDeclaration } from "../../../core/provider-contract.js";
 import type { ResolvedAgentIdentity } from "../../../core/agent-identity.js";
-import { validateSlackConfig, type SlackAgentIdentity } from "../config.js";
+import { CONFIG_SCOPE } from "../../../config-source.js";
+import { normalizeSettingsState } from "../../../core/identity-config.js";
+import {
+  projectSlackPluginConfig,
+  readSlackSecretRef,
+  type SlackAgentIdentity,
+} from "../config.js";
 import {
   resolveSlackBotToken,
   resolveSlackSigningSecret,
@@ -315,13 +321,24 @@ async function buildSlackWebhookConfigSnapshot(
   const config = await ctx.config.get(companyId);
   if (!isRecord(config)) throw new Error("Slack webhook company config is invalid.");
   const identities: Record<string, SlackAgentIdentity> = {};
-  if (!isRecord(config.identities)) return { config, identities };
-  for (const [agentId, rawIdentity] of Object.entries(config.identities)) {
-    const validated = validateSlackConfig(rawIdentity);
-    if (typeof validated !== "string" && agentId.trim() === agentId && agentId.length <= SLACK_TURN_FIELD_MAX_LENGTH) {
-      identities[agentId] = validated;
+  const hasCredentials = (agentId: string): boolean => {
+    try {
+      readSlackSecretRef(config, agentId, "botToken");
+      readSlackSecretRef(config, agentId, "signingSecret");
+      return true;
+    } catch {
+      return false;
     }
+  };
+
+  // Public install metadata is authoritative in plugin state. Intersect it
+  // with company-scoped credential bindings so an identity without both refs
+  // cannot receive or route webhooks.
+  const state = normalizeSettingsState(await ctx.state.get(CONFIG_SCOPE));
+  for (const [agentId, identity] of Object.entries(projectSlackPluginConfig(state.identities))) {
+    if (hasCredentials(agentId)) identities[agentId] = identity;
   }
+
   if (Object.keys(identities).length > 1_024) {
     throw new Error("Slack webhook identity set exceeds the safe routing bound.");
   }

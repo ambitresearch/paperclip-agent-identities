@@ -65,6 +65,7 @@ Current test files:
   - table-driven agent/system denial for every protected settings/setup action before state, config, secret, agent-list, or HTTP access
   - malformed actor rejection and local implicit-user (`userId: null`) success
 - `/tests/providers/slack/app-manifest.integration.spec.ts`
+  - strict `config.patchSecretRefs` coverage proving Slack setup writes only typed credential refs while public metadata remains in plugin state
   - released `v0.1.7`/`v0.1.8` Slack credential rebind, conflict, and cleanup-pending recovery
   - deterministic metadata-discovery marker serialization/ownership
   - deterministic Slack delete-rollback versus queued-save interleaving

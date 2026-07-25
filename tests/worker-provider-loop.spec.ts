@@ -2,6 +2,20 @@ import { describe, expect, it, vi } from "vitest";
 import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
 import manifest from "../src/manifest.js";
 import plugin from "../src/worker.js";
+import { CONFIG_SCOPE } from "../src/config-source.js";
+
+const SLACK_CREDENTIALS = {
+  botToken: {
+    type: "secret_ref" as const,
+    secretId: "00000000-0000-4000-8000-000000000001",
+    version: "latest" as const,
+  },
+  signingSecret: {
+    type: "secret_ref" as const,
+    secretId: "00000000-0000-4000-8000-000000000002",
+    version: "latest" as const,
+  },
+};
 
 describe("worker provider registration", () => {
   it("registers every enabled-provider tool plus opted-in live tools from coming-soon providers, and nothing else", async () => {
@@ -44,7 +58,7 @@ describe("worker provider registration", () => {
     );
   });
 
-  it("resolves GitHub and Slack identities for the same agent from one static config entry", async () => {
+  it("resolves GitHub from instance config and Slack from authoritative state for the same agent", async () => {
     const harness = createTestHarness({
       manifest,
       capabilities: [...manifest.capabilities],
@@ -58,12 +72,26 @@ describe("worker provider registration", () => {
               teamId: "T1",
               appId: "A1",
               botUserId: "U1",
+              credentials: SLACK_CREDENTIALS,
             },
           },
         },
       },
     });
     await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-1:slack": {
+          provider: "slack",
+          id: "agent-1:slack",
+          agentId: "agent-1",
+          label: "Slack Bot",
+          slack: { teamId: "T1", appId: "A1", botUserId: "U1" },
+        },
+      },
+    });
 
     const github = await harness.executeTool<{ data?: { githubUsername: string } }>(
       "github_bot_whoami",
@@ -94,6 +122,91 @@ describe("worker provider registration", () => {
     expect(result.error).toContain("github_bot_whoami failed closed for agent 'agent-missing'");
   });
 
+  it("does not read settings state when an instance-first provider has valid static config", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {
+        identities: {
+          "agent-1": { label: "GitHub Bot", githubUsername: "github-bot[bot]" },
+        },
+      },
+    });
+    const getState = vi.spyOn(harness.ctx.state, "get");
+    await plugin.definition.setup(harness.ctx);
+
+    const result = await harness.executeTool<{ data?: { githubUsername: string } }>(
+      "github_bot_whoami",
+      {},
+      { companyId: "company-1", agentId: "agent-1" },
+    );
+
+    expect(result.data?.githubUsername).toBe("github-bot[bot]");
+    expect(getState).not.toHaveBeenCalled();
+  });
+
+  it("does not read instance config when a state-first provider has valid settings state", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {},
+    });
+    await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-1:slack": {
+          provider: "slack",
+          id: "agent-1:slack",
+          agentId: "agent-1",
+          label: "Slack Bot",
+          slack: { teamId: "T1", appId: "A1", botUserId: "U1" },
+        },
+      },
+    });
+    const getConfig = vi.spyOn(harness.ctx.config, "get").mockRejectedValue(new Error("config unavailable"));
+
+    const result = await harness.executeTool<{ data?: { teamId: string } }>(
+      "slack_bot_whoami",
+      {},
+      { companyId: "company-1", agentId: "agent-1" },
+    );
+
+    expect(result.data?.teamId).toBe("T1");
+    expect(getConfig).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to legacy instance metadata for an authoritative provider", async () => {
+    const harness = createTestHarness({
+      manifest,
+      capabilities: [...manifest.capabilities],
+      config: {
+        identities: {
+          "agent-1": {
+            slack: {
+              label: "Stale Slack Bot",
+              teamId: "TOLD",
+              appId: "AOLD",
+              botUserId: "UOLD",
+            },
+          },
+        },
+      },
+    });
+    await plugin.definition.setup(harness.ctx);
+    const getConfig = vi.spyOn(harness.ctx.config, "get");
+
+    const result = await harness.executeTool<{ error?: string }>(
+      "slack_bot_whoami",
+      {},
+      { companyId: "company-1", agentId: "agent-1" },
+    );
+
+    expect(result.error).toContain("No settings-page state is configured");
+    expect(getConfig).not.toHaveBeenCalled();
+  });
+
   // Regression test for the changes-requested review on DRO-976: the
   // Settings UI's "check Slack status" readout calls `slack_bot_whoami` via
   // `usePluginAction`, which reaches the worker through `performAction` --
@@ -108,7 +221,7 @@ describe("worker provider registration", () => {
       capabilities: [...manifest.capabilities],
       config: {
         identities: {
-          "agent-1": { slack: { label: "Bot", teamId: "T1", appId: "A1", botUserId: "U1" } },
+          "agent-1": { slack: { credentials: SLACK_CREDENTIALS } },
         },
       },
     });
@@ -118,6 +231,19 @@ describe("worker provider registration", () => {
       ],
     });
     await plugin.definition.setup(harness.ctx);
+    await harness.ctx.state.set(CONFIG_SCOPE, {
+      version: 5,
+      cleanupTombstones: {},
+      identities: {
+        "agent-1:slack": {
+          provider: "slack",
+          id: "agent-1:slack",
+          agentId: "agent-1",
+          label: "Bot",
+          slack: { teamId: "T1", appId: "A1", botUserId: "U1" },
+        },
+      },
+    });
 
     const result = await harness.performAction<{ data?: { teamId: string } }>(
       "slack_bot_whoami",

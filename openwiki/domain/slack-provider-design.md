@@ -21,9 +21,9 @@ Settings persistence remains a separate, provider-specific boundary. The
 shipped Slack settings adapter adds the Slack form and public settings-state
 projection, while `save-slack-install-metadata` owns Slack installation
 persistence. That action writes the public identity fields to settings state
-and calls `ctx.config.patchSecretRefs` to write the company-scoped identity at
-`identities.<agentId>.slack`, including required typed secret refs at
-`slack.credentials.botToken` and `slack.credentials.signingSecret`. Current
+and calls `ctx.config.patchSecretRefs` to write only the company-scoped refs at
+the credential path selected by `slackCredentialsConfigPath`: the nested path
+for current records or the existing flat path for a legacy record. Current
 runtime credential resolution does not use the local credential sidecar; it is
 inspected only by the one-release legacy migration path described below.
 
@@ -228,11 +228,6 @@ Current shipped company config has this shape:
   "identities": {
     "<agent-id>": {
       "slack": {
-        "label": "Paperclip Agent - QA",
-        "teamId": "T0123ABCD",
-        "appId": "A0123ABCD",
-        "botUserId": "U0123ABCD",
-        "defaultChannel": "C0123ABCD",
         "credentials": {
           "botToken": {
             "type": "secret_ref",
@@ -269,11 +264,18 @@ const slackSecretRefSchema = z.object({
   resolves it just in time to verify Slack signatures and the URL-verification
   challenge.
 - `save-slack-install-metadata` validates both submitted UUIDs before mutation,
-  converts them to typed refs, and writes the identity subtree with one
-  `ctx.config.patchSecretRefs` call scoped to `identities.<agentId>.slack`, so
-  static GitHub fields in the same per-agent object remain intact. Flat Slack
-  records written by earlier builds of this PR remain readable and are moved
-  into the provider subtree on the next save.
+  converts them to typed refs, and writes only the credential subtree with one
+  `ctx.config.patchSecretRefs` call scoped to
+  `identities.<agentId>.slack.credentials` for current records and the existing
+  flat credential path for a legacy record. Public install metadata remains in
+  plugin state. Public fields retained in earlier host records are ignored at
+  runtime because settings state is authoritative.
+- Identity deletion clears the credential subtree whenever it contains at
+  least one valid bound ref, including incomplete legacy bindings. It skips an
+  empty or wholly invalid container because the host rejects a secret-ref patch
+  when nothing is bound. If the state deletion fails, rollback restores only
+  refs that pass `slackSecretRefSchema`; malformed values are never copied into
+  `patchSecretRefs`.
 - The manifest declares each credential as `type: string` with
   `format: secret-ref`; Paperclip stores typed refs but projects them to their
   secret UUIDs before validating config patches against that schema. These
@@ -292,11 +294,13 @@ create both company secrets through the host first.
 Released-sidecar migration is explicit, not a bare-UUID runtime fallback.
 `rebind-legacy-slack-credentials` requires the host-authorized `companyId`,
 revalidates agent membership, requires an existing public Slack settings
-identity, and rejects a conflicting host binding. It copies the released bot
-token UUID and either the released signing-secret UUID or an operator-supplied
-signing-secret UUID into typed refs. It then deletes only the exact legacy Slack
-entry, preserving sibling GitHub entries. Cleanup failure leaves the working
-host binding in place and projects `cleanup-pending` for a safe retry.
+identity, and rejects a conflicting complete host binding. A metadata-only or
+incomplete host record remains eligible for rebind. The action copies the
+released bot token UUID and either the released signing-secret UUID or an
+operator-supplied signing-secret UUID into typed refs. It then deletes only the
+exact legacy Slack entry, preserving sibling GitHub entries. Cleanup failure
+leaves the working host binding in place and projects `cleanup-pending` for a
+safe retry.
 
 Process-local queues serialize metadata discovery by `(state client,
 companyId, secretId)` and Slack settings mutations by the shared settings
@@ -378,8 +382,8 @@ The production implementation factors this sequence through
 `resolveSlackBotToken`, but the boundaries above are exact: read the
 host-authorized company snapshot with `ctx.config.get(runCtx.companyId)`, read
 only the calling agent's typed ref with `readSlackSecretRef`, and pass both the
-company ID and exact nested config path into `ctx.secrets.resolve`. The path
-helper retains the flat legacy path only while reading a record written by an
+company ID and exact config path into `ctx.secrets.resolve`. The path helper
+retains the flat legacy path while reading or updating a record written by an
 earlier build of this PR. Missing, malformed,
 revoked, or cross-bound refs fail closed. `verifySlackToken` calls `auth.test`
 and parses only the documented team, user, and bot identity fields without
@@ -705,10 +709,11 @@ without a valid Slack signature could spoof events as if from Slack.
 **Mitigation (implemented by DRO-1005 and the provisioning follow-up):** the
 generated manifest provisions the required HTTPS `/events` Request URL and
 subscribes to `app_mention`, `message.channels`, `message.groups`, `message.im`,
-and `message.mpim`. The receiver resolves
-`identities.<agentId>.slack.credentials.signingSecret` just in time. For normal
-callbacks it extracts bounded `team_id` and `api_app_id` values as untrusted
-routing hints, resolves only the exactly routed identity's secret, and verifies
+and `message.mpim`. For normal callbacks the receiver extracts bounded
+`team_id` and `api_app_id` values as untrusted routing hints, intersects public
+identities from `CONFIG_SCOPE` with company config entries that contain both
+required credential refs, resolves only the exactly routed identity's
+`identities.<agentId>.slack.credentials.signingSecret`, and verifies
 the untouched raw body before trusting or dispatching the full envelope.
 Requests without usable hints use a bounded parallel verification fallback.
 The receiver rejects requests outside Slack's replay window (roughly 5

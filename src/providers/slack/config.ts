@@ -26,20 +26,16 @@ export const slackSecretRefSchema = z.object({
 export type SlackSecretRef = z.infer<typeof slackSecretRefSchema>;
 export type SlackCredentialKind = "botToken" | "signingSecret";
 
-export const slackHostIdentityConfigSchema = slackIdentitySchema.extend({
-  eventsRequestUrl: z.string().trim().min(1).optional(),
-  credentials: z.object({
-    botToken: slackSecretRefSchema,
-    signingSecret: slackSecretRefSchema,
-  }),
+export const slackCredentialsConfigSchema = z.object({
+  botToken: slackSecretRefSchema,
+  signingSecret: slackSecretRefSchema,
 });
 
-export type SlackHostIdentityConfig = z.infer<typeof slackHostIdentityConfigSchema>;
+export type SlackCredentialsConfig = z.infer<typeof slackCredentialsConfigSchema>;
 
 interface SlackIdentityConfigEntry {
   readonly path: readonly string[];
   readonly value: Record<string, unknown>;
-  readonly legacy: boolean;
 }
 
 function assertSafeConfigSegment(agentId: string): void {
@@ -51,6 +47,14 @@ function assertSafeConfigSegment(agentId: string): void {
 export function slackIdentityConfigPath(agentId: string): readonly string[] {
   assertSafeConfigSegment(agentId);
   return ["identities", agentId, "slack"];
+}
+
+export function slackCredentialsConfigPath(
+  config: Record<string, unknown>,
+  agentId: string,
+): readonly string[] {
+  const identityPath = readSlackIdentityConfigEntry(config, agentId)?.path ?? slackIdentityConfigPath(agentId);
+  return [...identityPath, "credentials"];
 }
 
 export function createSlackSecretRef(secretId: string): SlackSecretRef {
@@ -66,10 +70,10 @@ export function readSlackIdentityConfigEntry(
   const identity = isRecord(identities[agentId]) ? identities[agentId] : undefined;
   if (!identity) return undefined;
   if (isRecord(identity.slack)) {
-    return { path: slackIdentityConfigPath(agentId), value: identity.slack, legacy: false };
+    return { path: slackIdentityConfigPath(agentId), value: identity.slack };
   }
   if (looksLikeLegacySlackIdentity(identity)) {
-    return { path: ["identities", agentId], value: identity, legacy: true };
+    return { path: ["identities", agentId], value: identity };
   }
   return undefined;
 }
@@ -86,6 +90,28 @@ export function readSlackSecretRef(
     throw new Error(`Missing or invalid Slack ${credential} secret reference for agent '${agentId}'.`);
   }
   return parsed.data;
+}
+
+export function readSlackCredentialsConfig(
+  config: Record<string, unknown>,
+  agentId: string,
+): SlackCredentialsConfig | undefined {
+  const parsed = slackCredentialsConfigSchema.safeParse(readSlackCredentialRefs(config, agentId));
+  return parsed.success ? parsed.data : undefined;
+}
+
+export function readSlackCredentialRefs(
+  config: Record<string, unknown>,
+  agentId: string,
+): Partial<SlackCredentialsConfig> | undefined {
+  const identity = readSlackIdentityConfigEntry(config, agentId)?.value ?? {};
+  if (!isRecord(identity.credentials)) return undefined;
+  const botToken = slackSecretRefSchema.safeParse(identity.credentials.botToken);
+  const signingSecret = slackSecretRefSchema.safeParse(identity.credentials.signingSecret);
+  return {
+    ...(botToken.success ? { botToken: botToken.data } : {}),
+    ...(signingSecret.success ? { signingSecret: signingSecret.data } : {}),
+  };
 }
 
 export function slackSecretRefConfigPath(

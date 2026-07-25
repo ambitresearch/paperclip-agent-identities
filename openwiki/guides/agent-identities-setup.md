@@ -38,6 +38,11 @@ If you change the manifest permissions or events after installing the app, reins
 
 ### Upgrade from v0.1.7 or v0.1.8
 
+Before upgrading, confirm every Slack identity appears in Agent Identities settings. Static
+company config is no longer a runtime identity fallback. If older v4 settings state has no Events
+Request URL, the edit form prefills the retained host value; save the install to persist it in v5
+state. That compatibility value is never used by tools or webhook routing.
+
 Those released versions stored the Slack bot-token company-secret UUID, and
 sometimes the signing-secret UUID, under
 `identities.<agentId>:slack.slackBotToken` in the local credential sidecar. The
@@ -47,7 +52,7 @@ If a row shows **Rebind required**, edit it and choose **Rebind released
 credentials**. When prompted, select or paste the UUID of the existing
 Paperclip company secret containing the Slack signing secret. The action checks
 the host-authorized company and agent membership and copies only typed UUID
-references into `identities.<agentId>.slack`; it never reads or displays either
+references into `identities.<agentId>.slack.credentials`; it never reads or displays either
 secret value. **Cleanup pending** means the host binding works but deleting the
 legacy sidecar entry failed; retry the same action. **Conflict** means an
 existing host Slack binding differs and must be reviewed rather than

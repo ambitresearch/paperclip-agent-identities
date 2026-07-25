@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSessionEvent, PluginEvent } from "@paperclipai/plugin-sdk";
+import { CONFIG_SCOPE } from "../../../src/config-source.js";
 import {
   contributeSlackIngress,
   classifySlackSendFailure,
@@ -40,6 +41,28 @@ const COMPANY_CONFIG = {
           signingSecret: { type: "secret_ref", secretId: SIGNING_SECRET_ID, version: "latest" },
         },
       },
+    },
+  },
+} as const;
+
+const CREDENTIALS_ONLY_CONFIG = {
+  identities: {
+    "agent-1": {
+      slack: { credentials: COMPANY_CONFIG.identities["agent-1"].slack.credentials },
+    },
+  },
+} as const;
+
+const SLACK_SETTINGS_STATE = {
+  version: 5,
+  cleanupTombstones: {},
+  identities: {
+    "agent-1:slack": {
+      provider: "slack",
+      id: "agent-1:slack",
+      agentId: "agent-1",
+      label: "Agent 1",
+      slack: { teamId: "T111", appId: "A111", botUserId: "U111" },
     },
   },
 } as const;
@@ -106,8 +129,14 @@ function makeCtx(options: {
   ) => Promise<{ runId: string }>;
   close?: (sessionId: string, companyId: string) => Promise<void>;
   store?: Map<string, unknown>;
+  config?: Record<string, unknown>;
+  settingsState?: unknown | null;
 } = {}) {
   const store = options.store ?? new Map<string, unknown>();
+  const settingsState = options.settingsState === undefined ? SLACK_SETTINGS_STATE : options.settingsState;
+  if (settingsState !== null && !store.has(mapKey(CONFIG_SCOPE))) {
+    store.set(mapKey(CONFIG_SCOPE), structuredClone(settingsState));
+  }
   const eventHandlers = new Map<string, (event: PluginEvent) => Promise<void>>();
   const activeSessions = new Map<string, {
     sessionId: string;
@@ -145,7 +174,7 @@ function makeCtx(options: {
 
   const ctx = {
     manifest: { id: "ambitresearch.paperclip-agent-identities" },
-    config: { get: vi.fn(async () => structuredClone(COMPANY_CONFIG)) },
+    config: { get: vi.fn(async () => structuredClone(options.config ?? COMPANY_CONFIG)) },
     state: {
       get: vi.fn(async (key: StateKey) => store.get(mapKey(key)) ?? null),
       set: vi.fn(async (key: StateKey, value: unknown) => {
@@ -279,6 +308,47 @@ describe("Slack provider durable ingress", () => {
     await expect(response).resolves.toEqual({ status: 200, body: { ok: true } });
     expect(sendMessage).not.toHaveBeenCalled();
   });
+
+  it("routes a state-backed identity with credentials-only company config", async () => {
+    const { ctx, store } = makeCtx({ config: CREDENTIALS_ONLY_CONFIG });
+    await ctx.state.set(CONFIG_SCOPE, SLACK_SETTINGS_STATE);
+
+    await expect(handleSlackProviderWebhook(delivery("Ev-state"), ctx as never)).resolves.toEqual({
+      status: 200,
+      body: { ok: true },
+    });
+    expect(queueState(store).pending.map((turn) => turn.eventId)).toEqual(["Ev-state"]);
+  });
+
+  it("ignores legacy public host metadata when settings state has no identity", async () => {
+    const { ctx } = makeCtx({ config: COMPANY_CONFIG, settingsState: null });
+
+    await expect(handleSlackProviderWebhook(delivery("Ev-stale-host"), ctx as never)).resolves.toEqual({
+      status: 401,
+      body: { error: "unauthorized" },
+    });
+    expect(ctx.events.emit).not.toHaveBeenCalled();
+  });
+
+  it.each(["botToken", "signingSecret"] as const)(
+    "excludes a state-backed identity when its %s ref is missing",
+    async (missingRef) => {
+      const credentials: Record<string, unknown> = structuredClone(
+        CREDENTIALS_ONLY_CONFIG.identities["agent-1"].slack.credentials,
+      );
+      delete credentials[missingRef];
+      const { ctx } = makeCtx({
+        config: { identities: { "agent-1": { slack: { credentials } } } },
+      });
+      await ctx.state.set(CONFIG_SCOPE, SLACK_SETTINGS_STATE);
+
+      await expect(handleSlackProviderWebhook(delivery(`Ev-missing-${missingRef}`), ctx as never)).resolves.toEqual({
+        status: 401,
+        body: { error: "unauthorized" },
+      });
+      expect(ctx.events.emit).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not require a self-kick for ignored thread replies", async () => {
     const kickError = new Error("event bus unavailable");
@@ -706,16 +776,19 @@ describe("Slack provider durable ingress", () => {
     const { ctx, store, sendMessage } = makeCtx();
     await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
     const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
-    ctx.config.get.mockResolvedValueOnce({
+    await ctx.state.set(CONFIG_SCOPE, {
+      ...SLACK_SETTINGS_STATE,
       identities: {
-        "agent-1": {
+        ...SLACK_SETTINGS_STATE.identities,
+        "agent-1:slack": {
+          ...SLACK_SETTINGS_STATE.identities["agent-1:slack"],
           slack: {
-            ...COMPANY_CONFIG.identities["agent-1"].slack,
+            ...SLACK_SETTINGS_STATE.identities["agent-1:slack"].slack,
             appId: "A222",
           },
         },
       },
-    } as never);
+    });
 
     await expect(drainSlackConversationQueue(ctx as never, "co-1", payload, runtime())).rejects.toThrow(
       /route changed/i,
@@ -967,7 +1040,7 @@ describe("Slack provider durable ingress", () => {
       channel_type: "channel",
       channel: "C111",
     }), ctx as never);
-    expect(store.size).toBe(0);
+    expect([...store.keys()]).toEqual([mapKey(CONFIG_SCOPE)]);
     expect(ctx.events.emit).not.toHaveBeenCalled();
   });
 
@@ -1561,7 +1634,7 @@ describe("Slack provider durable ingress", () => {
       rawBody,
       requestId: "req-challenge",
     }, ctx as never)).resolves.toEqual({ status: 200, body: "challenge" });
-    expect(store.size).toBe(0);
+    expect([...store.keys()]).toEqual([mapKey(CONFIG_SCOPE)]);
     expect(ctx.events.emit).not.toHaveBeenCalled();
   });
 
@@ -1573,7 +1646,7 @@ describe("Slack provider durable ingress", () => {
       status: 401,
       body: { error: "unauthorized" },
     });
-    expect(store.size).toBe(0);
+    expect([...store.keys()]).toEqual([mapKey(CONFIG_SCOPE)]);
     expect(ctx.events.emit).not.toHaveBeenCalled();
   });
 

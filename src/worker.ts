@@ -34,8 +34,11 @@ import {
 } from "./legacy-slack-sidecar-cleanup.js";
 import { createProviderRegistry } from "./providers/index.js";
 import {
+  readSlackCredentialRefs,
   readSlackIdentityConfigEntry,
+  slackCredentialsConfigPath,
   readSlackSecretRef,
+  type SlackCredentialsConfig,
 } from "./providers/slack/config.js";
 import {
   getLegacySlackCredentialStatus,
@@ -248,7 +251,7 @@ const plugin = definePlugin({
           let slackConfigRollback: {
             companyId: string;
             path: string[];
-            identity: Record<string, unknown>;
+            credentials: Partial<SlackCredentialsConfig>;
           } | undefined;
           let legacySlackCredential: ReturnType<typeof readLegacySlackCredentialSidecarEntry>;
           let legacySlackCleanupError: unknown;
@@ -262,13 +265,13 @@ const plugin = definePlugin({
               throw new Error("agentId does not belong to the host-authorized company.");
             }
             const companyConfig = await ctx.config.get(companyId);
-            const existingSlackConfig = readSlackIdentityConfigEntry(companyConfig, agentId);
-            if (existingSlackConfig) {
-              const slackConfigPath = [...existingSlackConfig.path];
+            const existingSlackCredentialRefs = readSlackCredentialRefs(companyConfig, agentId);
+            if (existingSlackCredentialRefs && Object.keys(existingSlackCredentialRefs).length > 0) {
+              const slackConfigPath = [...slackCredentialsConfigPath(companyConfig, agentId)];
               slackConfigRollback = {
                 companyId,
                 path: slackConfigPath,
-                identity: existingSlackConfig.value,
+                credentials: existingSlackCredentialRefs,
               };
               await ctx.config.patchSecretRefs({
                 companyId,
@@ -308,7 +311,7 @@ const plugin = definePlugin({
                 await ctx.config.patchSecretRefs({
                   companyId: slackConfigRollback.companyId,
                   path: slackConfigRollback.path,
-                  value: slackConfigRollback.identity,
+                  value: slackConfigRollback.credentials,
                 });
               } catch (rollbackError) {
                 throw new AggregateError(
@@ -433,22 +436,32 @@ async function resolveIdentityForProvider<TIdentity>(
   ctx: PluginContext,
   runCtx: ToolRunContext,
 ): Promise<ResolvedAgentIdentity<TIdentity>> {
-  const instanceConfig = await ctx.config.get(runCtx.companyId);
-  const validated = provider.validateConfig(readInstanceIdentity(instanceConfig, runCtx.agentId));
+  const validateInstanceConfig = provider.validateInstanceConfig ?? provider.validateConfig;
+  const resolveFromInstance = async (): Promise<TIdentity | string> => {
+    const instanceConfig = await ctx.config.get(runCtx.companyId);
+    return validateInstanceConfig(readInstanceIdentity(instanceConfig, runCtx.agentId));
+  };
+  const resolveFromState = async (): Promise<ResolvedAgentIdentity<TIdentity>> => {
+    const stateConfig = await ctx.state.get(CONFIG_SCOPE);
+    if (!stateConfig) throw new Error("No settings-page state is configured.");
+    const projected = provider.projectPluginConfig(normalizeSettingsState(stateConfig).identities);
+    return resolveAgentIdentity({ identities: projected }, runCtx);
+  };
+
+  if (provider.settingsStateIsAuthoritative) {
+    return await resolveFromState();
+  }
+
+  const validated = await resolveFromInstance();
   if (typeof validated !== "string") {
     return { agentId: runCtx.agentId, identity: validated };
   }
 
-  const primaryReason = validated;
-  const stateConfig = await ctx.state.get(CONFIG_SCOPE);
-  if (!stateConfig) throw new Error(primaryReason);
-
-  const projected = provider.projectPluginConfig(normalizeSettingsState(stateConfig).identities);
   try {
-    return resolveAgentIdentity({ identities: projected }, runCtx);
+    return await resolveFromState();
   } catch (error) {
     const fallbackReason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${primaryReason}; settings-page fallback failed: ${fallbackReason}`);
+    throw new Error(`${validated}; settings-page fallback failed: ${fallbackReason}`);
   }
 }
 
@@ -486,7 +499,7 @@ async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySetting
         ? getLegacySlackCredentialStatus(sidecar, companyConfig, identity)
         : undefined;
       const slackSetup = identity.provider === "slack"
-        ? readSlackSetupProjection(companyConfig, identity.agentId, legacySlackCredential)
+        ? readSlackSetupProjection(companyConfig, identity, legacySlackCredential)
         : undefined;
       return {
         ...identity,
@@ -526,11 +539,13 @@ async function buildSettingsData(ctx: PluginContext, state: AgentIdentitySetting
 
 function readSlackSetupProjection(
   config: Record<string, unknown>,
-  agentId: string,
+  identityConfig: Extract<AgentIdentitySettingsState["identities"][string], { provider: "slack" }>,
   legacyCredential?: NonNullable<BotIdentitySettingsEntry["slackSetup"]>["legacyCredential"],
 ): BotIdentitySettingsEntry["slackSetup"] | undefined {
-  const identity = readSlackIdentityConfigEntry(config, agentId)?.value ?? {};
-  const eventsRequestUrl = readString(identity.eventsRequestUrl);
+  const agentId = identityConfig.agentId;
+  const legacyHostIdentity = readSlackIdentityConfigEntry(config, agentId)?.value;
+  const eventsRequestUrl = identityConfig.slack.eventsRequestUrl
+    ?? readString(legacyHostIdentity?.eventsRequestUrl);
   let botTokenSecretId = "";
   let signingSecretId = "";
   try {

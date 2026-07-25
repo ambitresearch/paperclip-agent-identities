@@ -76,6 +76,22 @@ describe("manifest instance config schema", () => {
     }), JSON.stringify(validate.errors)).toBe(true);
   });
 
+  it.each(["nested", "flat"] as const)(
+    "accepts the %s legacy Slack metadata left after credential deletion",
+    (shape) => {
+      const slack = slackConfig().identities["agent-slack"].slack;
+      const { credentials: _credentials, ...metadata } = slack;
+      const identity = shape === "nested" ? { slack: metadata } : metadata;
+      expect(validate({ identities: { "agent-slack": identity } }), JSON.stringify(validate.errors)).toBe(true);
+    },
+  );
+
+  it("accepts an empty credential container left after current Slack credential deletion", () => {
+    expect(validate({
+      identities: { "agent-slack": { slack: { credentials: {} } } },
+    }), JSON.stringify(validate.errors)).toBe(true);
+  });
+
   it("accepts the short-lived Slack metadata discovery binding", () => {
     expect(validate({
       setup: {

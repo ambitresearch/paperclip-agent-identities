@@ -23,6 +23,7 @@ export interface SlackIdentityFields {
   readonly teamId: string;
   readonly appId: string;
   readonly botUserId: string;
+  readonly eventsRequestUrl?: string;
   readonly defaultChannel?: string;
 }
 
@@ -202,11 +203,19 @@ function normalizeV4Identity(raw: unknown): AgentIdentityConfig | null {
     const appId = readString(raw.slack.appId);
     const botUserId = readString(raw.slack.botUserId);
     if (!teamId || !appId || !botUserId) return null;
-    const slack: { teamId: string; appId: string; botUserId: string; defaultChannel?: string } = {
+    const slack: {
+      teamId: string;
+      appId: string;
+      botUserId: string;
+      eventsRequestUrl?: string;
+      defaultChannel?: string;
+    } = {
       teamId,
       appId,
       botUserId,
     };
+    const eventsRequestUrl = readOptionalString(raw.slack.eventsRequestUrl);
+    if (eventsRequestUrl) slack.eventsRequestUrl = eventsRequestUrl;
     const defaultChannel = readOptionalString(raw.slack.defaultChannel);
     if (defaultChannel) slack.defaultChannel = defaultChannel;
     return { provider: "slack", id: getIdentityKey(agentId, "slack"), agentId, label, slack };

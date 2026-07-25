@@ -19,11 +19,11 @@ import type {
 import { getIdentityKey, REBIND_LEGACY_SLACK_CREDENTIALS_ACTION } from "../../shared/types.js";
 import {
   createSlackSecretRef,
-  readSlackIdentityConfigEntry,
-  slackHostIdentityConfigSchema,
-  slackIdentityConfigPath,
+  readSlackCredentialsConfig,
+  slackCredentialsConfigPath,
+  slackCredentialsConfigSchema,
   slackSecretIdSchema,
-  type SlackHostIdentityConfig,
+  type SlackCredentialsConfig,
 } from "./config.js";
 
 function readString(value: unknown): string {
@@ -46,25 +46,12 @@ function readSigningSecretId(value: unknown): string | undefined {
   return parsed.data;
 }
 
-function publicMetadataMatches(
-  identity: SlackAgentIdentityConfig,
-  host: SlackHostIdentityConfig,
-): boolean {
-  return host.label === identity.label
-    && host.teamId === identity.slack.teamId
-    && host.appId === identity.slack.appId
-    && host.botUserId === identity.slack.botUserId
-    && (host.defaultChannel ?? "") === (identity.slack.defaultChannel ?? "");
-}
-
 function hostBindingMatches(
-  identity: SlackAgentIdentityConfig,
-  host: SlackHostIdentityConfig,
+  host: SlackCredentialsConfig,
   legacy: LegacySlackCredentialSidecarEntry,
 ): boolean {
-  return publicMetadataMatches(identity, host)
-    && host.credentials.botToken.secretId === legacy.botTokenSecretId
-    && (!legacy.signingSecretId || host.credentials.signingSecret.secretId === legacy.signingSecretId);
+  return host.botToken.secretId === legacy.botTokenSecretId
+    && (!legacy.signingSecretId || host.signingSecret.secretId === legacy.signingSecretId);
 }
 
 export function getLegacySlackCredentialStatus(
@@ -75,16 +62,15 @@ export function getLegacySlackCredentialStatus(
   const legacy = readLegacySlackCredentialSidecarEntry(sidecar, identity.agentId);
   if (!legacy) return undefined;
 
-  const existing = readSlackIdentityConfigEntry(companyConfig, identity.agentId);
-  if (!existing) {
+  const credentials = readSlackCredentialsConfig(companyConfig, identity.agentId);
+  if (!credentials) {
     return {
       status: "rebind-required",
       signingSecretRequired: !legacy.signingSecretId,
     };
   }
 
-  const parsed = slackHostIdentityConfigSchema.safeParse(existing.value);
-  if (!existing.legacy && parsed.success && hostBindingMatches(identity, parsed.data, legacy)) {
+  if (hostBindingMatches(credentials, legacy)) {
     return { status: "cleanup-pending", signingSecretRequired: false };
   }
   return { status: "conflict", signingSecretRequired: !legacy.signingSecretId };
@@ -93,7 +79,7 @@ export function getLegacySlackCredentialStatus(
 function resolveSigningSecretId(
   legacy: LegacySlackCredentialSidecarEntry,
   supplied: string | undefined,
-  existing: SlackHostIdentityConfig | undefined,
+  existing: SlackCredentialsConfig | undefined,
 ): string {
   if (legacy.signingSecretId) {
     if (supplied && supplied !== legacy.signingSecretId) {
@@ -102,7 +88,7 @@ function resolveSigningSecretId(
     return legacy.signingSecretId;
   }
 
-  const existingSigningSecretId = existing?.credentials.signingSecret.secretId;
+  const existingSigningSecretId = existing?.signingSecret.secretId;
   if (existingSigningSecretId) {
     if (supplied && supplied !== existingSigningSecretId) {
       throw new Error("signingSecretId conflicts with the existing Slack host binding.");
@@ -143,18 +129,13 @@ export function contributeLegacySlackRebindAction(ctx: PluginContext): void {
         if (identity?.provider !== "slack") {
           throw new Error("No persisted public Slack identity exists for this agent.");
         }
-        const publicIdentity = identity;
-
         const sidecar = await readCredentialSidecarIfExists();
         const legacy = readLegacySlackCredentialSidecarEntry(sidecar, agentId);
         const companyConfig = await ctx.config.get(companyId);
-        const existingEntry = readSlackIdentityConfigEntry(companyConfig, agentId);
-        const existingParsed = existingEntry && !existingEntry.legacy
-          ? slackHostIdentityConfigSchema.safeParse(existingEntry.value)
-          : undefined;
+        const existingCredentials = readSlackCredentialsConfig(companyConfig, agentId);
 
         if (!legacy) {
-          if (existingParsed?.success && publicMetadataMatches(publicIdentity, existingParsed.data)) {
+          if (existingCredentials) {
             return { agentId, provider: "slack", status: "rebound" };
           }
           throw new Error("No released Slack credential sidecar entry exists for this agent.");
@@ -163,57 +144,39 @@ export function contributeLegacySlackRebindAction(ctx: PluginContext): void {
         const signingSecretId = resolveSigningSecretId(
           legacy,
           suppliedSigningSecretId,
-          existingParsed?.success ? existingParsed.data : undefined,
+          existingCredentials,
         );
-        const desired = slackHostIdentityConfigSchema.parse({
-          label: publicIdentity.label,
-          teamId: publicIdentity.slack.teamId,
-          appId: publicIdentity.slack.appId,
-          botUserId: publicIdentity.slack.botUserId,
-          ...(publicIdentity.slack.defaultChannel
-            ? { defaultChannel: publicIdentity.slack.defaultChannel }
-            : {}),
-          ...(existingParsed?.success && existingParsed.data.eventsRequestUrl
-            ? { eventsRequestUrl: existingParsed.data.eventsRequestUrl }
-            : {}),
-          credentials: {
-            botToken: createSlackSecretRef(legacy.botTokenSecretId),
-            signingSecret: createSlackSecretRef(signingSecretId),
-          },
+        const desired = slackCredentialsConfigSchema.parse({
+          botToken: createSlackSecretRef(legacy.botTokenSecretId),
+          signingSecret: createSlackSecretRef(signingSecretId),
         });
         let wroteHostBinding = false;
 
-        if (existingEntry) {
+        if (existingCredentials) {
           if (
-            existingEntry.legacy
-            || !existingParsed?.success
-            || !publicMetadataMatches(publicIdentity, existingParsed.data)
-            || existingParsed.data.credentials.botToken.secretId !== legacy.botTokenSecretId
-            || existingParsed.data.credentials.signingSecret.secretId !== signingSecretId
+            existingCredentials.botToken.secretId !== legacy.botTokenSecretId
+            || existingCredentials.signingSecret.secretId !== signingSecretId
           ) {
             throw new Error(
               "Existing Slack host binding conflicts with the released sidecar identity; it was not overwritten.",
             );
           }
-        } else {
+        }
+        if (!existingCredentials) {
           await ctx.config.patchSecretRefs({
             companyId,
-            path: [...slackIdentityConfigPath(agentId)],
+            path: [...slackCredentialsConfigPath(companyConfig, agentId)],
             value: desired,
           });
           wroteHostBinding = true;
         }
 
         const currentConfig = await ctx.config.get(companyId);
-        const currentEntry = readSlackIdentityConfigEntry(currentConfig, agentId);
-        const current = currentEntry && !currentEntry.legacy
-          ? slackHostIdentityConfigSchema.safeParse(currentEntry.value)
-          : undefined;
+        const current = readSlackCredentialsConfig(currentConfig, agentId);
         if (
-          !current?.success
-          || !publicMetadataMatches(publicIdentity, current.data)
-          || current.data.credentials.botToken.secretId !== legacy.botTokenSecretId
-          || current.data.credentials.signingSecret.secretId !== signingSecretId
+          !current
+          || current.botToken.secretId !== legacy.botTokenSecretId
+          || current.signingSecret.secretId !== signingSecretId
         ) {
           throw new Error(
             wroteHostBinding

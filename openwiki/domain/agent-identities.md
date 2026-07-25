@@ -27,18 +27,21 @@ type GitHubAgentIdentityConfig = {
 - `label`: human-readable name shown in settings and tool output. The UI convention is `Agent Name [Company Name]`.
 - `github.username` / `github.commitName` / `github.commitEmail` / `github.app.credentialPropagationAgentIds`: nested GitHub-specific fields — never accessed as top-level `githubUsername`/`commitName`/etc. anywhere past the persistence boundary.
 
-Settings state is versioned (`BOT_IDENTITY_SETTINGS_VERSION`, currently `4`):
+Settings state is versioned (`BOT_IDENTITY_SETTINGS_VERSION`, currently `5`):
 
 ```ts
 {
-  version: 4,
-  identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>
+  version: 5,
+  identities: Record<`${agentId}:${provider}`, AgentIdentityConfig>,
+  cleanupTombstones: Record<string, LegacySlackSidecarCleanupTombstone>
 }
 ```
 
-`normalizeSettingsState()` in `/src/core/identity-config.ts` is the only place that reads persisted state: v4 payloads pass through, v3 payloads (flat `githubUsername`/`commitName`/etc.) are migrated forward into nested `github.*` shape via `migrateSettingsStateToV4()`, and anything else resets to an empty v4 state. There is no v3 runtime read/write path anymore — `/src/worker.ts` and `/src/config-source.ts` only ever produce and consume v4.
+`cleanupTombstones` holds retry state for deleting released `v0.1.7`/`v0.1.8` Slack sidecar entries after their host credential refs are bound.
 
-The worker stores this under `CONFIG_SCOPE` from `/src/config-source.ts`: `{ scopeKind: "instance", stateKey: "bot-identity-config" }`. `config-source.ts` is now just that constant — the old flat-shape resolver (`resolveAgentIdentityFromPluginSettings` / `normalizeBotIdentitySettingsState`) was superseded by the generic per-provider resolver in `/src/worker.ts` (`resolveIdentityForProvider`), which asks each registered `IdentityProvider` to project this same v4 `identities` map into its own config shape (see `plugin-runtime.md`).
+`normalizeSettingsState()` in `/src/core/identity-config.ts` is the only place that reads persisted state: valid v5 payloads pass through, v3 payloads (flat `githubUsername`/`commitName`/etc.) and v4 payloads are migrated into v5, and anything else resets to an empty v5 state. There is no v3 or v4 runtime read/write path anymore — `/src/worker.ts` only produces and consumes v5.
+
+The worker stores this under `CONFIG_SCOPE` from `/src/config-source.ts`: `{ scopeKind: "instance", stateKey: "bot-identity-config" }`. `config-source.ts` is now just that constant — the old flat-shape resolver (`resolveAgentIdentityFromPluginSettings` / `normalizeBotIdentitySettingsState`) was superseded by the generic per-provider resolver in `/src/worker.ts` (`resolveIdentityForProvider`), which asks each registered `IdentityProvider` to project this same v5 `identities` map into its own config shape (see `plugin-runtime.md`).
 
 ## Provider authorization
 
@@ -63,11 +66,15 @@ For GitHub, repository access is controlled by the GitHub App installation and G
 
 `/src/config-source.ts` now only exports `CONFIG_STATE_KEY` / `CONFIG_SCOPE`. Bridging static (instance) config and settings-page state is a worker-level, provider-agnostic concern implemented by `resolveIdentityForProvider()` in `/src/worker.ts`:
 
-1. calls `ctx.config.get()` and asks the provider (`provider.validateConfig`) to validate the per-agent instance config;
-2. if that fails and settings-page state (`CONFIG_SCOPE`) exists, normalizes it with `normalizeSettingsState()` (v4, migrating v3 automatically) and asks the provider to project its `identities` map (`provider.projectPluginConfig`) before resolving through `resolveAgentIdentity()`;
-3. if both fail, throws an error containing the primary and fallback reasons.
+1. by default, validates the per-agent instance config from `ctx.config.get()` and returns it when valid;
+2. if that default lookup is invalid, normalizes settings-page state (`CONFIG_SCOPE`) to v5 and asks the provider to project its `identities` map (`provider.projectPluginConfig`) as the fallback;
+3. for providers marked `settingsStateIsAuthoritative`, reads only settings state and never reads or falls back to instance identity metadata.
 
-Because settings-page state is always v4, every provider's `projectPluginConfig` receives the nested `AgentIdentityConfig` union and is responsible for narrowing to its own provider and reading its own nested fields (e.g. `identity.github.username` for GitHub). Disabled or unknown provider records are ignored during projection. The current settings UI cascades GitHub App credentials to the selected agent identity.
+Because settings-page state is always v5, every provider's `projectPluginConfig` receives the nested `AgentIdentityConfig` union and is responsible for narrowing to its own provider and reading its own nested fields (e.g. `identity.github.username` for GitHub). Disabled or unknown provider records are ignored during projection. The current settings UI cascades GitHub App credentials to the selected agent identity.
+
+Slack marks settings state authoritative because its public install metadata lives there. Tools and webhook routing never reconstruct a Slack identity from company config. Current company-config records keep `botToken` and `signingSecret` refs under `identities.<agentId>.slack.credentials`; earlier flat or full records may retain public metadata, but those scalar fields are ignored. Saving and rebinding update only the record's existing credential path because `config.patchSecretRefs` cannot remove public scalar metadata; new records use the nested credential path.
+
+This intentionally breaks runtime resolution for static-config-only Slack identities: operators must have a matching Slack identity in settings state before upgrading. The Settings data projection has one narrow migration aid for older v4 state that lacks `eventsRequestUrl`: it prefills the edit flow from a retained host value only when state has no value. Saving the install writes the URL into v5 state. Runtime tools and webhook routing never consume that display-only fallback.
 
 ## Credential sidecar
 
@@ -188,17 +195,17 @@ Flow state is restored by `get-github-app-manifest-flow` while the operator is r
 
 ## Tests to inspect before changing this domain
 
-- `/tests/identity-config-migration.spec.ts`: v3 -> v4 settings-state migration ladder.
-- `/tests/github-config.spec.ts` / `/tests/github-project-config.spec.ts`: GitHub plugin config parsing, missing-agent fail-closed behavior, and v4 identity projection.
+- `/tests/identity-config-migration.spec.ts`: v3/v4 -> v5 settings-state migration ladder.
+- `/tests/github-config.spec.ts` / `/tests/github-project-config.spec.ts`: GitHub plugin config parsing, missing-agent fail-closed behavior, and identity projection.
 - `/tests/github-repo-ref.spec.ts`: repository reference normalization.
-- `/tests/plugin.spec.ts`: settings save/load/delete against v4 nested state, sidecar writes/deletes, agent dropdown data, provider-aware settings fallback, GitHub App manifest creation/conversion, and propagation ID dedupe.
+- `/tests/plugin.spec.ts`: settings save/load/delete against v5 nested state, cleanup tombstones, sidecar writes/deletes, agent dropdown data, provider-aware settings fallback, GitHub App manifest creation/conversion, and propagation ID dedupe.
 
 ## Change guidance
 
 When changing this domain:
 
 - Keep `/src/core/identity-config.ts`, `/src/shared/types.ts`, `/src/config-source.ts`, `/src/worker.ts`, and `/src/ui/SettingsPage.tsx` in sync.
-- Persisted state is v4 nested `github.*`/`example.*` fields only — never reintroduce a flat top-level `githubUsername`/`commitName`/`commitEmail` read/write path. New providers append a variant to `AgentIdentityConfig`, not new top-level fields.
+- Persisted state is v5 with nested `github.*`/`example.*` fields and `cleanupTombstones` — never reintroduce a flat top-level `githubUsername`/`commitName`/`commitEmail` read/write path. New providers append a variant to `AgentIdentityConfig`, not new top-level fields.
 - Preserve fail-closed behavior for missing agent identity and malformed repository inputs.
 - Validate and normalize repository inputs before credential resolution.
 - Never add generated installation tokens to plugin state or tool outputs.

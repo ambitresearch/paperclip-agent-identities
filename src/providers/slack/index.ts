@@ -10,7 +10,11 @@ import type {
 import type { ResourceReference } from "../../core/resource-reference.js";
 import { createProviderTool } from "../../core/tool-pipeline.js";
 import { redactSecrets } from "../../lib/redaction.js";
-import { validateSlackConfig, projectSlackPluginConfig, type SlackAgentIdentity } from "./config.js";
+import {
+  validateSlackConfig,
+  projectSlackPluginConfig,
+  type SlackAgentIdentity,
+} from "./config.js";
 import { resolveSlackCredential } from "./credentials.js";
 import { contributeSlackAppManifestActions } from "./app-manifest.js";
 import { slackWhoamiToolSpec } from "./tools/whoami.js";
@@ -148,6 +152,7 @@ export const slackProvider: IdentityProvider<SlackAgentIdentity, ResourceReferen
   id: SLACK_PROVIDER_ID,
   definition: slackProviderDefinition,
   validateConfig: validateSlackConfig,
+  settingsStateIsAuthoritative: true,
   projectPluginConfig: projectSlackPluginConfig,
   resolveCredential: resolveSlackCredential,
   // `whoami` is credential-free (DRO-972); slack_bot_post_message

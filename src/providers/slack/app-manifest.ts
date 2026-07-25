@@ -2,9 +2,8 @@ import { z, type PluginContext } from "@paperclipai/plugin-sdk";
 import { createHash, randomBytes } from "node:crypto";
 import {
   createSlackSecretRef,
-  readSlackIdentityConfigEntry,
-  slackHostIdentityConfigSchema,
-  slackIdentityConfigPath,
+  slackCredentialsConfigPath,
+  slackCredentialsConfigSchema,
   slackSecretIdSchema,
 } from "./config.js";
 import { discoverSlackAppId, verifySlackToken } from "./credentials.js";
@@ -542,6 +541,7 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
                   teamId,
                   appId,
                   botUserId,
+                  eventsRequestUrl: flow.eventsRequestUrl,
                   ...(defaultChannel ? { defaultChannel } : {}),
                 },
               },
@@ -550,30 +550,19 @@ export function contributeSlackAppManifestActions(ctx: PluginContext): void {
           await ctx.state.set(CONFIG_SCOPE, nextState);
           settingsWritten = true;
 
-          const slackConfig = slackHostIdentityConfigSchema.parse({
-            label: flow.label,
-            teamId,
-            appId,
-            botUserId,
-            eventsRequestUrl: flow.eventsRequestUrl,
-            ...(defaultChannel ? { defaultChannel } : {}),
-            credentials: {
-              botToken: createSlackSecretRef(botTokenSecretId),
-              signingSecret: createSlackSecretRef(signingSecretId),
-            },
+          const credentials = slackCredentialsConfigSchema.parse({
+            botToken: createSlackSecretRef(botTokenSecretId),
+            signingSecret: createSlackSecretRef(signingSecretId),
           });
           const companyConfig = await ctx.config.get(companyId);
-          const existingSlackConfig = readSlackIdentityConfigEntry(companyConfig, agentId);
 
-          // New writes touch only the provider subtree, preserving a GitHub
-          // identity in the same per-agent slot. A flat Slack record written by
-          // earlier builds of this PR is migrated as one atomic subtree patch.
+          // Public install metadata lives in CONFIG_SCOPE. Company config is
+          // only the credential binding sidecar, so patchSecretRefs never sees
+          // scalar strings that the host correctly rejects.
           await ctx.config.patchSecretRefs({
             companyId,
-            path: existingSlackConfig?.legacy
-              ? ["identities", agentId]
-              : [...slackIdentityConfigPath(agentId)],
-            value: existingSlackConfig?.legacy ? { slack: slackConfig } : slackConfig,
+            path: [...slackCredentialsConfigPath(companyConfig, agentId)],
+            value: credentials,
           });
         } catch (err) {
           const rollbackErrors: unknown[] = [];

@@ -49,15 +49,23 @@ import {
   type SlackQueuedTurnEvent,
 } from "./conversation-session.js";
 import { SlackSessionReplyAccumulator } from "./session-reply.js";
+import {
+  AGENT_IDENTITIES_PLUGIN_ID,
+  SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
+} from "../../../shared/webhook-endpoints.js";
 
 // Mutable queue transitions are imported directly by this provider module;
 // ingress/index.ts intentionally exports only bounded enqueue/read summaries.
 
 const legacyClaimId = (eventHash: string) => `legacy:${eventHash.slice(0, 32)}`;
 
-export const SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY = "slack-events";
+// Re-exported from src/shared/webhook-endpoints.ts so the worker's ingress and
+// the client Settings UI (which derives the operator-facing Request URL from
+// the same route template) can never drift apart. That module is dependency-free
+// precisely so it can be imported from both sides.
+export { SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY };
 export const SLACK_TURN_DRAIN_EVENT_NAME = "slack-turn-drain";
-const SLACK_PLUGIN_ID = "ambitresearch.paperclip-agent-identities" as const;
+const SLACK_PLUGIN_ID = AGENT_IDENTITIES_PLUGIN_ID;
 export const SLACK_TURN_DRAIN_EVENT_TYPE =
   `plugin.${SLACK_PLUGIN_ID}.${SLACK_TURN_DRAIN_EVENT_NAME}` as const;
 

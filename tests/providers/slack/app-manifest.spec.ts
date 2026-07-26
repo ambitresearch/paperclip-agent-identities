@@ -88,13 +88,29 @@ describe("createSlackAppManifestFlow", () => {
 
   it.each([
     "http://paperclip-test.trycloudflare.com/events",
-    "https://paperclip-test.trycloudflare.com/events/",
-    "https://paperclip-test.trycloudflare.com/not-events",
     "https://paperclip-test.trycloudflare.com/events?token=unexpected",
+    "https://paperclip-test.trycloudflare.com/events#fragment",
+    "https://user:pass@paperclip-test.trycloudflare.com/events",
+    "not-a-url",
   ])("rejects an invalid Events Request URL: %s", (eventsRequestUrl) => {
     expect(() =>
       createSlackAppManifestFlow({ agentId: "a", label: "x", eventsRequestUrl }, COMPANY_ID),
     ).toThrow(/eventsRequestUrl/);
+  });
+
+  // The Request URL is no longer pinned to /events: production points at the
+  // host's company-scoped webhook route, which ends in /webhooks/slack-events.
+  it.each([
+    "https://paperclip.example.com/api/companies/company-1/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events",
+    "https://paperclip-test.trycloudflare.com/events/",
+    "https://paperclip-test.trycloudflare.com/not-events",
+  ])("accepts any HTTPS Events Request URL: %s", (eventsRequestUrl) => {
+    const flow = createSlackAppManifestFlow({ agentId: "a", label: "x", eventsRequestUrl }, COMPANY_ID);
+    expect(flow.eventsRequestUrl).toBe(eventsRequestUrl);
+    const manifest = JSON.parse(flow.manifest) as {
+      settings: { event_subscriptions: { request_url: string } };
+    };
+    expect(manifest.settings.event_subscriptions.request_url).toBe(eventsRequestUrl);
   });
 });
 

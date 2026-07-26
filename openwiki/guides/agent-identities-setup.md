@@ -21,16 +21,34 @@ Repository access is controlled by the GitHub App installation. To change access
 
 ## Slack
 
-Use a separate Slack App for each agent. You need a public HTTPS URL ending in exactly `/events` that forwards requests to this plugin's Slack webhook.
+Use a separate Slack App for each agent.
+
+Slack needs a public HTTPS URL to post events to. When Paperclip itself is served
+over HTTPS, that URL is this deployment's own webhook route and Settings fills it
+in for you — leave the **Events Request URL** field blank. The derived URL is:
+
+```text
+https://<your-paperclip-host>/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events
+```
+
+Enter a URL only to override that default. The common reason is local
+development, where Paperclip is served over plain HTTP and Slack cannot reach it,
+so you point Slack at a public tunnel in front of the loopback dev adapter
+described in [Slack provider MVP](../domain/slack-provider-mvp.md). In
+that case Settings marks the field required, because there is nothing to derive.
 
 1. Choose the agent and Slack provider.
-2. Enter the public Events Request URL and select **Create Slack App manifest**.
+2. Leave **Events Request URL** blank to use this deployment's own endpoint, or
+   enter an override, then select **Create Slack App manifest**.
 3. Copy the formatted manifest JSON. Open Slack's app creation page, choose **From an app manifest**, select the workspace, and paste the manifest.
 4. Create and install the Slack App. The manifest prefills the bot features, required OAuth scopes, Events API Request URL, and event subscriptions.
 5. Copy the bot token and signing secret into separate Paperclip company secrets.
 6. Select the bot token secret in the wizard, then use **Detect Slack installation IDs** to fill the Team ID, App ID, and Bot User ID.
 7. Select the signing secret and optionally enter a default channel ID. Channel names such as `#daily-news` are not accepted. Use a Slack channel ID beginning with `C`, `D`, or `G`.
 8. Save the Slack install metadata, check the connection status, and save the identity.
+
+The Events Request URL is embedded verbatim into the generated manifest, so it is
+locked once the manifest exists. To change it, start a new manifest flow.
 
 Invite the bot to any public channel where it should receive mentions or post messages. Direct messages are delivered without a channel invitation. Top-level direct messages receive top-level replies. Public-channel mentions receive threaded replies.
 

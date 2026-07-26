@@ -45,13 +45,32 @@ the company-scoped plugin contracts used by this branch:
 - webhook delivery through
   `/api/companies/<companyId>/plugins/<pluginId>/webhooks/<endpointKey>`, with
   the route-derived `companyId` passed to the worker and the worker's HTTP
-  status, headers, and body returned to Slack;
+  status, headers, and body returned to Slack. This route must be publicly
+  reachable without host authentication, because Slack POSTs to it directly;
+  the plugin authenticates each delivery itself by verifying the Slack
+  signature and timestamp;
 - company-scoped plugin config reads and atomic secret-reference patches; and
 - company-scoped secret resolution for the configured bot-token and signing-secret refs;
 - `ctx.events.emit(name, companyId, payload)` plus fresh company invocation
   scope on `plugin.<pluginId>.<name>` handlers and agent-session event
   callbacks. Slack ingress uses a provider-owned `slack-turn-drain` self-event
   to move session calls out of the webhook invocation.
+
+Because the host owns that route, the Slack Events Request URL is derivable
+rather than operator-supplied. When Paperclip is served over HTTPS, Settings
+derives
+
+```text
+https://<host>/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events
+```
+
+and the **Events Request URL** field becomes an optional override. Over plain
+HTTP (local development) nothing is derivable, so the field stays required and
+the operator points Slack at a public tunnel in front of
+`scripts/slack-events-adapter.mjs`. The `/events` path is a convention of that
+dev adapter only; the plugin never owns a top-level `/events` route.
+`src/shared/webhook-endpoints.ts` is the shared, dependency-free source of the
+route template for both the worker and the Settings bundle.
 
 For a dispatchable Slack event, the webhook verifies the signature and route,
 persists a bounded turn in the per-conversation plugin-state queue, awaits the

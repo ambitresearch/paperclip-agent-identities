@@ -2,10 +2,11 @@
 
 Status: **partially implemented**. The identity config, company-scoped credential refs, Slack tools,
 HTTP Events API receiver, and manifest-assisted setup flow exist and are covered by tests. Generated
-manifests require an HTTPS URL with the exact `/events` path, include
-`settings.event_subscriptions.request_url`, and subscribe to direct messages,
+manifests require an HTTPS URL with no query, fragment, or embedded credentials,
+include `settings.event_subscriptions.request_url`, and subscribe to direct messages,
 app mentions, and thread replies in public channels, private channels, and
-multi-person DMs.
+multi-person DMs. Settings derives that URL from this deployment's own webhook
+route; the operator field is an override for local development (see §5).
 Socket Mode, OAuth callback automation, and token rotation remain deferred.
 
 ## 1. Identity shape
@@ -143,8 +144,8 @@ descriptions, and parameter schemas, exactly like GitHub's `manifest-tools.ts`. 
 JSON generation lives in the contributed `create-slack-app-manifest` action instead, matching where
 GitHub's App manifest generation lives (`contributeGitHubAppManifestActions`).
 
-The generated manifest accepts an operator-supplied HTTPS URL with the exact `/events` path,
-inserts it at `settings.event_subscriptions.request_url`, requests the direct-message and
+The generated manifest accepts an HTTPS URL with no query, fragment, or embedded
+credentials, inserts it at `settings.event_subscriptions.request_url`, requests the direct-message and
 channel history scopes, and subscribes to `message.im`, `app_mention`, `message.channels`,
 `message.groups`, and `message.mpim`. Top-level messages containing Slack's `<!channel>`,
 `<!here>`, or `<!everyone>` broadcast tokens start an agent-owned reply thread. Other ordinary
@@ -154,22 +155,47 @@ mention or broadcast.
 `settings.interactivity.is_enabled: false`, `socket_mode_enabled: false`, and
 `token_rotation_enabled: false` remain explicit.
 
+### Events Request URL resolution
+
+The URL is not pinned to any particular path. Slack must reach the host's
+company-scoped webhook route for this plugin's `slack-events` endpoint, so the
+production answer is fully derivable and Settings derives it:
+`<origin>/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events`.
+`src/shared/webhook-endpoints.ts` is the single dependency-free source of that
+route template, shared by the worker webhook (`provider-webhook.ts`) and the
+client Settings bundle. It returns `null` when the origin is not HTTPS, since
+Slack only delivers over HTTPS and there is then no derivable answer.
+
+The Settings field is therefore an **optional override**, resolved at call time
+as `config.slackEventsRequestUrl.trim() || derivedUrl || ""`, never prefilled
+into state. Prefill was rejected: an effect that writes the field fights the
+operator clearing it, and flow reconciliation treats a non-empty field as
+explicit operator intent, which would reject a restored tunnel flow. Resolving at
+call time leaves reconciliation untouched — a blank field already means "adopt
+the restored flow's URL". The create handler writes the resolved URL back into
+the field afterwards so the `credentialComplete` equality checks in
+`settings-adapter-ui.tsx` and `settings-adapter.ts` can match.
+
+The field is required only when no URL can be derived, which in practice means
+local development over plain HTTP. `/events` is a convention of the dev loopback
+adapter alone (§10), not of this plugin.
+
 ## 6. Actions (`contributeActions`)
 
 Mirrors `contributeGitHubAppManifestActions`: a `create-slack-app-manifest` worker action that
 builds the per-agent manifest JSON and returns the plain `https://api.slack.com/apps?new_app=1`
 "create app" URL alongside it (Slack has no documented query parameter to prefill a manifest, so
 this is not a prefilled deep link; see §7), and a `save-slack-install-metadata` action the settings
-UI calls once the operator finishes Slack's own click-through install. Manifest creation also requires the public
-Events Request URL. The save action requires the shareable IDs (`teamId`/`appId`/`botUserId`) and
+UI calls once the operator finishes Slack's own click-through install. Manifest creation also requires the
+Events Request URL, which Settings derives when it can.  The save action requires the shareable IDs (`teamId`/`appId`/`botUserId`) and
 both `botTokenSecretId` and `signingSecretId`. There is
 no supported host/plugin API for a worker action to create a Paperclip secret from a raw token
 (`ctx.secrets` exposes only `resolve`; `secrets.bind-ref` can attach only existing secret refs — see
 §7), so the action cannot mint that secret itself. The explicit sequence is:
 
-1. Operator enters the public HTTPS `/events` URL, generates the manifest, pastes it into Slack,
-   creates the app, and installs it to the workspace. Slack may initially show the Request URL as
-   unverified.
+1. Operator accepts the derived Events Request URL (or supplies an override), generates the manifest,
+   pastes it into Slack, creates the app, and installs it to the workspace. Slack may initially show
+   the Request URL as unverified.
 2. Operator copies the Bot User OAuth Token (`xoxb-...`) and signing secret from Slack, creates a
    separate Paperclip company secret for each value, and copies both resulting UUIDs.
 3. Operator pastes `teamId`, `appId`, `botUserId`, both secret UUIDs, and any default channel ID into
@@ -457,8 +483,8 @@ every registered provider, not just enabled ones, since a "coming-soon" provider
 still ship setup actions ahead of its tool surface; this is a provider-agnostic change, not a
 Slack-specific one). Three actions are registered (`src/providers/slack/app-manifest.ts`):
 
-- `create-slack-app-manifest`: validates the operator-supplied HTTPS URL with the exact `/events`
-  path and builds the MVP app manifest with `request_url`, `app_mention`, direct-message events,
+- `create-slack-app-manifest`: validates the supplied HTTPS URL (no query, fragment, or embedded
+  credentials) and builds the MVP app manifest with `request_url`, `app_mention`, direct-message events,
   channel thread events, and their required history scopes, while keeping `interactivity.is_enabled`,
   `socket_mode_enabled`, and `token_rotation_enabled` false. It
   verifies the

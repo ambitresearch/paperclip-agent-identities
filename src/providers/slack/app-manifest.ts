@@ -62,23 +62,30 @@ function readRequiredString(value: unknown, field: string): string {
   return value.trim();
 }
 
+// The Request URL is whatever HTTPS endpoint Slack should POST events to. In
+// production that is the host-mounted company-scoped webhook route the Settings
+// UI derives (see src/shared/webhook-endpoints.ts); in local development it is
+// a public tunnel pointing at scripts/slack-events-adapter.mjs, whose own
+// listener happens to use /events. Neither path is privileged here, so only the
+// envelope is enforced: HTTPS, no query/fragment/credentials -- this value is
+// embedded verbatim in the generated Slack app manifest. Kept in sync with the
+// `eventsRequestUrl` config-schema pattern in src/manifest.ts.
 function normalizeEventsRequestUrl(value: unknown): string {
   const eventsRequestUrl = readRequiredString(value, "eventsRequestUrl");
   let parsed: URL;
   try {
     parsed = new URL(eventsRequestUrl);
   } catch {
-    throw new Error("eventsRequestUrl must be a valid HTTPS URL with the exact /events path.");
+    throw new Error("eventsRequestUrl must be a valid HTTPS URL.");
   }
   if (
     parsed.protocol !== "https:" ||
-    parsed.pathname !== "/events" ||
     parsed.search.length > 0 ||
     parsed.hash.length > 0 ||
     parsed.username.length > 0 ||
     parsed.password.length > 0
   ) {
-    throw new Error("eventsRequestUrl must be an HTTPS URL with the exact /events path and no query or fragment.");
+    throw new Error("eventsRequestUrl must be an HTTPS URL with no query, fragment, or embedded credentials.");
   }
   return eventsRequestUrl;
 }

@@ -1,7 +1,7 @@
 # Slack app manifests and per-agent provisioning — decision record
 
 Status: **decided and implemented for HTTP Events API**. Generated manifests require an
-operator-supplied HTTPS URL with the exact `/events` path, set it as the Slack Request URL, and
+HTTPS URL with no query, fragment, or embedded credentials, set it as the Slack Request URL, and
 subscribe to `message.im`, `app_mention`, `message.channels`, `message.groups`, and
 `message.mpim`. Socket Mode remains an unimplemented,
 operator-opt-in future transport.
@@ -50,7 +50,7 @@ operator-opt-in future transport.
 
 At the time of this decision, the Paperclip-hosted worker exposed no provider webhook seam, so a
 public Events API receiver was an implementation prerequisite. DRO-1005 added that HTTP ingress
-composition path. The current manifest builder now accepts the public HTTPS `/events` URL and
+composition path. The current manifest builder now accepts any public HTTPS Request URL and
 subscribes the generated app to direct messages, app mentions, and channel thread messages.
 Socket Mode remains separate
 follow-up work.
@@ -99,7 +99,7 @@ Source: [App Manifest APIs / Configuration tokens](https://api.slack.com/referen
 | Posting messages | `chat:write` | Core scope; also required for threaded replies (same scope, pass `thread_ts`). |
 | Threaded replies | `chat:write` | No separate scope; thread targeting is a message parameter, not a scope. |
 | Reactions | `reactions:write` | Add/remove emoji reactions. |
-| Inbound direct messages | `im:history` (Events API subscription `message.im`) | Generated manifests configure the operator-supplied HTTPS `/events` Request URL and subscribe to direct messages. |
+| Inbound direct messages | `im:history` (Events API subscription `message.im`) | Generated manifests configure the resolved HTTPS Request URL and subscribe to direct messages. |
 | Inbound public-channel thread replies | `channels:history` (Events API subscription `message.channels`) | Receiver dispatches only replies in threads already owned by the routed agent. |
 | Inbound private-channel thread replies | `groups:history` (Events API subscription `message.groups`) | Uses the same exact-thread ownership gate. |
 | Inbound multi-person DM thread replies | `mpim:history` (Events API subscription `message.mpim`) | Uses the same exact-thread ownership gate. |
@@ -153,9 +153,11 @@ Sources: [Installing with OAuth](https://api.slack.com/authentication/oauth-v2);
 
 ## Current generated manifest template (HTTP Events API; no Socket Mode)
 
-`eventsRequestUrl` is validated as HTTPS with the exact `/events` path and no query, fragment, or
-embedded credentials. `src/providers/slack/app-manifest.ts` inserts the validated URL into the
-generated manifest.
+`eventsRequestUrl` is validated as HTTPS with no query, fragment, or embedded credentials.
+`src/providers/slack/app-manifest.ts` inserts the validated URL into the generated manifest. It is
+no longer pinned to `/events`: Settings derives the host's own company-scoped webhook route
+(`.../webhooks/slack-events`) whenever the origin is HTTPS, and the operator field is an override
+used mainly for the local dev tunnel.
 
 ```yaml
 _metadata:

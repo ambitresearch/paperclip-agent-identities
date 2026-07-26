@@ -84,7 +84,7 @@ Historical scope note: the original MVP deferred all ingress. DRO-1005/PR #81
 later implemented the HTTP Events API receiver selected by
 [`slack-provisioning-decision.md`](./slack-provisioning-decision.md), and a
 follow-up shipped manifest provisioning. The generated manifest now requires an
-HTTPS URL with the exact `/events` path, writes it to
+HTTPS URL with no query, fragment, or embedded credentials, writes it to
 `settings.event_subscriptions.request_url`, subscribes to `message.im` and
 `app_mention` plus `message.channels`, `message.groups`, and `message.mpim`,
 and requests the corresponding history scopes. Socket Mode remains deferred.
@@ -580,8 +580,12 @@ Slack's documented copy/paste app-manifest flow fills the same setup role as
 GitHub's App Manifest flow (`contributeGitHubAppManifestActions` /
 `src/providers/github/app-manifest.ts`), but it is deliberately operator-driven:
 
-1. Operator enters a public HTTPS Events Request URL. It must have the exact
-   `/events` path and no query or fragment. The settings page builds a Slack app
+1. Settings resolves the Events Request URL. When Paperclip is served over HTTPS
+   it derives this deployment's own webhook route
+   (`<origin>/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events`)
+   and the operator field is an optional override; over plain HTTP nothing is
+   derivable and the operator must supply a public tunnel URL. Any HTTPS URL with
+   no query, fragment, or embedded credentials is accepted. The settings page builds a Slack app
    manifest with bot scopes `assistant:write`, `app_mentions:read`, `chat:write`,
    `channels:history`, `channels:read`, `groups:history`, `groups:read`,
    `im:history`, `mpim:history`, `reactions:write`, and `users:read`. The manifest
@@ -624,9 +628,10 @@ without those prerequisites would describe an unimplementable flow.
 ## 8. UI contribution
 
 The settings page ships a Slack identity form beside the GitHub form. Required
-fields are Events Request URL, team ID, app ID, bot-user ID, bot-token company
+fields are team ID, app ID, bot-user ID, bot-token company
 secret UUID, and signing-secret company secret UUID; default channel is
-optional. The flow provides actions to create and copy the manifest, open
+optional. Events Request URL is required only when it cannot be derived from the
+host origin (see §7 step 1); otherwise it is an optional override. The flow provides actions to create and copy the manifest, open
 Slack's create-app page, resume a short-lived flow, and save install metadata.
 It explicitly instructs operators not to verify the Request URL until the
 signing-secret ref has been saved. The form never accepts or renders the raw
@@ -707,7 +712,7 @@ MVP has no callback endpoint and therefore does not expose this attack surface.
 **Risk:** the HTTP receiver is public-facing; an attacker who can reach it
 without a valid Slack signature could spoof events as if from Slack.
 **Mitigation (implemented by DRO-1005 and the provisioning follow-up):** the
-generated manifest provisions the required HTTPS `/events` Request URL and
+generated manifest provisions the required HTTPS Request URL and
 subscribes to `app_mention`, `message.channels`, `message.groups`, `message.im`,
 and `message.mpim`. For normal callbacks the receiver extracts bounded
 `team_id` and `api_app_id` values as untrusted routing hints, intersects public

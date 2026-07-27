@@ -4,6 +4,7 @@ import {
   REBIND_LEGACY_SLACK_CREDENTIALS_ACTION,
   RETRY_LEGACY_SLACK_SIDECAR_CLEANUP_ACTION,
 } from "./shared/types.js";
+import { EVENTS_REQUEST_URL_PATTERN } from "./shared/events-request-url.js";
 
 const registry = createProviderRegistry();
 
@@ -26,12 +27,14 @@ const slackIdentityConfigProperties = {
   // embedded verbatim in the generated Slack app manifest, hence the strict
   // envelope. The authority run additionally excludes "@" so userinfo
   // (https://user:pass@host/...) cannot slip through -- `format: uri` alone
-  // accepts it -- while "@" stays legal later in the path. Kept in sync with
-  // normalizeEventsRequestUrl in src/providers/slack/app-manifest.ts.
+  // accepts it -- while "@" stays legal later in the path. The pattern itself
+  // lives in src/shared/events-request-url.ts, shared with
+  // normalizeEventsRequestUrl in src/providers/slack/app-manifest.ts so the two
+  // validators cannot drift apart.
   eventsRequestUrl: {
     type: "string",
     format: "uri",
-    pattern: "^https://[^\\s?#@/]+(?:/[^\\s?#]*)?$",
+    pattern: EVENTS_REQUEST_URL_PATTERN,
   },
   credentials: {
     type: "object",

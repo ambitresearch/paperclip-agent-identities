@@ -197,6 +197,9 @@ describe("manifest instance config schema", () => {
     // pattern's "@"-free authority run rejects it.
     "https://user:pass@paperclip-test.trycloudflare.com/events",
     "https://paperclip-test.trycloudflare.com/sl ack-events",
+    // Empty "?"/"#" delimiters, which the manifest flow used to let through.
+    "https://paperclip-test.trycloudflare.com/events?",
+    "https://paperclip-test.trycloudflare.com/events#",
     "not-a-url",
   ])(
     "rejects an Events Request URL the manifest flow rejects: %s",

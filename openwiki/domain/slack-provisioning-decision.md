@@ -155,10 +155,21 @@ Sources: [Installing with OAuth](https://api.slack.com/authentication/oauth-v2);
 
 `eventsRequestUrl` is validated as HTTPS with no whitespace, query, fragment, or embedded
 credentials. Because the value is embedded verbatim rather than re-serialized, that envelope is
-enforced identically in two places — the `eventsRequestUrl` config-schema `pattern` in
-`src/manifest.ts`, which gates persisted config, and `normalizeEventsRequestUrl` in
-`src/providers/slack/app-manifest.ts`, which gates the manifest flow. They must accept and reject
-the same set; `tests/manifest-config-schema.spec.ts` pins the shared cases so the two cannot drift.
+enforced in two places — the `eventsRequestUrl` config-schema `pattern` in `src/manifest.ts`, which
+gates persisted config, and `normalizeEventsRequestUrl` in `src/providers/slack/app-manifest.ts`,
+which gates the manifest flow. A URL one accepts and the other rejects strands an operator with
+config that saves cleanly and then fails provisioning, so both import the same definition from
+`src/shared/events-request-url.ts` and cannot express different rules. Paired accept/reject cases in
+`tests/manifest-config-schema.spec.ts` and `tests/providers/slack/app-manifest.spec.ts` pin that
+agreement.
+
+The envelope is matched against the **raw string** rather than against parsed `URL` properties,
+because `URL` normalizes in precisely the places this check needs it to reject: it accepts embedded
+credentials, percent-encodes interior whitespace instead of throwing, and reports `search`/`hash` as
+empty for a trailing `?` or `#` while still keeping the delimiter in `href`. Each of those slipped
+past an earlier property-inspection implementation. `new URL()` is still called first, but only as a
+structural-validity gate for things a pattern cannot express, such as an invalid port.
+
 `src/providers/slack/app-manifest.ts` inserts the validated URL into the generated manifest. It is
 no longer pinned to `/events`: Settings derives the host's own company-scoped webhook route
 (`.../webhooks/slack-events`) whenever the origin is HTTPS, and the operator field is an override

@@ -91,9 +91,13 @@ describe("createSlackAppManifestFlow", () => {
     "https://paperclip-test.trycloudflare.com/events?token=unexpected",
     "https://paperclip-test.trycloudflare.com/events#fragment",
     "https://user:pass@paperclip-test.trycloudflare.com/events",
-    // `new URL` percent-encodes this instead of throwing, so it only fails on
-    // the explicit whitespace guard.
+    // `URL` normalizes rather than rejects for these three: it percent-encodes
+    // interior whitespace, and it reports search/hash as empty for a trailing
+    // "?" or "#" while still keeping the delimiter in the string. Only matching
+    // the raw value against the envelope pattern catches them.
     "https://paperclip-test.trycloudflare.com/sl ack-events",
+    "https://paperclip-test.trycloudflare.com/events?",
+    "https://paperclip-test.trycloudflare.com/events#",
     "not-a-url",
   ])("rejects an invalid Events Request URL: %s", (eventsRequestUrl) => {
     expect(() =>

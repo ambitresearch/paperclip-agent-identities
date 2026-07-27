@@ -8,6 +8,10 @@ import {
 } from "./config.js";
 import { discoverSlackAppId, verifySlackToken } from "./credentials.js";
 import { getIdentityKey } from "../../shared/types.js";
+import {
+  EVENTS_REQUEST_URL_REQUIREMENT,
+  matchesEventsRequestUrlEnvelope,
+} from "../../shared/events-request-url.js";
 import { normalizeSettingsState, BOT_IDENTITY_SETTINGS_VERSION, type AgentIdentitySettingsState } from "../../core/identity-config.js";
 import { CONFIG_SCOPE, configMutationLockKeys } from "../../config-source.js";
 import { withProcessLocalLocks } from "../../core/process-local-mutation-queue.js";
@@ -67,32 +71,23 @@ function readRequiredString(value: unknown, field: string): string {
 // UI derives (see src/shared/webhook-endpoints.ts); in local development it is
 // a public tunnel pointing at scripts/slack-events-adapter.mjs, whose own
 // listener happens to use /events. Neither path is privileged here, so only the
-// envelope is enforced: HTTPS, no whitespace/query/fragment/credentials -- this
-// value is embedded verbatim in the generated Slack app manifest. Kept in sync
-// with the `eventsRequestUrl` config-schema pattern in src/manifest.ts.
+// envelope is enforced -- this value is embedded verbatim in the generated Slack
+// app manifest. The envelope itself lives in src/shared/events-request-url.ts so
+// this check and the `eventsRequestUrl` config-schema pattern in src/manifest.ts
+// cannot drift apart.
 function normalizeEventsRequestUrl(value: unknown): string {
   const eventsRequestUrl = readRequiredString(value, "eventsRequestUrl");
-  let parsed: URL;
   try {
-    parsed = new URL(eventsRequestUrl);
+    // Parsed only to reject structurally invalid URLs (bad port, bad host
+    // literal) that the envelope pattern cannot express. The parsed properties
+    // are deliberately not inspected: `URL` normalizes where we need it to
+    // reject -- see the note in src/shared/events-request-url.ts.
+    new URL(eventsRequestUrl);
   } catch {
     throw new Error("eventsRequestUrl must be a valid HTTPS URL.");
   }
-  if (
-    parsed.protocol !== "https:" ||
-    // `new URL` percent-encodes interior whitespace rather than rejecting it,
-    // and we hand back the caller's string verbatim, so without this guard a
-    // raw space would reach the Slack manifest while the config-schema pattern
-    // rejects the very same value.
-    /\s/.test(eventsRequestUrl) ||
-    parsed.search.length > 0 ||
-    parsed.hash.length > 0 ||
-    parsed.username.length > 0 ||
-    parsed.password.length > 0
-  ) {
-    throw new Error(
-      "eventsRequestUrl must be an HTTPS URL with no whitespace, query, fragment, or embedded credentials.",
-    );
+  if (!matchesEventsRequestUrlEnvelope(eventsRequestUrl)) {
+    throw new Error(EVENTS_REQUEST_URL_REQUIREMENT);
   }
   return eventsRequestUrl;
 }

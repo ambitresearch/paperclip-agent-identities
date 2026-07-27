@@ -154,21 +154,39 @@ Sources: [Installing with OAuth](https://api.slack.com/authentication/oauth-v2);
 ## Current generated manifest template (HTTP Events API; no Socket Mode)
 
 `eventsRequestUrl` is validated as HTTPS with no whitespace, query, fragment, or embedded
-credentials. Because the value is embedded verbatim rather than re-serialized, that envelope is
-enforced in two places — the `eventsRequestUrl` config-schema `pattern` in `src/manifest.ts`, which
-gates persisted config, and `normalizeEventsRequestUrl` in `src/providers/slack/app-manifest.ts`,
-which gates the manifest flow. A URL one accepts and the other rejects strands an operator with
-config that saves cleanly and then fails provisioning, so both import the same definition from
-`src/shared/events-request-url.ts` and cannot express different rules. Paired accept/reject cases in
-`tests/manifest-config-schema.spec.ts` and `tests/providers/slack/app-manifest.spec.ts` pin that
+credentials, using only characters RFC 3986 permits. Because the value is embedded verbatim rather
+than re-serialized, that envelope is enforced in two places — the `eventsRequestUrl` config-schema
+`pattern` in `src/manifest.ts`, which gates persisted config, and `normalizeEventsRequestUrl` in
+`src/providers/slack/app-manifest.ts`, which gates the manifest flow. A URL one accepts and the
+other rejects strands an operator with config that saves cleanly and then fails provisioning, so
+both import the same definition from `src/shared/events-request-url.ts`. Paired accept/reject cases
+in `tests/manifest-config-schema.spec.ts` and `tests/providers/slack/app-manifest.spec.ts` pin that
 agreement.
+
+Sharing the pattern is necessary but was not sufficient. Each side originally ran a *second*,
+*different* URL check alongside it — the schema applied Ajv's RFC 3986 `format: "uri"`, the runtime
+applied WHATWG `new URL()` — and those two disagree in both directions. WHATWG normalizes where RFC
+rejects (`https://host\events` becomes a slash, illegal characters and malformed escapes get
+percent-encoded, non-ASCII hosts become punycode), while RFC's unbounded `port = *DIGIT` accepts
+`:99999`, which WHATWG rejects. Measured against the shared-pattern-only build, 11 of 13 probe
+cases still drifted, 9 of them failing open. Both extra checks were therefore removed: the pattern
+is now the **complete** contract on both paths, so drift is structurally impossible rather than
+patched case by case. **Do not add a second check to either side** — if the envelope needs to
+change, change the pattern.
+
+That removal is only safe because the pattern is strictly stricter than both validators it
+replaced. `tests/shared/events-request-url.spec.ts` proves it in CI by sweeping every ASCII
+codepoint across host, path, origin, and port positions and asserting that every pattern-accepted
+value is *also* accepted by `format: "uri"` **and** by `new URL()`. If that test fails, the pattern
+has become looser than one of them — fix the pattern, not the call sites.
 
 The envelope is matched against the **raw string** rather than against parsed `URL` properties,
 because `URL` normalizes in precisely the places this check needs it to reject: it accepts embedded
 credentials, percent-encodes interior whitespace instead of throwing, and reports `search`/`hash` as
 empty for a trailing `?` or `#` while still keeping the delimiter in `href`. Each of those slipped
-past an earlier property-inspection implementation. `new URL()` is still called first, but only as a
-structural-validity gate for things a pattern cannot express, such as an invalid port.
+past an earlier property-inspection implementation. The pattern is an allowlist of RFC-legal
+characters rather than a denylist, because every one of those bugs came from a denylist missing a
+character; an allowlist fails closed instead.
 
 `src/providers/slack/app-manifest.ts` inserts the validated URL into the generated manifest. It is
 no longer pinned to `/events`: Settings derives the host's own company-scoped webhook route

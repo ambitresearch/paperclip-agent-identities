@@ -2,6 +2,7 @@ import { Ajv } from "ajv";
 import addFormatsModule from "ajv-formats";
 import { describe, expect, it } from "vitest";
 import manifest from "../src/manifest.js";
+import { AGENT_IDENTITIES_PLUGIN_ID } from "../src/shared/webhook-endpoints.js";
 
 const BOT_TOKEN_SECRET_ID = "00000000-0000-4000-8000-000000000001";
 const SIGNING_SECRET_ID = "00000000-0000-4000-8000-000000000002";
@@ -62,6 +63,11 @@ describe("manifest instance config schema", () => {
 
   it("uses the Ambit Research plugin namespace", () => {
     expect(manifest.id).toBe("ambitresearch.paperclip-agent-identities");
+    // The host mounts this plugin's webhooks under its manifest id, so the id
+    // and the route builder must be the same string. If they diverge, derived
+    // Slack Events URLs keep pointing at the old id and the ingress guard in
+    // src/providers/slack/ingress/provider-webhook.ts rejects every delivery.
+    expect(manifest.id).toBe(AGENT_IDENTITIES_PLUGIN_ID);
     expect(manifest.version).toBe("0.2.4");
   });
 
@@ -200,6 +206,17 @@ describe("manifest instance config schema", () => {
     // Empty "?"/"#" delimiters, which the manifest flow used to let through.
     "https://paperclip-test.trycloudflare.com/events?",
     "https://paperclip-test.trycloudflare.com/events#",
+    // WHATWG normalizes rather than rejects these, so the manifest flow used to
+    // accept them: a backslash becomes a slash, illegal characters and
+    // malformed escapes are percent-encoded, a non-ASCII host becomes punycode.
+    "https://paperclip-test.trycloudflare.com\\events",
+    "https://paperclip-test.trycloudflare.com/sl|ack",
+    "https://paperclip-test.trycloudflare.com/%zz",
+    "https://exámple.com/events",
+    // RFC 3986's `port = *DIGIT` is unbounded, so `format: "uri"` used to accept
+    // these while the manifest flow's `new URL()` threw.
+    "https://paperclip-test.trycloudflare.com:99999/events",
+    "https://paperclip-test.trycloudflare.com:notaport/events",
     "not-a-url",
   ])(
     "rejects an Events Request URL the manifest flow rejects: %s",
@@ -217,6 +234,8 @@ describe("manifest instance config schema", () => {
     "https://paperclip-test.trycloudflare.com/not-events",
     // "@" is only barred from the authority; it stays legal in a path.
     "https://paperclip-test.trycloudflare.com/events/a@b",
+    "https://paperclip-test.trycloudflare.com:8443/events",
+    "https://paperclip-test.trycloudflare.com/a%20b",
   ])(
     "accepts an Events Request URL the manifest flow accepts: %s",
     (eventsRequestUrl) => {

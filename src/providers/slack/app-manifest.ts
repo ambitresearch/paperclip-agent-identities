@@ -72,20 +72,13 @@ function readRequiredString(value: unknown, field: string): string {
 // a public tunnel pointing at scripts/slack-events-adapter.mjs, whose own
 // listener happens to use /events. Neither path is privileged here, so only the
 // envelope is enforced -- this value is embedded verbatim in the generated Slack
-// app manifest. The envelope itself lives in src/shared/events-request-url.ts so
-// this check and the `eventsRequestUrl` config-schema pattern in src/manifest.ts
-// cannot drift apart.
+// app manifest. The envelope itself lives in src/shared/events-request-url.ts,
+// and that pattern is the *only* check applied here: the config-schema pattern
+// in src/manifest.ts applies the same expression and nothing else, so the two
+// cannot drift. Do not add a `new URL()` parse back -- WHATWG parsing is exactly
+// what used to disagree with the schema's RFC validation, in both directions.
 function normalizeEventsRequestUrl(value: unknown): string {
   const eventsRequestUrl = readRequiredString(value, "eventsRequestUrl");
-  try {
-    // Parsed only to reject structurally invalid URLs (bad port, bad host
-    // literal) that the envelope pattern cannot express. The parsed properties
-    // are deliberately not inspected: `URL` normalizes where we need it to
-    // reject -- see the note in src/shared/events-request-url.ts.
-    new URL(eventsRequestUrl);
-  } catch {
-    throw new Error("eventsRequestUrl must be a valid HTTPS URL.");
-  }
   if (!matchesEventsRequestUrlEnvelope(eventsRequestUrl)) {
     throw new Error(EVENTS_REQUEST_URL_REQUIREMENT);
   }

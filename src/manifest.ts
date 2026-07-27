@@ -5,6 +5,7 @@ import {
   RETRY_LEGACY_SLACK_SIDECAR_CLEANUP_ACTION,
 } from "./shared/types.js";
 import { EVENTS_REQUEST_URL_PATTERN } from "./shared/events-request-url.js";
+import { AGENT_IDENTITIES_PLUGIN_ID } from "./shared/webhook-endpoints.js";
 
 const registry = createProviderRegistry();
 
@@ -33,7 +34,9 @@ const slackIdentityConfigProperties = {
   // validators cannot drift apart.
   eventsRequestUrl: {
     type: "string",
-    format: "uri",
+    // No `format: "uri"`. The pattern is the complete contract on both paths --
+    // see src/shared/events-request-url.ts. Adding a second check here would
+    // reintroduce the drift against the runtime gate that this replaced.
     pattern: EVENTS_REQUEST_URL_PATTERN,
   },
   credentials: {
@@ -124,7 +127,10 @@ export const SETTINGS_ACTIONS = [
 ] as const;
 
 const manifest: PaperclipPluginManifestV1 = {
-  id: "ambitresearch.paperclip-agent-identities",
+  // Shared with the webhook route builder: the host mounts this plugin's
+  // webhooks under its manifest id, so a literal here would silently break
+  // every derived Slack Events URL if the id ever changed.
+  id: AGENT_IDENTITIES_PLUGIN_ID,
   apiVersion: 1,
   version: "0.2.4",
   displayName: "Agent Identities",

@@ -39,6 +39,13 @@ describe("EVENTS_REQUEST_URL_PATTERN", () => {
       candidates.push(`https://h.example.com/sl${ch}ack`);
       candidates.push(`https://a${ch}b.example.com`);
       candidates.push(`https://h.example.com:80${ch}/events`);
+      // Bracketed IP-literals, where `[`, `]` and `:` are part of the host.
+      candidates.push(`https://[2001:db8:${ch}:1]/events`);
+      candidates.push(`https://[2001:db8::1]${ch}/events`);
+      // A host whose final label is numeric makes WHATWG re-read the whole host
+      // as IPv4 and throw, while RFC 3986 reads it as a `reg-name`.
+      candidates.push(`https://a${ch}.1/events`);
+      candidates.push(`https://1${ch}.2.3.4/events`);
     }
 
     const accepted = candidates.filter((value) => matchesEventsRequestUrlEnvelope(value));
@@ -59,6 +66,18 @@ describe("EVENTS_REQUEST_URL_PATTERN", () => {
     "https://paperclip.example.com/",
     "https://paperclip.example.com:8443/events",
     "https://paperclip.example.com/a%20b",
+    // IP-literal hosts: `URL.origin` keeps the brackets, so the URL this plugin
+    // derives for such a deployment has to satisfy its own envelope.
+    "https://[2001:db8::1]/events",
+    "https://[2001:db8::1]:8443/events",
+    "https://[::1]/events",
+    "https://[::ffff:192.0.2.1]/events",
+    "https://[2001:0db8:0000:0000:0000:0000:0000:0001]/events",
+    "https://[2001:DB8::1]/events",
+    "https://192.0.2.10:8443/events",
+    "https://localhost/events",
+    "https://paperclip.example.com./events",
+    "https://1host.example.com/events",
   ])("accepts %s", (value) => {
     expect(matchesEventsRequestUrlEnvelope(value)).toBe(true);
   });
@@ -87,6 +106,18 @@ describe("EVENTS_REQUEST_URL_PATTERN", () => {
     ["https://paperclip.example.com/events#", "empty fragment delimiter"],
     ["http://paperclip.example.com/events", "not HTTPS"],
     ["not-a-url", "not a URL"],
+    // RFC 3986 permits these two IP-literal forms; WHATWG rejects both, so
+    // admitting them would break the containment property above.
+    ["https://[fe80::1%25eth0]/events", "IPv6 zone identifier"],
+    ["https://[v1.fe]/events", "IPvFuture literal"],
+    ["https://[2001:db8::1/events", "unbalanced bracket"],
+    ["https://[::::]/events", "malformed IPv6"],
+    ["https://[1::2::3]/events", "two :: elisions"],
+    ["https://[gggg::1]/events", "non-hex IPv6 group"],
+    ["https://[2001:db8::1]extra/events", "trailing junk after IP-literal"],
+    // Numeric final label: WHATWG re-reads the host as IPv4 and throws.
+    ["https://a;.1/events", "numeric final label"],
+    ["https://256.1.1.1/events", "octet above 255"],
   ])("rejects %s (%s)", (value) => {
     expect(matchesEventsRequestUrlEnvelope(value)).toBe(false);
   });

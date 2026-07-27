@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { matchesEventsRequestUrlEnvelope } from "../../src/shared/events-request-url.js";
 import {
   AGENT_IDENTITIES_PLUGIN_ID,
   SLACK_EVENTS_WEBHOOK_ENDPOINT_KEY,
@@ -76,6 +77,28 @@ describe("buildSlackEventsRequestUrl", () => {
   it("produces a URL the app-manifest validator and config schema both accept", () => {
     const url = buildSlackEventsRequestUrl("https://paperclip.roshangautam.com", "company-1");
     expect(url).not.toBeNull();
-    expect(url).toMatch(/^https:\/\/[^\s?#]+$/);
+    expect(matchesEventsRequestUrlEnvelope(url as string)).toBe(true);
+  });
+
+  // `URL.origin` keeps the brackets and colons for an IP-literal, none of which
+  // are legal in a `reg-name`. The Settings UI only checks that the derived URL
+  // is non-empty before enabling manifest creation, so a URL that failed the
+  // envelope here would enable a button whose request the worker then rejects.
+  it.each([
+    ["https://[2001:db8::1]", "https://[2001:db8::1]"],
+    ["https://[2001:db8::1]:8443", "https://[2001:db8::1]:8443"],
+    ["https://[::1]", "https://[::1]"],
+    ["https://[2001:0db8:0000:0000:0000:0000:0000:0001]", "https://[2001:db8::1]"],
+  ])("derives an envelope-conforming URL for %s", (origin, expectedOrigin) => {
+    const url = buildSlackEventsRequestUrl(origin, "company-1");
+    expect(url).toBe(`${expectedOrigin}${slackEventsWebhookPath("company-1")}`);
+    expect(matchesEventsRequestUrlEnvelope(url as string)).toBe(true);
+  });
+
+  // The derivation is bound to the same single source of truth as both gates, so
+  // it can never hand the UI a value the worker would refuse.
+  it("returns null when the derived URL would fail the shared envelope", () => {
+    const url = buildSlackEventsRequestUrl("https://a;.1", "company-1");
+    expect(url).toBeNull();
   });
 });

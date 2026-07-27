@@ -176,9 +176,14 @@ change, change the pattern.
 
 That removal is only safe because the pattern is strictly stricter than both validators it
 replaced. `tests/shared/events-request-url.spec.ts` proves it in CI by sweeping every ASCII
-codepoint across host, path, origin, and port positions and asserting that every pattern-accepted
-value is *also* accepted by `format: "uri"` **and** by `new URL()`. If that test fails, the pattern
-has become looser than one of them — fix the pattern, not the call sites.
+codepoint across host, path, origin, port, and bracketed-literal positions and asserting that every
+pattern-accepted value is *also* accepted by `format: "uri"` **and** by `new URL()`. If that test
+fails, the pattern has become looser than one of them — fix the pattern, not the call sites.
+
+That sweep was originally positional substitution only, and it missed a containment hole for a full
+release: substituting one character into a fixed template can never produce a host whose *final
+label* is numeric, which is exactly the shape the two validators disagree on (see below). When
+extending the sweep, vary the shape of the input, not just one character inside a fixed one.
 
 The envelope is matched against the **raw string** rather than against parsed `URL` properties,
 because `URL` normalizes in precisely the places this check needs it to reject: it accepts embedded
@@ -187,6 +192,30 @@ empty for a trailing `?` or `#` while still keeping the delimiter in `href`. Eac
 past an earlier property-inspection implementation. The pattern is an allowlist of RFC-legal
 characters rather than a denylist, because every one of those bugs came from a denylist missing a
 character; an allowlist fails closed instead.
+
+### Host grammar
+
+The host is three disjoint alternatives rather than one character class, because the two validators
+disagree about hosts in both directions:
+
+- **`reg-name`**, with the extra rule that the final label must begin with a letter. WHATWG re-reads
+  the *entire* host as IPv4 whenever the final label parses as a number, and throws when that fails,
+  so `https://a;.1` is a valid `reg-name` to RFC 3986 and a parse error to `new URL()`. No real DNS
+  name has a numeric TLD, so the constraint costs nothing and closes the hole. A trailing root dot
+  (`https://example.com.`) stays legal.
+- **`IPv4address`**, spelled out as an explicit 0-255 dotted quad. Leading zeros and hex or octal
+  shorthand are excluded: WHATWG accepts them, RFC 3986 does not.
+- **`IP-literal`**, the bracketed RFC 3986 `IPv6address`. `URL.origin` keeps the brackets and colons
+  for such a deployment, none of which are legal in a `reg-name`, so without this the plugin would
+  derive a URL that fails its own envelope. Zone identifiers (RFC 6874 `[fe80::1%25eth0]`) and
+  `IPvFuture` (`[v1.fe]`) are deliberately excluded — RFC 3986 permits both and WHATWG rejects both.
+
+`buildSlackEventsRequestUrl` in `src/shared/webhook-endpoints.ts` runs its own output through
+`matchesEventsRequestUrlEnvelope` and returns `null` if it fails. That is not a second validator in
+the sense forbidden above — it is the *same* discriminator, applied by the producer, so the
+derivation can never hand Settings a value the worker would refuse. The Settings gate only checks
+that the derived URL is non-empty, so a non-conforming derivation would otherwise enable the
+manifest button and fail inside the worker.
 
 `src/providers/slack/app-manifest.ts` inserts the validated URL into the generated manifest. It is
 no longer pinned to `/events`: Settings derives the host's own company-scoped webhook route

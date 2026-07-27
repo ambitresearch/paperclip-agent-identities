@@ -50,6 +50,53 @@
  */
 const HOST_CHARS = "A-Za-z0-9\\-._~!$&'()*+,;=";
 
+/** `HOST_CHARS` minus `.`, so a single dot-delimited label can be spelled. */
+const LABEL_CHARS = "A-Za-z0-9\\-_~!$&'()*+,;=";
+
+/**
+ * A `reg-name` whose last label starts with a letter, plus an optional root dot.
+ *
+ * The leading-letter constraint is not cosmetic. When a host's final label
+ * parses as a number, WHATWG re-reads the *whole* host as an IPv4 address and
+ * throws if that fails, while RFC 3986 is happy to call it a `reg-name`:
+ * `https://a;.1` is valid to Ajv and throws in `new URL`. Requiring a letter
+ * there removes the entire class, and costs nothing real -- no DNS TLD is
+ * numeric. Genuine dotted-quads are handled by `IPV4` below.
+ */
+const REG_NAME = `(?:[${HOST_CHARS}]*\\.)?[A-Za-z][${LABEL_CHARS}]*\\.?`;
+
+/** RFC 3986 `IPv4address`: four 0-255 octets, no leading zeros. */
+const OCTET = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const IPV4 = `(?:${OCTET}\\.){3}${OCTET}`;
+
+/**
+ * RFC 3986 `IPv6address`, transcribed alternative-for-alternative from the ABNF.
+ *
+ * Needed because `URL.origin` keeps the brackets and colons for an IPv6 literal
+ * (`https://[2001:db8::1]`), none of which appear in `HOST_CHARS` -- so the URL
+ * this plugin derives for such a deployment used to fail its own envelope.
+ *
+ * Two RFC-legal forms are deliberately excluded, because WHATWG rejects both and
+ * admitting them would break the containment property this envelope rests on:
+ * zone identifiers (`[fe80::1%25eth0]`, RFC 6874) and `IPvFuture` (`[v1.fe]`).
+ */
+const H16 = "[0-9A-Fa-f]{1,4}";
+const LS32 = `(?:${H16}:${H16}|${IPV4})`;
+const IPV6 = `(?:${[
+  `(?:${H16}:){6}${LS32}`,
+  `::(?:${H16}:){5}${LS32}`,
+  `(?:${H16})?::(?:${H16}:){4}${LS32}`,
+  `(?:(?:${H16}:){0,1}${H16})?::(?:${H16}:){3}${LS32}`,
+  `(?:(?:${H16}:){0,2}${H16})?::(?:${H16}:){2}${LS32}`,
+  `(?:(?:${H16}:){0,3}${H16})?::${H16}:${LS32}`,
+  `(?:(?:${H16}:){0,4}${H16})?::${LS32}`,
+  `(?:(?:${H16}:){0,5}${H16})?::${H16}`,
+  `(?:(?:${H16}:){0,6}${H16})?::`,
+].join("|")})`;
+
+/** RFC 3986 `host`: `reg-name` / `IPv4address` / bracketed `IP-literal`. */
+const HOST = `(?:${REG_NAME}|${IPV4}|\\[${IPV6}\\])`;
+
 /** RFC 3986 `pchar` plus `/`: `unreserved` / `sub-delims` / `:` / `@`. */
 const PATH_CHARS = "A-Za-z0-9\\-._~!$&'()*+,;=:@/";
 
@@ -68,10 +115,11 @@ const PORT = "(?::(?:6553[0-5]|655[0-2]\\d|65[0-4]\\d{2}|6[0-4]\\d{3}|[1-5]\\d{4
  * Kept as a string because src/manifest.ts needs it as a JSON Schema `pattern`.
  * RE2-safe: no lookahead and no backreferences. It also cannot backtrack
  * catastrophically -- `%` is absent from PATH_CHARS, so the two path
- * alternatives are disjoint and each character has exactly one parse.
+ * alternatives are disjoint, and the bracketed host alternative is disjoint
+ * from the other two because `[` is absent from both `HOST_CHARS` and `OCTET`.
  */
 export const EVENTS_REQUEST_URL_PATTERN =
-  `^https://[${HOST_CHARS}]+${PORT}(?:/(?:[${PATH_CHARS}]|%[0-9A-Fa-f]{2})*)?$` as const;
+  `^https://${HOST}${PORT}(?:/(?:[${PATH_CHARS}]|%[0-9A-Fa-f]{2})*)?$` as const;
 
 const eventsRequestUrlEnvelope = new RegExp(EVENTS_REQUEST_URL_PATTERN);
 

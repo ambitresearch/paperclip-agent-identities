@@ -218,6 +218,10 @@ describe("manifest instance config schema", () => {
     "https://paperclip-test.trycloudflare.com:99999/events",
     "https://paperclip-test.trycloudflare.com:notaport/events",
     "not-a-url",
+    "https://[fe80::1%25eth0]/events",
+    "https://[v1.fe]/events",
+    "https://[::::]/events",
+    "https://a;.1/events",
   ])(
     "rejects an Events Request URL the manifest flow rejects: %s",
     (eventsRequestUrl) => {
@@ -236,6 +240,9 @@ describe("manifest instance config schema", () => {
     "https://paperclip-test.trycloudflare.com/events/a@b",
     "https://paperclip-test.trycloudflare.com:8443/events",
     "https://paperclip-test.trycloudflare.com/a%20b",
+    "https://[2001:db8::1]/events",
+    "https://[::1]:8443/events",
+    "https://192.0.2.10:8443/events",
   ])(
     "accepts an Events Request URL the manifest flow accepts: %s",
     (eventsRequestUrl) => {

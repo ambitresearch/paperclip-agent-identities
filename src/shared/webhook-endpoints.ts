@@ -16,6 +16,8 @@
  * client Settings bundle.
  */
 
+import { matchesEventsRequestUrlEnvelope } from "./events-request-url.js";
+
 /** Plugin id as published in the built manifest; part of the host webhook route. */
 export const AGENT_IDENTITIES_PLUGIN_ID = "ambitresearch.paperclip-agent-identities";
 
@@ -39,6 +41,14 @@ export function slackEventsWebhookPath(companyId: string): string {
  * Returns null for a non-HTTPS origin on purpose: Slack only delivers events
  * over HTTPS, so a local dev host (`http://localhost:3100`) has no derivable
  * answer and the operator still has to paste a public tunnel URL by hand.
+ *
+ * The result is checked against the shared envelope before being returned. That
+ * is not a "second validator" in the sense this envelope forbids -- there is
+ * still exactly one discriminator, and this binds the *producer* to it too. The
+ * Settings UI gates manifest creation on this value being non-empty, so without
+ * the check any origin the derivation preserves but the envelope rejects would
+ * enable a button whose request the worker then refuses. IPv6 literals were
+ * such a case; this closes the class rather than that one instance.
  */
 export function buildSlackEventsRequestUrl(origin: string, companyId: string): string | null {
   const normalizedCompanyId = companyId.trim();
@@ -50,5 +60,6 @@ export function buildSlackEventsRequestUrl(origin: string, companyId: string): s
     return null;
   }
   if (parsed.protocol !== "https:") return null;
-  return `${parsed.origin}${slackEventsWebhookPath(normalizedCompanyId)}`;
+  const derived = `${parsed.origin}${slackEventsWebhookPath(normalizedCompanyId)}`;
+  return matchesEventsRequestUrlEnvelope(derived) ? derived : null;
 }

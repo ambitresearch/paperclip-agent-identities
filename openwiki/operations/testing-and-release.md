@@ -49,6 +49,8 @@ The package metadata points Paperclip at:
 
 Tests run with Vitest. `/vitest.config.ts` includes both `tests/**/*.spec.ts` (plain Node-environment tests, the default) and `tests/**/*.spec.tsx` (React/DOM interaction tests, e.g. `tests/ui/settings-page-interactions.spec.tsx`, which opt into jsdom per-file via a `// @vitest-environment jsdom` comment at the top of the file).
 
+`testTimeout` is raised to 15000ms from Vitest's 5000ms default. The three jsdom files each cost roughly 14s to instantiate an environment, and on a 4-core CI runner those forks saturate the box while unrelated node-environment tests sit runnable-but-unscheduled. That surfaced as `tests/providers/slack/ingress-worker-integration.spec.ts` intermittently failing three tests in CI even though the whole file completes in about 700ms locally, which blocked a release because `publish.yml` runs the suite before publishing. The raised budget is headroom for scheduling delay, not permission for slow tests: a genuinely hung test never completes and still fails. A test needing anywhere near 15s of real work is a bug in the test.
+
 Current test files:
 
 - `/tests/plugin.spec.ts`
@@ -152,6 +154,7 @@ The Pages artifact is `openwiki/.vitepress/dist`. Author or generate OpenWiki Ma
 - Version bumps are explicit normal pull-request changes. CI requires a canonical SemVer version greater than the base revision whenever `package.json` changes. Update the intended patch, minor, or major version in both `package.json` and `src/manifest.ts` before merging.
 - When the version changed, the workflow verifies package/manifest parity, runs typecheck, tests, build, and pack, requires a greater stable version, then tags the exact merged SHA and creates a GitHub Release. Regular CI enforces package/manifest parity even when a release is skipped.
 - `.github/workflows/publish.yml` receives that immutable stable tag and validates matching package/manifest versions before publishing. Each version publishes under `previous` first; after every publish run, the current `main` version is promoted to npm `latest` only once that exact version exists in the registry. It can be dispatched with `dry_run: true` to validate a tag without publication.
+- The registry existence check that gates promotion **polls with retries** (10 attempts, 6s apart) rather than reading once. npm is not read-after-write consistent: a lookup issued immediately after `npm publish` returns can still answer `E404`. In the 0.2.4 release the check ran 0.3s after publish, got `E404`, treated it as a benign skip, and exited `0` — so `latest` was left pointing at 0.2.3 while every step reported success. Promotion failure is now loud: if the version being promoted is the one this run just published and it never appears, the step emits `::error::` and exits `1`. It stays a `::warning::` with exit `0` only in the legitimate case where `main` has moved ahead to a version that was deliberately never published.
 - The release workflow never increments versions and never writes to `main`. Publishing requires the repository `NPM_TOKEN` secret.
 
 If changing release automation, inspect `.github/workflows/` directly and update README/OpenWiki together.

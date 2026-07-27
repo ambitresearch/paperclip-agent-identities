@@ -103,6 +103,36 @@ jobs:
             rm -f "$error_file"
             return 2
           }
+          # npm's registry is not read-after-write consistent: a version can be
+          # invisible to `npm view` for seconds after `npm publish` returns. The
+          # promotion below is gated on the version being visible, so checking
+          # once races the publish that just happened. That is exactly how 0.2.4
+          # shipped with `latest` still pointing at 0.2.3 -- the check ran 0.3s
+          # after publish, got E404, and the workflow exited green.
+          wait_for_package_version() {
+            local candidate="$1" attempt=1 status
+            local -r attempts=10 delay=6
+            while true; do
+              # Capture the status via `|| status=$?`. Do NOT write this as
+              # `if package_version_exists ...; then ...; fi; status=$?` -- after
+              # an `if` with no `else`, `$?` is the if-statement's own status (0),
+              # not the condition's, so a "not found" would read as "found".
+              status=0
+              package_version_exists "$candidate" || status=$?
+              if [[ "$status" -eq 0 ]]; then
+                return 0
+              fi
+              if [[ "$status" -ne 1 ]]; then
+                return "$status"
+              fi
+              if [[ "$attempt" -ge "$attempts" ]]; then
+                return 1
+              fi
+              echo "Registry does not serve ${PACKAGE_NAME}@${candidate} yet (attempt ${attempt}/${attempts}); retrying in ${delay}s."
+              sleep "$delay"
+              attempt=$((attempt + 1))
+            done
+          }
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
           VERSION="$(node -p "require('./package.json').version")"
           if package_version_exists "$VERSION"; then
@@ -116,7 +146,7 @@ jobs:
           fi
           git fetch origin main
           MAIN_VERSION="$(git show origin/main:package.json | node -e 'const fs=require("fs"); process.stdout.write(JSON.parse(fs.readFileSync(0, "utf8")).version)')"
-          if package_version_exists "$MAIN_VERSION"; then
+          if wait_for_package_version "$MAIN_VERSION"; then
             LATEST_ERROR="$(mktemp)"
             if LATEST_VERSION="$(npm view "$PACKAGE_NAME" dist-tags.latest --registry=https://registry.npmjs.org 2>"$LATEST_ERROR")"; then
               rm -f "$LATEST_ERROR"
@@ -166,4 +196,11 @@ jobs:
             if [[ "$LOOKUP_STATUS" -ne 1 ]]; then
               exit "$LOOKUP_STATUS"
             fi
+            # Reaching here means the registry never served $MAIN_VERSION. Two
+            # very different situations land here, so do not treat them alike.
+            if [[ "$MAIN_VERSION" == "$VERSION" ]]; then
+              echo "::error::Published ${PACKAGE_NAME}@${VERSION} but the registry still does not serve it, so npm 'latest' was left stale. Re-run this workflow once the registry catches up."
+              exit 1
+            fi
+            echo "::warning::Left npm 'latest' unchanged: origin/main is at ${MAIN_VERSION}, which is not published to npm. Publish that version to move 'latest'."
           fi

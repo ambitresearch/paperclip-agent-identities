@@ -18,15 +18,21 @@ const slackIdentityConfigProperties = {
   appId: { type: "string" },
   botUserId: { type: "string" },
   defaultChannel: { type: "string" },
-  // Any HTTPS URL without a query, fragment, or embedded credentials. The
-  // production value is the host-mounted webhook route
+  // Any HTTPS URL without whitespace, a query, a fragment, or embedded
+  // credentials. The production value is the host-mounted webhook route
   // (/api/companies/<companyId>/plugins/<pluginId>/webhooks/slack-events),
   // which the Settings UI derives automatically; a dev tunnel URL such as
   // https://<tunnel>/events is an equally valid manual override. This value is
-  // embedded verbatim in the generated Slack app manifest, hence the
-  // no-query/no-fragment envelope. Kept in sync with normalizeEventsRequestUrl
-  // in src/providers/slack/app-manifest.ts.
-  eventsRequestUrl: { type: "string", format: "uri", pattern: "^https://[^\\s?#]+$" },
+  // embedded verbatim in the generated Slack app manifest, hence the strict
+  // envelope. The authority run additionally excludes "@" so userinfo
+  // (https://user:pass@host/...) cannot slip through -- `format: uri` alone
+  // accepts it -- while "@" stays legal later in the path. Kept in sync with
+  // normalizeEventsRequestUrl in src/providers/slack/app-manifest.ts.
+  eventsRequestUrl: {
+    type: "string",
+    format: "uri",
+    pattern: "^https://[^\\s?#@/]+(?:/[^\\s?#]*)?$",
+  },
   credentials: {
     type: "object",
     properties: {

@@ -153,7 +153,12 @@ Sources: [Installing with OAuth](https://api.slack.com/authentication/oauth-v2);
 
 ## Current generated manifest template (HTTP Events API; no Socket Mode)
 
-`eventsRequestUrl` is validated as HTTPS with no query, fragment, or embedded credentials.
+`eventsRequestUrl` is validated as HTTPS with no whitespace, query, fragment, or embedded
+credentials. Because the value is embedded verbatim rather than re-serialized, that envelope is
+enforced identically in two places — the `eventsRequestUrl` config-schema `pattern` in
+`src/manifest.ts`, which gates persisted config, and `normalizeEventsRequestUrl` in
+`src/providers/slack/app-manifest.ts`, which gates the manifest flow. They must accept and reject
+the same set; `tests/manifest-config-schema.spec.ts` pins the shared cases so the two cannot drift.
 `src/providers/slack/app-manifest.ts` inserts the validated URL into the generated manifest. It is
 no longer pinned to `/events`: Settings derives the host's own company-scoped webhook route
 (`.../webhooks/slack-events`) whenever the origin is HTTPS, and the operator field is an override

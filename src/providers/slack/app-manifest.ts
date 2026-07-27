@@ -67,9 +67,9 @@ function readRequiredString(value: unknown, field: string): string {
 // UI derives (see src/shared/webhook-endpoints.ts); in local development it is
 // a public tunnel pointing at scripts/slack-events-adapter.mjs, whose own
 // listener happens to use /events. Neither path is privileged here, so only the
-// envelope is enforced: HTTPS, no query/fragment/credentials -- this value is
-// embedded verbatim in the generated Slack app manifest. Kept in sync with the
-// `eventsRequestUrl` config-schema pattern in src/manifest.ts.
+// envelope is enforced: HTTPS, no whitespace/query/fragment/credentials -- this
+// value is embedded verbatim in the generated Slack app manifest. Kept in sync
+// with the `eventsRequestUrl` config-schema pattern in src/manifest.ts.
 function normalizeEventsRequestUrl(value: unknown): string {
   const eventsRequestUrl = readRequiredString(value, "eventsRequestUrl");
   let parsed: URL;
@@ -80,12 +80,19 @@ function normalizeEventsRequestUrl(value: unknown): string {
   }
   if (
     parsed.protocol !== "https:" ||
+    // `new URL` percent-encodes interior whitespace rather than rejecting it,
+    // and we hand back the caller's string verbatim, so without this guard a
+    // raw space would reach the Slack manifest while the config-schema pattern
+    // rejects the very same value.
+    /\s/.test(eventsRequestUrl) ||
     parsed.search.length > 0 ||
     parsed.hash.length > 0 ||
     parsed.username.length > 0 ||
     parsed.password.length > 0
   ) {
-    throw new Error("eventsRequestUrl must be an HTTPS URL with no query, fragment, or embedded credentials.");
+    throw new Error(
+      "eventsRequestUrl must be an HTTPS URL with no whitespace, query, fragment, or embedded credentials.",
+    );
   }
   return eventsRequestUrl;
 }

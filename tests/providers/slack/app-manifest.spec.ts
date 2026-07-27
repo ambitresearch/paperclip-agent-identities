@@ -91,6 +91,9 @@ describe("createSlackAppManifestFlow", () => {
     "https://paperclip-test.trycloudflare.com/events?token=unexpected",
     "https://paperclip-test.trycloudflare.com/events#fragment",
     "https://user:pass@paperclip-test.trycloudflare.com/events",
+    // `new URL` percent-encodes this instead of throwing, so it only fails on
+    // the explicit whitespace guard.
+    "https://paperclip-test.trycloudflare.com/sl ack-events",
     "not-a-url",
   ])("rejects an invalid Events Request URL: %s", (eventsRequestUrl) => {
     expect(() =>

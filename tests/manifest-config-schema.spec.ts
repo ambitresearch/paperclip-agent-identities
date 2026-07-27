@@ -183,6 +183,46 @@ describe("manifest instance config schema", () => {
     },
   );
 
+  // The persisted-config pattern here and normalizeEventsRequestUrl in
+  // src/providers/slack/app-manifest.ts gate the same value. A URL one accepts
+  // and the other rejects strands an operator with config that saves cleanly
+  // and then fails the manifest flow (or, worse, ships a malformed request_url
+  // to Slack), so the two lists below mirror the cases in
+  // tests/providers/slack/app-manifest.spec.ts.
+  it.each([
+    "http://paperclip-test.trycloudflare.com/events",
+    "https://paperclip-test.trycloudflare.com/events?token=unexpected",
+    "https://paperclip-test.trycloudflare.com/events#fragment",
+    // Userinfo in the authority: `format: uri` accepts it, so only the
+    // pattern's "@"-free authority run rejects it.
+    "https://user:pass@paperclip-test.trycloudflare.com/events",
+    "https://paperclip-test.trycloudflare.com/sl ack-events",
+    "not-a-url",
+  ])(
+    "rejects an Events Request URL the manifest flow rejects: %s",
+    (eventsRequestUrl) => {
+      const config = slackConfig();
+      config.identities["agent-slack"].slack.eventsRequestUrl = eventsRequestUrl;
+      expect(validate(config)).toBe(false);
+    },
+  );
+
+  it.each([
+    "https://paperclip.example.com/api/companies/company-1/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events",
+    "https://paperclip-test.trycloudflare.com/events",
+    "https://paperclip-test.trycloudflare.com/events/",
+    "https://paperclip-test.trycloudflare.com/not-events",
+    // "@" is only barred from the authority; it stays legal in a path.
+    "https://paperclip-test.trycloudflare.com/events/a@b",
+  ])(
+    "accepts an Events Request URL the manifest flow accepts: %s",
+    (eventsRequestUrl) => {
+      const config = slackConfig();
+      config.identities["agent-slack"].slack.eventsRequestUrl = eventsRequestUrl;
+      expect(validate(config)).toBe(true);
+    },
+  );
+
   it.each(["botToken", "signingSecret"] as const)(
     "rejects an unprojected typed ref for Slack %s",
     (credential) => {

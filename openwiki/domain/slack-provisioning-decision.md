@@ -1,7 +1,7 @@
 # Slack app manifests and per-agent provisioning — decision record
 
 Status: **decided and implemented for HTTP Events API**. Generated manifests require an
-operator-supplied HTTPS URL with the exact `/events` path, set it as the Slack Request URL, and
+HTTPS URL with no query, fragment, or embedded credentials, set it as the Slack Request URL, and
 subscribe to `message.im`, `app_mention`, `message.channels`, `message.groups`, and
 `message.mpim`. Socket Mode remains an unimplemented,
 operator-opt-in future transport.
@@ -50,7 +50,7 @@ operator-opt-in future transport.
 
 At the time of this decision, the Paperclip-hosted worker exposed no provider webhook seam, so a
 public Events API receiver was an implementation prerequisite. DRO-1005 added that HTTP ingress
-composition path. The current manifest builder now accepts the public HTTPS `/events` URL and
+composition path. The current manifest builder now accepts any public HTTPS Request URL and
 subscribes the generated app to direct messages, app mentions, and channel thread messages.
 Socket Mode remains separate
 follow-up work.
@@ -99,7 +99,7 @@ Source: [App Manifest APIs / Configuration tokens](https://api.slack.com/referen
 | Posting messages | `chat:write` | Core scope; also required for threaded replies (same scope, pass `thread_ts`). |
 | Threaded replies | `chat:write` | No separate scope; thread targeting is a message parameter, not a scope. |
 | Reactions | `reactions:write` | Add/remove emoji reactions. |
-| Inbound direct messages | `im:history` (Events API subscription `message.im`) | Generated manifests configure the operator-supplied HTTPS `/events` Request URL and subscribe to direct messages. |
+| Inbound direct messages | `im:history` (Events API subscription `message.im`) | Generated manifests configure the resolved HTTPS Request URL and subscribe to direct messages. |
 | Inbound public-channel thread replies | `channels:history` (Events API subscription `message.channels`) | Receiver dispatches only replies in threads already owned by the routed agent. |
 | Inbound private-channel thread replies | `groups:history` (Events API subscription `message.groups`) | Uses the same exact-thread ownership gate. |
 | Inbound multi-person DM thread replies | `mpim:history` (Events API subscription `message.mpim`) | Uses the same exact-thread ownership gate. |
@@ -153,9 +153,74 @@ Sources: [Installing with OAuth](https://api.slack.com/authentication/oauth-v2);
 
 ## Current generated manifest template (HTTP Events API; no Socket Mode)
 
-`eventsRequestUrl` is validated as HTTPS with the exact `/events` path and no query, fragment, or
-embedded credentials. `src/providers/slack/app-manifest.ts` inserts the validated URL into the
-generated manifest.
+`eventsRequestUrl` is validated as HTTPS with no whitespace, query, fragment, or embedded
+credentials, using only characters RFC 3986 permits. Because the value is embedded verbatim rather
+than re-serialized, that envelope is enforced in two places — the `eventsRequestUrl` config-schema
+`pattern` in `src/manifest.ts`, which gates persisted config, and `normalizeEventsRequestUrl` in
+`src/providers/slack/app-manifest.ts`, which gates the manifest flow. A URL one accepts and the
+other rejects strands an operator with config that saves cleanly and then fails provisioning, so
+both import the same definition from `src/shared/events-request-url.ts`. Paired accept/reject cases
+in `tests/manifest-config-schema.spec.ts` and `tests/providers/slack/app-manifest.spec.ts` pin that
+agreement.
+
+Sharing the pattern is necessary but was not sufficient. Each side originally ran a *second*,
+*different* URL check alongside it — the schema applied Ajv's RFC 3986 `format: "uri"`, the runtime
+applied WHATWG `new URL()` — and those two disagree in both directions. WHATWG normalizes where RFC
+rejects (`https://host\events` becomes a slash, illegal characters and malformed escapes get
+percent-encoded, non-ASCII hosts become punycode), while RFC's unbounded `port = *DIGIT` accepts
+`:99999`, which WHATWG rejects. Measured against the shared-pattern-only build, 11 of 13 probe
+cases still drifted, 9 of them failing open. Both extra checks were therefore removed: the pattern
+is now the **complete** contract on both paths, so drift is structurally impossible rather than
+patched case by case. **Do not add a second check to either side** — if the envelope needs to
+change, change the pattern.
+
+That removal is only safe because the pattern is strictly stricter than both validators it
+replaced. `tests/shared/events-request-url.spec.ts` proves it in CI by sweeping every ASCII
+codepoint across host, path, origin, port, and bracketed-literal positions and asserting that every
+pattern-accepted value is *also* accepted by `format: "uri"` **and** by `new URL()`. If that test
+fails, the pattern has become looser than one of them — fix the pattern, not the call sites.
+
+That sweep was originally positional substitution only, and it missed a containment hole for a full
+release: substituting one character into a fixed template can never produce a host whose *final
+label* is numeric, which is exactly the shape the two validators disagree on (see below). When
+extending the sweep, vary the shape of the input, not just one character inside a fixed one.
+
+The envelope is matched against the **raw string** rather than against parsed `URL` properties,
+because `URL` normalizes in precisely the places this check needs it to reject: it accepts embedded
+credentials, percent-encodes interior whitespace instead of throwing, and reports `search`/`hash` as
+empty for a trailing `?` or `#` while still keeping the delimiter in `href`. Each of those slipped
+past an earlier property-inspection implementation. The pattern is an allowlist of RFC-legal
+characters rather than a denylist, because every one of those bugs came from a denylist missing a
+character; an allowlist fails closed instead.
+
+### Host grammar
+
+The host is three disjoint alternatives rather than one character class, because the two validators
+disagree about hosts in both directions:
+
+- **`reg-name`**, with the extra rule that the final label must begin with a letter. WHATWG re-reads
+  the *entire* host as IPv4 whenever the final label parses as a number, and throws when that fails,
+  so `https://a;.1` is a valid `reg-name` to RFC 3986 and a parse error to `new URL()`. No real DNS
+  name has a numeric TLD, so the constraint costs nothing and closes the hole. A trailing root dot
+  (`https://example.com.`) stays legal.
+- **`IPv4address`**, spelled out as an explicit 0-255 dotted quad. Leading zeros and hex or octal
+  shorthand are excluded: WHATWG accepts them, RFC 3986 does not.
+- **`IP-literal`**, the bracketed RFC 3986 `IPv6address`. `URL.origin` keeps the brackets and colons
+  for such a deployment, none of which are legal in a `reg-name`, so without this the plugin would
+  derive a URL that fails its own envelope. Zone identifiers (RFC 6874 `[fe80::1%25eth0]`) and
+  `IPvFuture` (`[v1.fe]`) are deliberately excluded — RFC 3986 permits both and WHATWG rejects both.
+
+`buildSlackEventsRequestUrl` in `src/shared/webhook-endpoints.ts` runs its own output through
+`matchesEventsRequestUrlEnvelope` and returns `null` if it fails. That is not a second validator in
+the sense forbidden above — it is the *same* discriminator, applied by the producer, so the
+derivation can never hand Settings a value the worker would refuse. The Settings gate only checks
+that the derived URL is non-empty, so a non-conforming derivation would otherwise enable the
+manifest button and fail inside the worker.
+
+`src/providers/slack/app-manifest.ts` inserts the validated URL into the generated manifest. It is
+no longer pinned to `/events`: Settings derives the host's own company-scoped webhook route
+(`.../webhooks/slack-events`) whenever the origin is HTTPS, and the operator field is an override
+used mainly for the local dev tunnel.
 
 ```yaml
 _metadata:

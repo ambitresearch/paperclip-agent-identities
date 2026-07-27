@@ -8,6 +8,10 @@ import {
 } from "./config.js";
 import { discoverSlackAppId, verifySlackToken } from "./credentials.js";
 import { getIdentityKey } from "../../shared/types.js";
+import {
+  EVENTS_REQUEST_URL_REQUIREMENT,
+  matchesEventsRequestUrlEnvelope,
+} from "../../shared/events-request-url.js";
 import { normalizeSettingsState, BOT_IDENTITY_SETTINGS_VERSION, type AgentIdentitySettingsState } from "../../core/identity-config.js";
 import { CONFIG_SCOPE, configMutationLockKeys } from "../../config-source.js";
 import { withProcessLocalLocks } from "../../core/process-local-mutation-queue.js";
@@ -62,23 +66,21 @@ function readRequiredString(value: unknown, field: string): string {
   return value.trim();
 }
 
+// The Request URL is whatever HTTPS endpoint Slack should POST events to. In
+// production that is the host-mounted company-scoped webhook route the Settings
+// UI derives (see src/shared/webhook-endpoints.ts); in local development it is
+// a public tunnel pointing at scripts/slack-events-adapter.mjs, whose own
+// listener happens to use /events. Neither path is privileged here, so only the
+// envelope is enforced -- this value is embedded verbatim in the generated Slack
+// app manifest. The envelope itself lives in src/shared/events-request-url.ts,
+// and that pattern is the *only* check applied here: the config-schema pattern
+// in src/manifest.ts applies the same expression and nothing else, so the two
+// cannot drift. Do not add a `new URL()` parse back -- WHATWG parsing is exactly
+// what used to disagree with the schema's RFC validation, in both directions.
 function normalizeEventsRequestUrl(value: unknown): string {
   const eventsRequestUrl = readRequiredString(value, "eventsRequestUrl");
-  let parsed: URL;
-  try {
-    parsed = new URL(eventsRequestUrl);
-  } catch {
-    throw new Error("eventsRequestUrl must be a valid HTTPS URL with the exact /events path.");
-  }
-  if (
-    parsed.protocol !== "https:" ||
-    parsed.pathname !== "/events" ||
-    parsed.search.length > 0 ||
-    parsed.hash.length > 0 ||
-    parsed.username.length > 0 ||
-    parsed.password.length > 0
-  ) {
-    throw new Error("eventsRequestUrl must be an HTTPS URL with the exact /events path and no query or fragment.");
+  if (!matchesEventsRequestUrlEnvelope(eventsRequestUrl)) {
+    throw new Error(EVENTS_REQUEST_URL_REQUIREMENT);
   }
   return eventsRequestUrl;
 }

@@ -8,6 +8,7 @@ import {
   type LegacySlackCredentialRebindResult,
   type SaveSlackInstallMetadataResult,
 } from "../../shared/types.js";
+import { buildSlackEventsRequestUrl } from "../../shared/webhook-endpoints.js";
 import {
   errorStyle,
   fieldStyle,
@@ -101,6 +102,14 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
   secretsLoading: boolean;
   secretsError: string | null;
   companyId: string;
+  // The Events Request URL this deployment serves for `companyId`, derived from
+  // the host's company-scoped webhook route, or null when it cannot be derived
+  // (non-HTTPS dev origin). Offered as the default so operators do not have to
+  // know the route; see src/shared/webhook-endpoints.ts.
+  hostEventsRequestUrl: string | null;
+  // What the manifest flow will actually use: the operator's override when they
+  // typed one (a dev tunnel), otherwise the derived host URL.
+  effectiveEventsRequestUrl: string;
 }
 
 // Only the non-secret identity/status fields `slack_bot_whoami` returns (see
@@ -208,6 +217,17 @@ type SlackCredentialStepInput = ProviderSettingsUIHookInput<SlackSettingsUIFormC
 
 function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsUIHookResult {
   const { config, hasPersistedIdentity, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, discoverSlackInstallMetadata, saveSlackInstallMetadata, rebindLegacySlackCredentials, slackBotWhoami, companyId } = input;
+
+  // Slack posts events straight at the host's company-scoped webhook route, so
+  // in a deployed Paperclip the Request URL is fully derivable and the operator
+  // should never have to know it. It is only underivable in local development,
+  // where the origin is plain HTTP and a public tunnel in front of
+  // scripts/slack-events-adapter.mjs still has to be supplied by hand.
+  const hostEventsRequestUrl = buildSlackEventsRequestUrl(
+    typeof window === "undefined" ? "" : window.location.origin,
+    companyId,
+  );
+  const effectiveEventsRequestUrl = config?.slackEventsRequestUrl.trim() || hostEventsRequestUrl || "";
 
   const [slackManifestFlow, setSlackManifestFlow] = useState<CreateSlackAppManifestResult | null>(null);
   const [slackManifestBusy, setSlackManifestBusy] = useState(false);
@@ -482,7 +502,7 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
         agentId: config.agentId.trim(),
         provider: config.provider,
         label: config.label.trim(),
-        eventsRequestUrl: config.slackEventsRequestUrl.trim(),
+        eventsRequestUrl: effectiveEventsRequestUrl,
       }) as CreateSlackAppManifestResult;
       // Discard this response if the dialog/form that initiated the request
       // is no longer current (finding #4): a reset in between (edit, close,
@@ -490,6 +510,12 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
       // different form.
       if (slackManifestFlowGenerationRef.current !== generation) return;
       setSlackManifestFlow(result);
+      // Echo the URL that actually went into the manifest back into the field.
+      // When the operator left it blank we used the derived host route, and the
+      // field is the only place they can see (and later verify against Slack)
+      // what was embedded -- it also keeps the save-result comparisons in
+      // getValidation/credentialComplete matching on a concrete value.
+      updateField("slackEventsRequestUrl", result.eventsRequestUrl);
       setSlackManifestCopied(false);
       writeSlackManifestFlowState(companyId, config.agentId.trim(), result.state);
     } catch (err) {
@@ -808,6 +834,8 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     secretsLoading: input.secretsLoading,
     secretsError: input.secretsError,
     companyId: input.companyId,
+    hostEventsRequestUrl,
+    effectiveEventsRequestUrl,
   };
 }
 
@@ -918,6 +946,8 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     secretsLoading,
     secretsError,
     companyId,
+    hostEventsRequestUrl,
+    effectiveEventsRequestUrl,
   } = state;
   const hasSecretOptions = secretOptions.length > 0;
   const credentialComplete = Boolean(
@@ -972,17 +1002,19 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
       </div>}
 
       {!hasLegacyCredentialRecovery && <label style={fieldStyle}>
-        <span>Events Request URL <span style={requiredStyle}>*</span></span>
+        <span>Events Request URL {!hostEventsRequestUrl && <span style={requiredStyle}>*</span>}</span>
         <input
           type="url"
           value={config.slackEventsRequestUrl}
           onChange={(e) => updateField("slackEventsRequestUrl", e.target.value)}
-          placeholder="https://your-public-tunnel.example/events"
+          placeholder={hostEventsRequestUrl ?? "https://your-public-tunnel.example/events"}
           style={inputStyle}
           disabled={slackManifestBusy || slackSaveBusy || Boolean(slackManifestFlow)}
         />
         <span style={hintStyle}>
-          Public HTTPS URL for the local Slack Events adapter. It must use the exact /events path.
+          {hostEventsRequestUrl
+            ? "Leave blank to use this Paperclip deployment's own Slack Events endpoint (shown greyed out in the field) - the host serves it, so no tunnel is needed. Override it only to point Slack somewhere else, such as a public tunnel during local development."
+            : "Public HTTPS URL Slack should post events to. This deployment is not served over HTTPS, so paste the public tunnel URL in front of your local Slack Events adapter (its path is /events)."}
         </span>
       </label>}
 
@@ -997,7 +1029,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
               slackResumeBusy ||
               !config.agentId ||
               !config.label ||
-              !config.slackEventsRequestUrl.trim()
+              !effectiveEventsRequestUrl
             }
             style={secondaryButtonStyle}
           >
@@ -1283,7 +1315,7 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
                   slackManifestBusy ||
                   slackSaveBusy ||
                   slackResumeBusy ||
-                  !config.slackEventsRequestUrl.trim()
+                  !effectiveEventsRequestUrl
                 }
                 style={secondaryButtonStyle}
               >

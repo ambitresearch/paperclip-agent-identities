@@ -88,13 +88,57 @@ describe("createSlackAppManifestFlow", () => {
 
   it.each([
     "http://paperclip-test.trycloudflare.com/events",
-    "https://paperclip-test.trycloudflare.com/events/",
-    "https://paperclip-test.trycloudflare.com/not-events",
     "https://paperclip-test.trycloudflare.com/events?token=unexpected",
+    "https://paperclip-test.trycloudflare.com/events#fragment",
+    "https://user:pass@paperclip-test.trycloudflare.com/events",
+    // `URL` normalizes rather than rejects for these three: it percent-encodes
+    // interior whitespace, and it reports search/hash as empty for a trailing
+    // "?" or "#" while still keeping the delimiter in the string. Only matching
+    // the raw value against the envelope pattern catches them.
+    "https://paperclip-test.trycloudflare.com/sl ack-events",
+    "https://paperclip-test.trycloudflare.com/events?",
+    "https://paperclip-test.trycloudflare.com/events#",
+    // WHATWG normalizes rather than rejects these, so the runtime gate used to
+    // accept them and ship them verbatim to Slack: a backslash becomes a slash,
+    // illegal characters and malformed escapes are percent-encoded, and a
+    // non-ASCII host becomes punycode.
+    "https://paperclip-test.trycloudflare.com\\events",
+    "https://paperclip-test.trycloudflare.com/sl|ack",
+    "https://paperclip-test.trycloudflare.com/%zz",
+    "https://exámple.com/events",
+    // RFC 3986's `port = *DIGIT` is unbounded, so the config schema used to
+    // accept these while `new URL()` threw.
+    "https://paperclip-test.trycloudflare.com:99999/events",
+    "https://paperclip-test.trycloudflare.com:notaport/events",
+    "not-a-url",
+    "https://[fe80::1%25eth0]/events",
+    "https://[v1.fe]/events",
+    "https://[::::]/events",
+    "https://a;.1/events",
   ])("rejects an invalid Events Request URL: %s", (eventsRequestUrl) => {
     expect(() =>
       createSlackAppManifestFlow({ agentId: "a", label: "x", eventsRequestUrl }, COMPANY_ID),
     ).toThrow(/eventsRequestUrl/);
+  });
+
+  // The Request URL is no longer pinned to /events: production points at the
+  // host's company-scoped webhook route, which ends in /webhooks/slack-events.
+  it.each([
+    "https://paperclip.example.com/api/companies/company-1/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events",
+    "https://paperclip-test.trycloudflare.com/events/",
+    "https://paperclip-test.trycloudflare.com/not-events",
+    "https://paperclip-test.trycloudflare.com:8443/events",
+    "https://paperclip-test.trycloudflare.com/a%20b",
+    "https://[2001:db8::1]/events",
+    "https://[::1]:8443/events",
+    "https://192.0.2.10:8443/events",
+  ])("accepts any HTTPS Events Request URL: %s", (eventsRequestUrl) => {
+    const flow = createSlackAppManifestFlow({ agentId: "a", label: "x", eventsRequestUrl }, COMPANY_ID);
+    expect(flow.eventsRequestUrl).toBe(eventsRequestUrl);
+    const manifest = JSON.parse(flow.manifest) as {
+      settings: { event_subscriptions: { request_url: string } };
+    };
+    expect(manifest.settings.event_subscriptions.request_url).toBe(eventsRequestUrl);
   });
 });
 

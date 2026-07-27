@@ -4,6 +4,8 @@ import {
   REBIND_LEGACY_SLACK_CREDENTIALS_ACTION,
   RETRY_LEGACY_SLACK_SIDECAR_CLEANUP_ACTION,
 } from "./shared/types.js";
+import { EVENTS_REQUEST_URL_PATTERN } from "./shared/events-request-url.js";
+import { AGENT_IDENTITIES_PLUGIN_ID } from "./shared/webhook-endpoints.js";
 
 const registry = createProviderRegistry();
 
@@ -18,7 +20,25 @@ const slackIdentityConfigProperties = {
   appId: { type: "string" },
   botUserId: { type: "string" },
   defaultChannel: { type: "string" },
-  eventsRequestUrl: { type: "string", format: "uri", pattern: "^https://.+/events$" },
+  // Any HTTPS URL without whitespace, a query, a fragment, or embedded
+  // credentials. The production value is the host-mounted webhook route
+  // (/api/companies/<companyId>/plugins/<pluginId>/webhooks/slack-events),
+  // which the Settings UI derives automatically; a dev tunnel URL such as
+  // https://<tunnel>/events is an equally valid manual override. This value is
+  // embedded verbatim in the generated Slack app manifest, hence the strict
+  // envelope. The authority run additionally excludes "@" so userinfo
+  // (https://user:pass@host/...) cannot slip through -- `format: uri` alone
+  // accepts it -- while "@" stays legal later in the path. The pattern itself
+  // lives in src/shared/events-request-url.ts, shared with
+  // normalizeEventsRequestUrl in src/providers/slack/app-manifest.ts so the two
+  // validators cannot drift apart.
+  eventsRequestUrl: {
+    type: "string",
+    // No `format: "uri"`. The pattern is the complete contract on both paths --
+    // see src/shared/events-request-url.ts. Adding a second check here would
+    // reintroduce the drift against the runtime gate that this replaced.
+    pattern: EVENTS_REQUEST_URL_PATTERN,
+  },
   credentials: {
     type: "object",
     properties: {
@@ -107,9 +127,12 @@ export const SETTINGS_ACTIONS = [
 ] as const;
 
 const manifest: PaperclipPluginManifestV1 = {
-  id: "ambitresearch.paperclip-agent-identities",
+  // Shared with the webhook route builder: the host mounts this plugin's
+  // webhooks under its manifest id, so a literal here would silently break
+  // every derived Slack Events URL if the id ever changed.
+  id: AGENT_IDENTITIES_PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.3",
+  version: "0.2.4",
   displayName: "Agent Identities",
   description: "Per-agent identity providers and contribution tools for Paperclip",
   author: "Roshan Gautam",

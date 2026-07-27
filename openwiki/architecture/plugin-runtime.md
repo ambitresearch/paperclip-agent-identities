@@ -19,7 +19,7 @@ Do not edit generated `/dist` files directly; change `/src` and rebuild.
 
 - plugin ID: `ambitresearch.paperclip-agent-identities`
 - display name: `Agent Identities`
-- version: `0.2.3`
+- version: `0.2.4`
 - category: `connector`
 - entrypoints: `./dist/worker.js` and `./dist/ui`
 

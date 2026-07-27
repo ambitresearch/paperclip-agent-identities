@@ -120,12 +120,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderSettingsPage() {
+function renderSettingsPage(companyId = "") {
   act(() => {
     root = createRoot(container);
     root.render(
       // @ts-expect-error -- minimal PluginHostContext for the test harness
-      <SettingsPage context={{ companyId: "", companyPrefix: "acme" }} />,
+      <SettingsPage context={{ companyId, companyPrefix: "acme" }} />,
     );
   });
 }
@@ -1022,5 +1022,131 @@ describe("SettingsPage interactions: removal", () => {
       agentId: "agent-1",
       provider: GITHUB_IDENTITY_PROVIDER_ID,
     });
+  });
+});
+
+// The Events Request URL used to be a required field whose value had to end in
+// `/events` -- a path that only ever existed in the dev-only loopback adapter
+// (scripts/slack-events-adapter.mjs). The host actually serves this plugin's
+// Slack webhook at a company-scoped route, so on an HTTPS deployment the URL is
+// derivable and the field becomes an optional override.
+describe("SettingsPage interactions: Slack Events Request URL defaults to the host route", () => {
+  const COMPANY_ID = "company-1";
+  const DERIVED_URL =
+    "https://paperclip.example.com/api/companies/company-1/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events";
+
+  async function openSlackCredentialStep(companyId: string) {
+    renderSettingsPage(companyId);
+    openNewIdentityDialog();
+
+    const agentSelect = Array.from(container.querySelectorAll("select")).find((s) =>
+      Array.from(s.options).some((o) => o.value === "agent-1"),
+    );
+    setValue(agentSelect ?? null, "agent-1");
+    const providerSelect = Array.from(container.querySelectorAll("select")).find((s) =>
+      Array.from(s.options).some((o) => o.value === SLACK_IDENTITY_PROVIDER_ID),
+    );
+    setValue(providerSelect ?? null, SLACK_IDENTITY_PROVIDER_ID);
+    setValue(fieldByPlaceholder("Cade Riven") ?? null, "Release Bot");
+
+    const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+    await act(async () => {
+      click(nextButton ?? null);
+      await Promise.resolve();
+    });
+  }
+
+  // The GitHub settings adapter reads window.location.href at mount, so a
+  // location stub has to be a usable URL, not just an origin.
+  function stubLocation(origin: string) {
+    vi.stubGlobal("location", { origin, href: `${origin}/settings` });
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => [] })));
+  }
+
+  function createManifestButton() {
+    return Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent === "Create Slack App manifest",
+    );
+  }
+
+  function eventsUrlField() {
+    return Array.from(container.querySelectorAll("input")).find((i) => i.placeholder?.includes("slack-events"))
+      ?? fieldByPlaceholder("https://your-public-tunnel.example/events");
+  }
+
+  it("offers the deployment's own webhook route as the default and lets the operator create the manifest without typing a URL", async () => {
+    stubLocation("https://paperclip.example.com");
+    actionFor("create-slack-app-manifest").mockResolvedValue({
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      state: "state-1",
+      manifest: '{"name":"slack-demo"}',
+      createAppUrl: "https://api.slack.com/apps?new_app=1",
+      label: "Release Bot",
+      eventsRequestUrl: DERIVED_URL,
+    });
+
+    await openSlackCredentialStep(COMPANY_ID);
+
+    const field = eventsUrlField();
+    expect(field?.placeholder).toBe(DERIVED_URL);
+    expect(field?.value).toBe("");
+    expect(text()).toContain("Leave blank to use this Paperclip deployment's own Slack Events endpoint");
+    expect(createManifestButton()?.disabled).toBe(false);
+
+    await act(async () => {
+      click(createManifestButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("create-slack-app-manifest")).toHaveBeenCalledWith({
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      label: "Release Bot",
+      eventsRequestUrl: DERIVED_URL,
+    });
+    // The URL the manifest was built with is written back into the field so the
+    // credential step's "saved URL matches the entered URL" check can complete.
+    expect(eventsUrlField()?.value).toBe(DERIVED_URL);
+  });
+
+  it("still sends an explicitly entered tunnel URL instead of the derived one", async () => {
+    stubLocation("https://paperclip.example.com");
+    actionFor("create-slack-app-manifest").mockResolvedValue({
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      state: "state-1",
+      manifest: '{"name":"slack-demo"}',
+      createAppUrl: "https://api.slack.com/apps?new_app=1",
+      label: "Release Bot",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+    });
+
+    await openSlackCredentialStep(COMPANY_ID);
+    setValue(eventsUrlField() ?? null, EVENTS_REQUEST_URL);
+
+    await act(async () => {
+      click(createManifestButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(actionFor("create-slack-app-manifest")).toHaveBeenCalledWith({
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      label: "Release Bot",
+      eventsRequestUrl: EVENTS_REQUEST_URL,
+    });
+  });
+
+  it("keeps the field required when the deployment is not served over HTTPS", async () => {
+    stubLocation("http://localhost:3100");
+
+    await openSlackCredentialStep(COMPANY_ID);
+
+    expect(eventsUrlField()?.placeholder).toBe("https://your-public-tunnel.example/events");
+    expect(createManifestButton()?.disabled).toBe(true);
+    expect(text()).toContain("This deployment is not served over HTTPS");
   });
 });

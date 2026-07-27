@@ -245,6 +245,8 @@ Every push to `main` compares the merged `package.json` version with the previou
 
 Version bumps are explicit normal pull-request changes. CI requires a canonical SemVer version greater than the base revision whenever `package.json` changes. Set the intended patch, minor, or major version in both `package.json` and `src/manifest.ts`; the merge is the release trigger. The workflow never increments versions or writes to `main`. Real npm publication accepts only a stable `v<major>.<minor>.<patch>` tag whose package and manifest versions match. `NPM_TOKEN` remains a repository secret used only by the publish workflow.
 
+Each version publishes under the `previous` npm tag first; the `latest` tag is promoted only after the registry confirms the version exists. The existence check polls (10 attempts, 6 s apart) because npm is not read-after-write consistent — a lookup issued immediately after `npm publish` can return `E404`. If the version just published never appears in the registry, the promote step emits an error and exits non-zero. If `main` has already moved to a version that was deliberately never published, the step warns and exits successfully without promoting.
+
 
 Run the same validation locally:
 

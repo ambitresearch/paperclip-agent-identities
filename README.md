@@ -5,7 +5,7 @@ Per-agent identity providers and contribution tools for Paperclip. GitHub is the
 ## Features
 
 - Configure one identity per Paperclip agent and provider pair.
-- Choose from a provider registry: GitHub is enabled now; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are tracked as coming soon.
+- Choose from a provider registry: GitHub and Slack are enabled now; Mattermost, Microsoft Entra, Google Cloud, and AWS are tracked as coming soon.
 - Prevent duplicate identities for the same agent/provider pair.
 - Leave repository/resource access decisions to provider permissions such as GitHub App installations and scopes.
 - Create GitHub Apps with GitHub's App Manifest flow from the settings page.
@@ -161,7 +161,7 @@ Each provider projects its own version 5 identity records into runtime config by
 | Provider | Status | Notes |
 | --- | --- | --- |
 | GitHub | Enabled | GitHub App identity for repositories, pull requests, branch pushes, and commit attribution. |
-| Slack | Coming soon | Workspace identity for Slack messages and app-mediated actions. |
+| Slack | Enabled | Workspace identity for Slack messages and app-mediated actions. |
 | Mattermost | Coming soon | Team identity for posts and channel operations. |
 | Microsoft Entra | Coming soon | Directory identity for Microsoft Graph and Azure-backed workflows. |
 | Google Cloud | Coming soon | Service account identity for Google Cloud APIs. |

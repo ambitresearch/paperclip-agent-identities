@@ -657,7 +657,7 @@ describe("agent identity settings", () => {
 
     expect(config.providers).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "github", name: "GitHub", status: "enabled" }),
-      expect.objectContaining({ id: "slack", name: "Slack", status: "coming-soon" }),
+      expect.objectContaining({ id: "slack", name: "Slack", status: "enabled" }),
       expect.objectContaining({ id: "mattermost", name: "Mattermost", status: "coming-soon" }),
       expect.objectContaining({ id: "entra", name: "Microsoft Entra", status: "coming-soon" }),
       expect.objectContaining({ id: "gcp", name: "Google Cloud", status: "coming-soon" }),

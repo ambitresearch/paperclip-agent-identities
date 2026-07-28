@@ -11,17 +11,16 @@ describe("provider composition root", () => {
     expect(ALL_PROVIDERS.map((p) => p.id)).toEqual(["github", "example", "slack"]);
   });
 
-  it("enables only providers whose status is enabled", () => {
+  it("enables providers whose status is enabled", () => {
     const registry = createProviderRegistry();
-    expect(registry.enabled().map((p) => p.id)).toEqual(["github"]);
+    // Slack flipped to "enabled" now that slack_bot_lookup_channel
+    // (DRO-975/DRO-1160) landed -- the last documented backlog item gating
+    // slackProviderDefinition.status.
+    expect(registry.enabled().map((p) => p.id)).toEqual(["github", "slack"]);
   });
 
-  it("composes the live tool surface from toolsEnabled(), independent of enabled()", () => {
+  it("composes the live tool surface from toolsEnabled()", () => {
     const registry = createProviderRegistry();
-    // Slack's settings-UI status stays "coming-soon" (excluded from enabled())
-    // while its tool surface (slack_bot_post_message, DRO-973) is live
-    // (included in toolsEnabled()) — proving the two gates are independent.
-    expect(registry.enabled().map((p) => p.id)).not.toContain("slack");
     expect(registry.toolsEnabled().map((p) => p.id)).toEqual(["github", "slack"]);
   });
 
@@ -42,13 +41,14 @@ describe("provider composition root", () => {
     expect(liveToolNames).toContain("github_bot_create_pull_request");
     expect(liveToolNames).toContain("github_bot_push_branch");
 
-    // ...Slack is still coming-soon as a PROVIDER, but its `toolsStatus` is
-    // "enabled", so its whoami (DRO-972), post-message (DRO-973), and
-    // reaction (DRO-974) tools are all live too.
+    // ...Slack is now "enabled" as a provider too, and its whoami (DRO-972),
+    // post-message (DRO-973), reaction (DRO-974), and lookup-channel
+    // (DRO-975/DRO-1160) tools are all live.
     expect(liveToolNames).toContain("slack_bot_whoami");
     expect(liveToolNames).toContain("slack_bot_post_message");
     expect(liveToolNames).toContain("slack_bot_add_reaction");
     expect(liveToolNames).toContain("slack_bot_remove_reaction");
+    expect(liveToolNames).toContain("slack_bot_lookup_channel");
 
     // ...the example is coming-soon and has no `live` tool, so its tool is
     // absent from the live set EVEN THOUGH it ships a manifest fragment. The
@@ -57,11 +57,12 @@ describe("provider composition root", () => {
     expect(exampleProvider.manifestTools).toHaveLength(1);
   });
 
-  it("advertises the live manifest tool fragment for slack_bot_whoami, even though Slack the provider is coming-soon", () => {
+  it("advertises the manifest tool fragment for slack_bot_whoami", () => {
     const manifestToolNames = (manifest.tools as ReadonlyArray<{ name: string }>).map((tool) => tool.name);
     expect(manifestToolNames).toContain("slack_bot_whoami");
+    expect(manifestToolNames).toContain("slack_bot_lookup_channel");
     expect(manifestToolNames).not.toContain("example_whoami");
-    expect(slackProvider.definition.status).toBe("coming-soon");
+    expect(slackProvider.definition.status).toBe("enabled");
   });
 
   it("keeps all live tool definitions provider-owned", () => {

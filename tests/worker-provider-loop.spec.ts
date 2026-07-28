@@ -23,11 +23,10 @@ describe("worker provider registration", () => {
     const register = vi.spyOn(harness.ctx.tools, "register");
     await plugin.definition.setup(harness.ctx);
 
-    // github (enabled) contributes all four of its tools. slack is still
-    // "coming-soon" as a PROVIDER, but its whoami tool spec sets `live: true`
-    // (DRO-972), so it registers too -- through the generic `liveTools()`
-    // seam, not a provider-id branch. example is coming-soon with no `live`
-    // tools, so it stays fully dormant.
+    // github (enabled) contributes all four of its tools. slack is now also
+    // "enabled" as a provider (slack_bot_lookup_channel, DRO-975/DRO-1160,
+    // was the last backlog item), so its full tool surface registers too.
+    // example is coming-soon with no `live` tools, so it stays fully dormant.
     expect(register.mock.calls.map(([name]) => name)).toEqual([
       "github_bot_whoami",
       "github_bot_create_pull_request",
@@ -37,6 +36,7 @@ describe("worker provider registration", () => {
       "slack_bot_post_message",
       "slack_bot_add_reaction",
       "slack_bot_remove_reaction",
+      "slack_bot_lookup_channel",
     ]);
     // `example` is coming-soon (`toolsStatus` falls back to `status`) and
     // none of its tool specs set `live: true`, so its tool stays out of the

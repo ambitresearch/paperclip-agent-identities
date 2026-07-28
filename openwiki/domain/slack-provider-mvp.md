@@ -107,9 +107,10 @@ interface SlackChannelRef extends ResourceReference {
 (`conversations.list`/`conversations.info`) is an authenticated API call, so it cannot run at this
 pipeline stage. `resolveResourceRef` therefore stays credential-free: it accepts and syntactically
 validates a caller-supplied channel **ID** (not a name), rejecting malformed/empty/wildcard values.
-Translating a human-readable channel *name* to an ID requires a token and is the deferred
-`slack_bot_lookup_channel` tool's job (§4). Callers currently need to supply a channel ID directly.
-A channel ID that doesn't validate
+Translating a human-readable channel *name* to an ID requires a token and is the credentialed
+`slack_bot_lookup_channel` tool's job (§4, DRO-975/DRO-1160 — now implemented). Callers that only
+have a channel name resolve it through that tool first and pass the returned ID into the other
+Slack tools. A channel ID that doesn't validate
 syntactically, or one outside an allow-list (if one is configured), is denied at this step; Slack's
 own membership/ACL check happens later, in the credentialed `perform` step, and is the actual
 authorization boundary (see §9, "Confused-deputy posting" mitigation).
@@ -122,7 +123,7 @@ authorization boundary (see §9, "Confused-deputy posting" mitigation).
 | `slack_bot_post_message` | `true` | `chat:write` (also handles threaded replies through `threadTs`) | `SlackChannelRef` |
 | `slack_bot_add_reaction` | `true` | `reactions:write` | `SlackChannelRef` |
 | `slack_bot_remove_reaction` | `true` | `reactions:write` | `SlackChannelRef` |
-| `slack_bot_lookup_channel` (deferred) | `true` | `channels:read`, `groups:read` | none (this tool produces a ref) |
+| `slack_bot_lookup_channel` | `true` | `channels:read`, `groups:read` | none (this tool produces a ref) |
 
 No `slack-join-channel` tool in MVP — `channels:join` is listed as optional/deferred in the
 decision record; omit until a concrete need surfaces (least-privilege: don't request or wire a
@@ -134,6 +135,49 @@ diverging from it as an earlier revision of this doc specified: `requiresCredent
 configured `SlackAgentIdentity` fields (`label`, `teamId`, `appId`, `botUserId`,
 `hasDefaultChannel`); a stale or misconfigured identity is not caught by this tool — only the
 credentialed tools' `auth.test` resolution step catches that.
+
+### `slack_bot_lookup_channel` (DRO-975 / DRO-1160)
+
+Resolves a human-readable Slack channel name (`"general"` or `"#general"`) to its canonical
+conversation ID and metadata via `conversations.list`, using the `channels:read`/`groups:read`
+scopes already listed above. This is the credentialed counterpart the §3 comment block
+anticipates: `resolveSlackChannelRef` cannot do name resolution because it runs before any
+credential is resolved.
+
+Security properties, mirroring the other Slack tools' pipeline discipline:
+
+- **Cross-workspace guard first.** `resolveResourceRef` performs the same `teamId`-matches-identity
+  check as `resolveSlackChannelRef` (§3, §9) — a mismatched `teamId` is denied before any credential
+  is resolved or API call made. It does not attempt the name lookup itself (that needs a
+  credential); it returns a `null` ref and defers the actual resolution to `perform`.
+- **ID passthrough, no extra call.** If `channel` already matches the conversation-ID pattern
+  (`^[CDG][A-Z0-9]{8,}$`), it is validated and returned as-is — no `conversations.list` call is
+  made. This keeps "already-resolved ID in, same ID out" cheap and satisfies the "ID input remains
+  supported" criterion without weakening the fail-closed ID/prefix validation used elsewhere.
+- **Never auto-joins.** Only conversations already visible to the bot via `conversations.list`
+  (`types=public_channel,private_channel`, `exclude_archived=true`) are considered. Archived
+  channels are excluded from matches, and the tool never calls `conversations.join`.
+- **Bounded pagination.** At most 10 pages of up to 1000 results each are fetched
+  (`conversations.list`'s documented per-page max), so a huge workspace cannot trigger unbounded API
+  calls; if the channel still isn't found after that bound, the tool fails closed with an actionable
+  "no accessible channel" error rather than looping on `next_cursor` forever.
+- **Bounded rate-limit retries.** A `429` response or a `{ ok: false, error: "rate_limited" }` body
+  is retried up to 3 times with linear backoff, then fails closed with an actionable
+  "rate limit exceeded" error — never an unbounded retry loop.
+- **Ambiguity fails closed.** Multiple accessible channels sharing the queried name return an
+  explicit error naming every conflicting ID, instructing the caller to disambiguate by passing a
+  resolved ID directly, rather than silently picking one match.
+- **Secret-free errors.** Network failures are logged with a bare classification only (mirrors
+  `performReaction`'s catch block in `react.ts`) — the raw thrown error, which could embed request
+  details, is never logged or returned, since the bot token is already in the outgoing
+  `Authorization` header by the time any error could occur.
+
+Test coverage: `tests/providers/slack/lookup-channel-tool.spec.ts` — local param validation,
+cross-workspace denial before any credential/API call, ID passthrough with zero API calls, exact
+single-match resolution, pagination across `cursor`, bounded pagination on an endless cursor chain,
+zero-match and ambiguous-match errors, archived-channel exclusion (and no `conversations.join`
+call), 429/`rate_limited` retry-then-recover and retry-then-fail-closed, network/API failure
+handling without leaking the token, and full-pipeline redaction.
 
 ## 5. Manifest fragments
 
@@ -368,8 +412,7 @@ these apps. There should be one Request URL, one dedup owner, and one reply owne
 | Capability | MVP | Deferred |
 | --- | --- | --- |
 | One app/bot per agent, manifest copy/paste install | ✅ | |
-| `slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, `slack_bot_remove_reaction` tools | ✅ | |
-| `slack_bot_lookup_channel` tool | | ✅ |
+| `slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, `slack_bot_remove_reaction`, `slack_bot_lookup_channel` tools | ✅ | |
 | HTTP Events API receiver, routing, and dedup (DRO-1005) | ✅ (§10) | |
 | Generated app Request URL and `message.im` subscription | ✅ (§5, §10) | |
 | `app_mention` subscription and `app_mentions:read` scope | ✅ (§5, §10) | |
@@ -426,12 +469,12 @@ runtime resolution never consumes them. Two boundaries remain unchanged:
   renewal scheduler. `resolveSlackBotToken` resolves a single long-lived Paperclip-secret-backed
   bot token and fails closed with no fallback; enabling rotation is out of scope until a future
   task lands the full refresh lifecycle as one unit.
-- **Four Slack tools are live**: `slack_bot_whoami`, `slack_bot_post_message`,
-  `slack_bot_add_reaction`, and `slack_bot_remove_reaction`. The post-message tool covers both
-  top-level messages and threaded replies. They register through `toolsStatus: "enabled"` even
-  though `slackProvider.definition.status` remains `"coming-soon"`. The deferred
-  `slack_bot_lookup_channel` tool is the remaining gap; the provider status stays unchanged until
-  that full tool surface lands.
+- **Five Slack tools are live**: `slack_bot_whoami`, `slack_bot_post_message`,
+  `slack_bot_add_reaction`, `slack_bot_remove_reaction`, and `slack_bot_lookup_channel`. The
+  post-message tool covers both top-level messages and threaded replies. With
+  `slack_bot_lookup_channel` (DRO-975/DRO-1160) landed, `slackProvider.definition.status` has
+  flipped to `"enabled"` (see the DRO-975 implementation-status section below) — `toolsStatus:
+  "enabled"` is kept alongside it, now redundant but harmless.
 
 ## Implementation status (DRO-971: manifest-assisted app setup actions)
 
@@ -465,15 +508,15 @@ error carrying the `Retry-After` header value rather than throwing. On success, 
 best-effort `chat.getPermalink` (a permalink lookup failure never fails the post itself) and returns
 `{ team, conversation, messageTs, threadTs, permalink }`.
 
-`slackProvider.definition.status` stays `"coming-soon"` purely because the *full* Slack tool
-surface isn't finished yet — the manifest-assisted Slack settings UI (DRO-1025/#73) is already live
-in Settings and already surfaces Slack in the provider picker. `toolsStatus` is set to `"enabled"`
-independently, which is what actually gates live tool registration
-(`registry.toolsEnabled()`/`liveTools()`, consumed by `worker.ts`/`manifest.ts`), so
+`slackProvider.definition.status` stayed `"coming-soon"` at the time this DRO-971 slice merged,
+purely because the *full* Slack tool surface wasn't finished yet — the manifest-assisted Slack
+settings UI (DRO-1025/#73) was already live in Settings and already surfaced Slack in the provider
+picker. `toolsStatus` was set to `"enabled"` independently, which is what actually gates live tool
+registration (`registry.toolsEnabled()`/`liveTools()`, consumed by `worker.ts`/`manifest.ts`), so
 `slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, and
-`slack_bot_remove_reaction` are reachable now even though `status` has not flipped. Only
-`slack_bot_lookup_channel` remains backlog work; once it lands, `status` flips to `"enabled"` too
-and `toolsStatus` becomes redundant but harmless to keep.
+`slack_bot_remove_reaction` were reachable even before `status` flipped. `slack_bot_lookup_channel`
+(DRO-975/DRO-1160) has since landed — see that section below — and `status` now reads `"enabled"`;
+`toolsStatus` is kept set as well, redundant but harmless.
 
 This slice implements §6's `contributeActions` for Slack, wired through `slackProvider` in
 `src/providers/slack/index.ts` exactly like `contributeGitHubAppManifestActions` is wired for
@@ -532,10 +575,10 @@ gap has since been closed: the Slack settings-UI flow (manifest display + copy/p
 mirroring the GitHub pattern) is now implemented as a provider-owned adapter in
 `src/providers/slack/settings-adapter-ui.tsx` (see `ProviderSettingsUIAdapter` in
 `src/core/provider-settings-ui-contract.ts`), giving operators an end-to-end create/install path
-for a Slack app from the UI. `slackProvider.definition.status` intentionally still stays
-`"coming-soon"`. That flag now gates strictly on the full Slack tool surface, not on setup-UI
-availability. With DRO-972/973/974 landed, only `slack_bot_lookup_channel` (DRO-975) remains before
-`status` flips to `"enabled"`.
+for a Slack app from the UI. At the time this DRO-1025 slice merged,
+`slackProvider.definition.status` still stayed `"coming-soon"`, gating strictly on the full Slack
+tool surface rather than setup-UI availability; with DRO-972/973/974/975 (the latter DRO-1160) all
+landed, `status` has since flipped to `"enabled"` — see the DRO-975 section below.
 
 ## Implementation status (DRO-974: reaction tools)
 
@@ -582,17 +625,18 @@ branch was added to `src/worker.ts` or `src/manifest.ts`.
   classification only — the raw thrown error message is never logged, since
   an HTTP adapter error can embed request details and the bot token is
   already in the outgoing `Authorization` header by that point.
-- `slackProvider.definition.status` stays `"coming-soon"`: with
+- At the time of this DRO-974 slice, `slackProvider.definition.status` stayed `"coming-soon"`: with
   `slack_bot_whoami` (DRO-972/#59) and `slack_bot_post_message` (DRO-973/#60)
-  now also landed alongside this slice's two reaction tools. Only
-  `slack_bot_lookup_channel` (DRO-975) remains
-  still-backlog, so the identity isn't surfaced as fully ready yet.
-  `slackProvider.definition.toolsStatus` is set to `"enabled"` independently
+  also landed alongside this slice's two reaction tools, only
+  `slack_bot_lookup_channel` (DRO-975) remained still-backlog. With that tool
+  now landed (DRO-1160), `status` has since flipped to `"enabled"` — see the
+  DRO-975 implementation-status section above.
+  `slackProvider.definition.toolsStatus` was (and remains) set to `"enabled"` independently
   of `status`: this is the provider-neutral gate
   `registry.toolsEnabled()`/`registry.liveTools()` use (consumed by
   `src/worker.ts`'s registration loop and `src/manifest.ts`'s tool list)
-  instead of `.enabled()`, so all four already-implemented tools are
-  reachable now even though `status` hasn't flipped to `"enabled"`.
+  instead of `.enabled()`, so all four already-implemented tools were
+  reachable even before `status` flipped to `"enabled"`.
 - Test coverage: `tests/providers/slack/react-tool.spec.ts` — local
   validation (valid/invalid messageTs, reaction, channelId, teamId, unknown
   fields), resource-ref resolution (default-channel fallback, missing default
@@ -601,3 +645,49 @@ branch was added to `src/worker.ts` or `src/manifest.ts`.
   token-redaction on a thrown network error), and two full pipeline
   round-trips through `createProviderTool` covering both the happy path and
   the wrong-team-denies-before-credential path end-to-end.
+
+## Implementation status (DRO-975 / DRO-1160: slack_bot_lookup_channel)
+
+This slice implements the fifth and final MVP Slack tool described in §4:
+`slack_bot_lookup_channel` (`src/providers/slack/tools/lookup-channel.ts`), wired through
+`slackProvider.tools` in `src/providers/slack/index.ts` and `slackProvider.manifestTools` via
+`src/providers/slack/manifest-tools.ts` — no `if (provider === "slack")` branch was added to
+`src/worker.ts` or `src/manifest.ts`. Its shared manifest metadata lives in
+`src/shared/slack-bot-lookup-channel-tool.ts`, mirroring the other Slack tools' shared-definition
+modules.
+
+- `validateParams` accepts a required `channel` string (1-100 chars — either a human-readable name
+  like `"general"`/`"#general"` or an already-resolved conversation ID) and an optional `teamId`,
+  rejecting unknown fields, entirely locally.
+- `resolveResourceRef` performs only the credential-free cross-workspace `teamId` guard (mirrors
+  `resolveSlackChannelRef`'s check in `channel-ref.ts`) and always resolves to a `null` ref — the
+  actual name-to-ID lookup needs a credential and happens in `perform`.
+- `perform` first checks whether `channel` is already a valid conversation ID
+  (`normalizeSlackChannelId` from `channel-ref.ts`) and, if so, returns it unchanged with zero API
+  calls. Otherwise it calls `conversations.list` (`types=public_channel,private_channel`,
+  `exclude_archived=true`), paginating via `cursor` up to 10 pages of 1000 results each, matching
+  channel names case-insensitively. Zero matches and multiple (ambiguous) matches both return an
+  explicit, actionable `{ error }` rather than guessing — the ambiguous case names every
+  conflicting ID. A `429`/`rate_limited` response is retried up to 3 times with linear backoff
+  before failing closed. Network failures and non-ok API responses are logged with a bare
+  classification only, never the raw thrown error or response body, matching `performReaction`'s
+  posture in `react.ts`. The result and every `ctx.activity.log` call are free of the resolved
+  token; the shared pipeline's redact step is defense-in-depth on top of that.
+- With this tool landed, `slackProvider.definition.status` (`src/providers/slack/index.ts`) and the
+  `slack` entry in `SUPPORTED_IDENTITY_PROVIDERS` (`src/shared/types.ts`) both flip from
+  `"coming-soon"` to `"enabled"` — the full MVP tool surface (§4/§12) is now complete. No other
+  backlog criterion for the provider-level `status` flag is documented anywhere in this codebase
+  (searched for "backlog" near the Slack provider); the identity-creation gate in
+  `src/worker.ts#normalizeIdentityInput` independently hardcodes `provider !== "github"`, so this
+  flip does not newly permit creating Slack agent identities — that remains a separate, still-gated
+  capability, unaffected by `status`.
+- Test coverage: `tests/providers/slack/lookup-channel-tool.spec.ts` — local param validation
+  (valid name, `#`-prefixed name, already-resolved ID, empty/oversized channel, unknown fields,
+  malformed/valid teamId); cross-workspace denial in `resolveResourceRef` before any credential/API
+  call, and the matching-teamId success path; ID passthrough with zero API calls; exact single-match
+  resolution; pagination across `cursor` pages; bounded pagination on an endless cursor chain (never
+  loops unbounded); zero-match and ambiguous-match (naming every conflicting ID) errors; archived-
+  channel exclusion with no `conversations.join` call ever made; 429 retry-then-recover,
+  retry-then-fail-closed, and Slack's `{ok:false, error:"rate_limited"}` shape; network/API failure
+  handling that never leaks the token; and credential/redaction posture (missing-token internal
+  error, no token in results or logs).

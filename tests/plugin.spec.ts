@@ -85,6 +85,8 @@ describe("plugin scaffold", () => {
     expect(manifest.capabilities).toContain("agent.tools.register");
     expect(manifest.capabilities).toContain("agents.read");
     expect(manifest.capabilities).toContain("companies.read");
+    expect(manifest.capabilities).toContain("issues.read");
+    expect(manifest.capabilities).toContain("execution.workspaces.read");
     expect(manifest.capabilities).toContain("instance.settings.register");
     expect(manifest.capabilities).toContain("secrets.bind-ref");
   });

@@ -19,7 +19,7 @@ Do not edit generated `/dist` files directly; change `/src` and rebuild.
 
 - plugin ID: `ambitresearch.paperclip-agent-identities`
 - display name: `Agent Identities`
-- version: `0.2.4`
+- version: `0.2.7`
 - category: `connector`
 - entrypoints: `./dist/worker.js` and `./dist/ui`
 
@@ -36,13 +36,15 @@ Important capabilities include:
 - `secrets.bind-ref` for binding existing Paperclip secret references into company plugin config
 - `secrets.read-ref` for Paperclip secret resolution
 - `activity.log.write` for PR/push audit events
-- `project.workspaces.read` for mediated git push workspace resolution
+- `issues.read` and `execution.workspaces.read` for resolving a push against the invoking run's execution workspace
+- `project.workspaces.read` for the mediated push fallback to the project's primary workspace
 
 `/src/manifest.ts` sources its tool list from the provider registry rather than importing provider-specific tool definitions directly: it filters every provider's `manifestTools` down to the names present in `registry.liveTools()`. `liveTools()` is a provider-neutral gate distinct from `enabled()`: it returns every tool from a `toolsEnabled()` provider (`definition.toolsStatus ?? definition.status === "enabled"`), PLUS any individual tool a not-yet-`toolsEnabled()` provider marks `live: true` on its `ProviderToolSpec`. This lets a provider ship real, live tools before its full identity/settings-UI surface (`enabled()`) is ready, without adding a provider-specific branch to `/src/manifest.ts` or `/src/worker.ts` — `/src/worker.ts`'s tool-registration loop iterates the same `registry.liveTools()` list. Today `registry.liveTools()` contributes:
 
 - `github_bot_whoami`
 - `github_bot_create_pull_request`
 - `github_bot_push_branch`
+- `github_bot_submit_pull_request_review`
 - `slack_bot_whoami` (DRO-972), `slack_bot_post_message` (DRO-973), and `slack_bot_add_reaction`/`slack_bot_remove_reaction` (DRO-974) — Slack is still `status: "coming-soon"` (hidden from the settings-page identity picker) but sets `toolsStatus: "enabled"`, so its whole current tool surface registers in the live worker/manifest now
 
 Adding a new enabled provider, a new `toolsStatus: "enabled"` provider, or new tools on an existing provider changes what the registry returns and does not require touching `/src/manifest.ts` or `/src/worker.ts`. "Enabled" is a provider-level gate (`definition.status === "enabled"`), but it is not the only way a tool reaches the manifest/worker: `registry.liveTools()` also includes any individual tool a still-`"coming-soon"` provider opts in via `ProviderToolSpec.live: true`, independent of a provider-wide `toolsStatus` flip.
@@ -87,14 +89,14 @@ This is scaffold-like behavior but is covered by `/tests/plugin.spec.ts`.
 
 `/src/worker.ts` does not register provider tools one-by-one. It builds a provider registry (`createProviderRegistry()` from `/src/providers/index.ts`) and:
 
-- via `registry.liveTools()` (all tools from `toolsEnabled()` providers — providers whose `toolsStatus` is `"enabled"` independent of their settings-UI `status` — plus any individual tool from a not-yet-`toolsEnabled()` provider that opts in via `toolSpec.live: true`), wraps each composed tool through `createProviderTool()` in `/src/core/tool-pipeline.ts`, which enforces the common deny-before-secret pipeline (validate params -> resolve identity -> resolve/deny resource ref -> resolve credential -> perform -> redact secrets), and registers the resulting handler with `ctx.tools.register`. Slack opts its live tool subset in this way via `toolsStatus: "enabled"`: the credential-free `slack_bot_whoami` (DRO-972) and the post/reply tool `slack_bot_post_message` (DRO-973) both reach `ctx.tools.register`/the manifest today, ahead of the rest of the (still `"coming-soon"`) Slack provider's tool surface;
+- via `registry.liveTools()` (all tools from `toolsEnabled()` providers — providers whose `toolsStatus` is `"enabled"` independent of their settings-UI `status` — plus any individual tool from a not-yet-`toolsEnabled()` provider that opts in via `toolSpec.live: true`), wraps each composed tool through `createProviderTool()` in `/src/core/tool-pipeline.ts`, which enforces the common deny-before-secret pipeline (validate params -> resolve identity -> resolve/deny resource ref -> resolve credential -> perform -> redact secrets), and registers the resulting handler with `ctx.tools.register`. Slack exposes its four current tools this way via `toolsStatus: "enabled"`, even though the provider remains `"coming-soon"` in the settings UI;
 - for **every registered provider, enabled or not** (`registry.all()`), calls the provider's optional `contributeActions(ctx)` hook. This is how the GitHub provider registers its GitHub App manifest actions (`create-github-app-manifest`, `get-github-app-manifest-flow`, `convert-github-app-manifest`) without `/src/worker.ts` importing GitHub-specific action code directly, and it's also why a "coming-soon" provider with no tool surface yet (e.g. Slack) can still ship setup/bootstrap actions ahead of `tools` landing — `contributeActions` is intentionally not gated on `enabled()`.
 
 The hook name is historical: it is the existing provider setup seam and may
 also register provider-owned event handlers. Slack composes its single queue
 drain self-event there; the worker still contains no Slack-specific branch.
 
-Concretely, GitHub's tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`) live in `/src/providers/github/tools/*.ts` and are exposed through `githubProvider.tools` in `/src/providers/github/index.ts` — the worker loop is provider-agnostic and would pick up a new provider's tools/actions the same way once it's added to the registry.
+Concretely, GitHub's tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`, and `github_bot_submit_pull_request_review`) live in `/src/providers/github/tools/*.ts` and are exposed through `githubProvider.tools` in `/src/providers/github/index.ts` — the worker loop is provider-agnostic and would pick up a new provider's tools/actions the same way once it's added to the registry.
 
 ### Provider webhooks and Slack sessions
 

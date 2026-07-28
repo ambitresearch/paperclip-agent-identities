@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { githubGetPullRequestChecksToolSpec } from "../../../src/providers/github/tools/get-pull-request-checks.js";
+import {
+  computeAggregateState,
+  githubGetPullRequestChecksToolSpec
+} from "../../../src/providers/github/tools/get-pull-request-checks.js";
 import type { GitHubRepoRef } from "../../../src/providers/github/repo-ref.js";
 import type { ProviderToolExecution } from "../../../src/core/provider-contract.js";
 import type { GitHubAgentIdentity } from "../../../src/providers/github/config.js";
@@ -141,5 +144,50 @@ describe("githubGetPullRequestChecksToolSpec.perform", () => {
     (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
     const result = (await githubGetPullRequestChecksToolSpec.perform(exec)) as { error: string };
     expect(result.error).toBe("GitHub API request failed before a response was received.");
+  });
+});
+
+describe("computeAggregateState", () => {
+  const done = (conclusion: string | null) => ({ status: "completed", conclusion });
+  const running = () => ({ status: "in_progress", conclusion: null });
+
+  it("reports failure when a check run failed even though legacy statuses are green", () => {
+    expect(computeAggregateState("success", 1, [done("failure")], [])).toBe("failure");
+  });
+
+  it("reports failure when a workflow run failed even though legacy statuses are green", () => {
+    expect(computeAggregateState("success", 1, [], [done("timed_out")])).toBe("failure");
+  });
+
+  it("reports success when every signal passed", () => {
+    expect(computeAggregateState("success", 1, [done("success")], [done("skipped")])).toBe("success");
+  });
+
+  it("treats neutral and skipped conclusions as non-blocking passes", () => {
+    expect(computeAggregateState("success", 1, [done("neutral")], [done("skipped")])).toBe("success");
+  });
+
+  it("reports pending while a run is still in progress", () => {
+    expect(computeAggregateState("success", 1, [running()], [])).toBe("pending");
+  });
+
+  it("reports pending when a completed run has no conclusion", () => {
+    expect(computeAggregateState("success", 1, [done(null)], [])).toBe("pending");
+  });
+
+  it("reports pending when there are no signals at all", () => {
+    expect(computeAggregateState("pending", 0, [], [])).toBe("pending");
+  });
+
+  it("reports success from check runs alone when there are no legacy status contexts", () => {
+    expect(computeAggregateState("pending", 0, [done("success")], [])).toBe("success");
+  });
+
+  it("reports failure from a legacy status error", () => {
+    expect(computeAggregateState("error", 2, [done("success")], [])).toBe("failure");
+  });
+
+  it("lets a failure outrank a pending run", () => {
+    expect(computeAggregateState("success", 1, [running(), done("failure")], [])).toBe("failure");
   });
 });

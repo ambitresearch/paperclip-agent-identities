@@ -1,6 +1,6 @@
 # GitHub contribution tools
 
-The plugin exposes four GitHub-related agent tools. Tool metadata lives in shared definition files so `/src/manifest.ts` and `/src/worker.ts` use consistent names and schemas.
+The plugin exposes 24 GitHub-related agent tools. Tool metadata lives in shared definition files so `/src/manifest.ts` and `/src/worker.ts` use consistent names and schemas. Most of these tools mirror direct GitHub REST/GraphQL capabilities one-to-one; three are non-parity, plugin-specific tools with no direct GitHub equivalent: `github_bot_whoami` (identity self-check), `github_bot_push_branch` (mediated git push via the agent identity token), and `github_bot_submit_pull_request_review` (the sanctioned review-submission path for this plugin's policies).
 
 ## Common safety pattern
 
@@ -368,6 +368,606 @@ ever touches a `/pulls/` path or a `refs/pull/...` ref), image-vs-non-image Mark
 `sha` reuse on update, commit-pinned URL construction (and the error path when no commit sha is returned),
 and GitHub API success/failure paths including token-leakage checks on activity logs and error messages.
 
+## `github_bot_add_issue_comment`
+
+Source:
+
+- metadata: `/src/shared/github-bot-add-issue-comment-tool.ts`
+- implementation: `/src/providers/github/tools/add-issue-comment.ts`
+
+Purpose: post a comment on a GitHub issue (or pull request, which GitHub treats as an issue for comments)
+using the configured agent identity.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `issueNumber`: the issue (or pull request) number to comment on.
+- `body`: the human-facing comment text.
+
+Optional parameters:
+
+- `llmModel`: model identifier included in the appended authorship footer.
+- `paperclipIssueId` for activity metadata.
+
+Runtime behavior:
+
+1. validates parameter types, including that `body` is a non-empty (post-trim) string;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. appends an AI-authorship footer to `body` server-side (do not include your own authorship disclaimer);
+5. calls `POST .../issues/{issueNumber}/comments` with the footer-appended body;
+6. logs an `issue_comment` activity entry containing repository, issue number, comment ID/URL, agent ID,
+   and optional Paperclip issue ID;
+7. returns the comment ID and URL.
+
+Failure behavior mirrors the other GitHub tools: malformed params and repositories fail before credential
+resolution; network failures return a generic connectivity error without leaking the token; non-OK GitHub
+responses surface GitHub's message when parseable.
+
+`/tests/providers/github/add-issue-comment-tool.spec.ts` covers validation, repository-format fail-closed
+behavior, authorship-footer application, activity logging with agent attribution and no token leakage, and
+GitHub API success/failure paths.
+
+## `github_bot_list_issue_comments`
+
+Source:
+
+- metadata: `/src/shared/github-bot-list-issue-comments-tool.ts`
+- implementation: `/src/providers/github/tools/list-issue-comments.ts`
+
+Purpose: list comments on a GitHub issue (or pull request) using the configured agent identity. Read-only.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `issueNumber`: the issue (or pull request) number to list comments for.
+
+Optional parameters:
+
+- `page`: page number (1-indexed), default 1.
+- `perPage`: comments per page, up to 100, default 30.
+
+Runtime behavior:
+
+1. validates parameter types, including bounds on `page`/`perPage`;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. calls `GET .../issues/{issueNumber}/comments?page={page}&per_page={perPage}`;
+5. derives `hasMore` from the response `Link` header (`rel="next"`);
+6. logs an `issue_comment_list` activity entry with repository, issue number, page, perPage, count, and
+   agent ID (never comment bodies);
+7. returns normalized comments (`id`, `author`, `body`, `createdAt`, `url`), page, perPage, and `hasMore`.
+
+Failure behavior mirrors the other GitHub tools. This tool is read-only -- it never mutates a comment.
+
+`/tests/providers/github/list-issue-comments-tool.spec.ts` covers validation, pagination bounds, `Link`
+header-derived `hasMore`, and GitHub API success/failure paths.
+
+## `github_bot_get_issue`
+
+Source:
+
+- metadata: `/src/shared/github-bot-get-issue-tool.ts`
+- implementation: `/src/providers/github/tools/get-issue.ts`
+
+Purpose: fetch a single GitHub issue's core fields (title, body, state, assignees, labels, milestone) using
+the configured agent identity. Read-only.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `issueNumber`: the issue number to fetch.
+
+Runtime behavior:
+
+1. validates parameter types;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. calls `GET .../issues/{issueNumber}`;
+5. logs an `issue` activity entry with repository, issue number, and agent ID;
+6. returns number, title, body, state, url, assignees, labels, and milestone (number/title, or `null`).
+
+Note from current source: full linked-PR detection would require a second call against the issue timeline
+events endpoint to find "cross-referenced"/"connected" events; this tool returns core issue fields only.
+
+Failure behavior mirrors the other GitHub tools; this tool is read-only.
+
+`/tests/providers/github/get-issue-tool.spec.ts` covers validation, repository-format fail-closed behavior,
+field normalization (string vs. object label shapes), and GitHub API success/failure paths.
+
+## `github_bot_update_issue`
+
+Source:
+
+- metadata: `/src/shared/github-bot-update-issue-tool.ts`
+- implementation: `/src/providers/github/tools/update-issue.ts`
+
+Purpose: update a GitHub issue's title, body, state, state reason, labels, assignees, or milestone using the
+configured agent identity.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `issueNumber`: the issue number to update.
+
+Optional parameters (at least one updatable field is required):
+
+- `title`, `body` (AI-authorship footer appended when non-empty), `state` (`open`/`closed`), `stateReason`,
+  `labels` (replacement array), `assignees` (replacement array), `milestone` (number or `null` to clear),
+  `llmModel`, `paperclipIssueId`.
+
+Runtime behavior:
+
+1. validates parameter types, including that `labels`/`assignees` are string arrays, `milestone` is an
+   integer or `null`, and that at least one updatable field is present;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. builds a partial PATCH body containing only the provided fields, appending the AI-authorship footer to
+   `body` only when it is non-empty after trimming (an explicit empty-string `body` is sent as-is, clearing
+   it without a footer);
+5. calls `PATCH .../issues/{issueNumber}` with the partial body;
+6. logs an `issue` activity entry with repository, issue number, agent ID, and optional Paperclip issue ID;
+7. returns number, title, state, and url.
+
+Failure behavior mirrors the other GitHub tools: malformed params/repositories fail before credential
+resolution; missing-updatable-field is a validation error; non-OK GitHub responses surface GitHub's message.
+
+`/tests/providers/github/update-issue-tool.spec.ts` covers validation (including the "at least one field"
+requirement and milestone-clearing via `null`), authorship-footer application, partial-PATCH body
+construction, activity logging, and GitHub API success/failure paths.
+
+## `github_bot_get_pull_request`
+
+Source:
+
+- metadata: `/src/shared/github-bot-get-pull-request-tool.ts`
+- implementation: `/src/providers/github/tools/get-pull-request.ts`
+
+Purpose: fetch a single GitHub pull request's core fields (title, body, state, head/base branches, draft,
+merged, mergeable state, requested reviewers) using the configured agent identity. Read-only.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `pullNumber`: the pull request number to fetch.
+
+Runtime behavior:
+
+1. validates parameter types;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. calls `GET .../pulls/{pullNumber}`;
+5. logs a `pull_request` activity entry with repository, PR number, and agent ID;
+6. returns number, title, body, state, url, draft, merged, mergeable, mergeableState, head ref, base ref,
+   and requested reviewer logins.
+
+Failure behavior mirrors the other GitHub tools; this tool is read-only.
+
+`/tests/providers/github/get-pull-request-tool.spec.ts` covers validation, repository-format fail-closed
+behavior, field normalization, and GitHub API success/failure paths.
+
+## `github_bot_list_pull_request_files`
+
+Source:
+
+- metadata: `/src/shared/github-bot-list-pull-request-files-tool.ts`
+- implementation: `/src/providers/github/tools/list-pull-request-files.ts`
+
+Purpose: list the files changed in a GitHub pull request (filename, status, additions, deletions, changes,
+and patch when available) using the configured agent identity. Read-only.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `pullNumber`: the pull request number to list files for.
+
+Optional parameters:
+
+- `page`: page number (1-indexed), default 1.
+- `perPage`: files per page, up to 100, default 30.
+
+Runtime behavior:
+
+1. validates parameter types, including bounds on `page`/`perPage`;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. calls `GET .../pulls/{pullNumber}/files?page={page}&per_page={perPage}`;
+5. derives `hasMore` from the response `Link` header (`rel="next"`);
+6. logs a `pull_request_files` activity entry with repository, PR number, page, perPage, count, and agent ID;
+7. returns normalized files (`filename`, `status`, `additions`, `deletions`, `changes`, `patch` or `null`),
+   page, perPage, and `hasMore`.
+
+Failure behavior mirrors the other GitHub tools; this tool is read-only.
+
+`/tests/providers/github/list-pull-request-files-tool.spec.ts` covers validation, pagination bounds,
+`Link` header-derived `hasMore`, and GitHub API success/failure paths.
+
+## `github_bot_update_pull_request`
+
+Source:
+
+- metadata: `/src/shared/github-bot-update-pull-request-tool.ts`
+- implementation: `/src/providers/github/tools/update-pull-request.ts`
+
+Purpose: update a GitHub pull request's title, body, base branch, open/closed state, and/or draft/ready-for-
+review state using the configured agent identity.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `pullNumber`: the pull request number to update.
+
+Optional parameters (at least one is required):
+
+- `title`, `body` (AI-authorship footer appended server-side), `base` (retarget branch), `state`
+  (`open`/`closed`), `draft` (boolean -- true converts to draft, false marks ready for review), `llmModel`,
+  `paperclipIssueId`.
+
+Runtime behavior:
+
+1. validates parameter types and that at least one of `title`/`body`/`base`/`state`/`draft` is provided;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. builds a REST PATCH body from `title`/`body` (footer-appended)/`base`/`state` -- GitHub's REST
+   `PATCH /pulls/{n}` endpoint does not accept a `draft` field;
+5. calls `PATCH .../pulls/{pullNumber}` with that body;
+6. if `draft` was requested and differs from the PATCH response's `draft` value, calls the GraphQL mutation
+   `convertPullRequestToDraft` or `markPullRequestReadyForReview` (by the PR's GraphQL node ID) to toggle it,
+   then re-fetches the PR via REST so the returned data reflects the post-toggle state;
+7. logs a `pull_request` activity entry with repository, PR number, URL, state, draft, agent ID, and
+   optional Paperclip issue ID;
+8. returns number, url, state, draft, title, head ref, and base ref.
+
+Failure behavior mirrors the other GitHub tools: malformed params/repositories fail before credential
+resolution; a GraphQL draft-toggle failure or a post-toggle REST refetch failure is surfaced as an error
+without leaking the token.
+
+`/tests/providers/github/update-pull-request-tool.spec.ts` covers validation (including the "at least one
+field" requirement), REST PATCH body construction, the REST-then-GraphQL draft-toggle sequencing and
+post-toggle refetch, activity logging, and GitHub API success/failure paths.
+
+## `github_bot_list_pull_request_review_threads`
+
+Source:
+
+- metadata: `/src/shared/github-bot-list-pull-request-review-threads-tool.ts`
+- implementation: `/src/providers/github/tools/list-pull-request-review-threads.ts`
+
+Purpose: list a pull request's review threads (file paths, inline comments, and resolution state) using the
+configured agent identity, via the GitHub GraphQL API. Read-only -- does not mutate any thread.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `pullNumber`: the pull request number to inspect.
+
+Optional parameters:
+
+- `first`: maximum number of review threads to return (default 50, max 100, clamped rather than rejected
+  above the max).
+
+Runtime behavior:
+
+1. validates parameter types and the `first` bound;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. runs a single GraphQL query for `repository.pullRequest.reviewThreads` (up to `first` threads), with each
+   thread's `comments` capped at 50 nested comments per thread;
+5. returns an error if the PR is not found or not accessible to this installation;
+6. logs a `pull_request_review_threads` activity entry with repository, PR number, count, and agent ID;
+7. returns each thread's `id`, `isResolved`, `isOutdated`, `path`, `line`, `startLine`, `diffSide`, and its
+   comments (`id`, `url`, `body`, `author`, `createdAt`).
+
+Failure behavior mirrors the other GitHub tools; this tool is read-only.
+
+`/tests/providers/github/list-pull-request-review-threads-tool.spec.ts` covers validation and `first`
+clamping, the missing/inaccessible-PR error path, comment/thread field normalization, and GraphQL
+success/failure paths.
+
+## `github_bot_reply_to_review_thread`
+
+Source:
+
+- metadata: `/src/shared/github-bot-reply-to-review-thread-tool.ts`
+- implementation: `/src/providers/github/tools/reply-to-review-thread.ts`
+
+Purpose: reply to an existing GitHub pull request review thread (a threaded inline review comment) using the
+configured agent identity, via the GitHub GraphQL API.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `reviewThreadId`: the GraphQL node ID of the review thread to reply to (from
+  `github_bot_list_pull_request_review_threads`).
+- `body`: the human-facing reply text.
+
+Optional parameters:
+
+- `llmModel`, `paperclipIssueId`.
+
+Runtime behavior:
+
+1. validates parameter types, including that `body` is a non-empty (post-trim) string;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. appends an AI-authorship footer to `body` server-side;
+5. calls the GraphQL mutation `addPullRequestReviewThreadReply` with the footer-appended body;
+6. logs a `review_thread_reply` activity entry with repository, thread ID, comment ID/URL, agent ID, and
+   optional Paperclip issue ID;
+7. returns the new comment's ID and URL.
+
+Failure behavior mirrors the other GitHub tools; GraphQL errors are surfaced without leaking the token.
+
+`/tests/providers/github/reply-to-review-thread-tool.spec.ts` covers validation, authorship-footer
+application, activity logging, and GraphQL success/failure paths.
+
+## `github_bot_resolve_review_thread`
+
+Source:
+
+- metadata: `/src/shared/github-bot-resolve-review-thread-tool.ts`
+- implementation: `/src/providers/github/tools/resolve-review-thread.ts`
+
+Purpose: mark a GitHub pull request review thread as resolved using the configured agent identity, via the
+GitHub GraphQL API.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `reviewThreadId`: the GraphQL node ID of the review thread to resolve.
+
+Optional parameters:
+
+- `paperclipIssueId`.
+
+Runtime behavior:
+
+1. validates parameter types;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. calls the GraphQL mutation `resolveReviewThread`;
+5. logs a `review_thread` activity entry with repository, thread ID, `isResolved`, agent ID, and optional
+   Paperclip issue ID;
+6. returns the thread's ID and `isResolved`.
+
+Failure behavior mirrors the other GitHub tools; GraphQL errors are surfaced without leaking the token.
+
+`/tests/providers/github/resolve-review-thread-tool.spec.ts` covers validation, activity logging, and
+GraphQL success/failure paths.
+
+## `github_bot_unresolve_review_thread`
+
+Source:
+
+- metadata: `/src/shared/github-bot-unresolve-review-thread-tool.ts`
+- implementation: `/src/providers/github/tools/unresolve-review-thread.ts`
+
+Purpose: reopen (mark unresolved) a previously-resolved GitHub pull request review thread using the
+configured agent identity, via the GitHub GraphQL API.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `reviewThreadId`: the GraphQL node ID of the review thread to unresolve.
+
+Optional parameters:
+
+- `paperclipIssueId`.
+
+Runtime behavior mirrors `github_bot_resolve_review_thread`, calling the GraphQL mutation
+`unresolveReviewThread` instead and logging a `review_thread` activity entry with the resulting
+`isResolved: false`.
+
+Failure behavior mirrors the other GitHub tools; GraphQL errors are surfaced without leaking the token.
+
+`/tests/providers/github/unresolve-review-thread-tool.spec.ts` covers validation, activity logging, and
+GraphQL success/failure paths.
+
+## `github_bot_list_organization_projects`
+
+Source:
+
+- metadata: `/src/shared/github-bot-list-organization-projects-tool.ts`
+- implementation: `/src/providers/github/tools/list-organization-projects.ts`
+
+Purpose: list GitHub Projects v2 (org-level) for a GitHub organization using the configured agent identity,
+optionally filtered by a search query, via the GitHub GraphQL API. Requires the GitHub App to have the
+organization Projects permission granted and accepted for the target installation.
+
+Required parameters:
+
+- `organization`: GitHub organization login (e.g. `"my-org"`) -- this tool resolves an organization
+  resource reference rather than a repository ref, since Projects v2 boards are org-scoped.
+
+Optional parameters:
+
+- `query`: search string to filter projects by title.
+- `first`: maximum number of projects to return (default 20, max 100, clamped).
+
+Runtime behavior:
+
+1. validates parameter types and the `first` bound;
+2. resolves the agent identity and normalizes/lowercases the organization login before any credential is
+   resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. runs a GraphQL query for `organization.projectsV2` (up to `first` nodes, optionally filtered by `query`);
+5. returns an error if the organization is not found or not accessible to this installation;
+6. logs progress via `ctx.logger.info` only (no `ctx.activity.log` call for this read-only listing);
+7. returns the organization login and an array of projects (`id`, `number`, `title`, `url`, `closed`,
+   `public`).
+
+Failure behavior mirrors the other GitHub tools; this tool is read-only.
+
+`/tests/providers/github/list-organization-projects-tool.spec.ts` covers validation and `first` clamping,
+the missing/inaccessible-organization error path, and GraphQL success/failure paths.
+
+## `github_bot_add_pull_request_to_project`
+
+Source:
+
+- metadata: `/src/shared/github-bot-add-pull-request-to-project-tool.ts`
+- implementation: `/src/providers/github/tools/add-pull-request-to-project.ts`
+
+Purpose: add a pull request as an item on a GitHub Projects v2 (org-level) board using the configured agent
+identity, via the GitHub GraphQL Projects v2 API. Requires the GitHub App to have the organization Projects
+permission granted and accepted for the target installation.
+
+Required parameters:
+
+- `repository`: repository the pull request lives in, `owner/repo` (also accepts normalized GitHub URL
+  forms).
+- `pullNumber`: the pull request number to add to the project.
+- `projectId`: the Projects v2 node ID (from `github_bot_list_organization_projects`) to add the pull
+  request to.
+
+Runtime behavior:
+
+1. validates parameter types;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. runs a GraphQL query to resolve the pull request's GraphQL node ID, returning an error if the PR is not
+   found;
+5. runs the GraphQL mutation `addProjectV2ItemById` with that node ID and the given `projectId`, returning an
+   error if GitHub does not return a project item;
+6. logs a `pull_request` activity entry with repository, PR number/URL, project ID, project item ID, and
+   agent ID;
+7. returns repository, PR number/URL, project ID, and project item ID.
+
+Failure behavior mirrors the other GitHub tools: the PR-lookup and item-add GraphQL calls each surface their
+own error message; a missing PR or a missing returned item are both treated as errors rather than silently
+proceeding.
+
+`/tests/providers/github/add-pull-request-to-project-tool.spec.ts` covers validation, the PR-lookup-then-add
+two-call sequencing, missing-PR and missing-item error paths, activity logging, and GraphQL success/failure
+paths.
+
+## `github_bot_assign_to_current_user`
+
+Source:
+
+- metadata: `/src/shared/github-bot-assign-to-current-user-tool.ts`
+- implementation: `/src/providers/github/tools/assign-to-current-user.ts`
+
+Purpose: assign a GitHub issue or pull request to the calling agent's configured GitHub App installation
+identity, preserving any existing assignees.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `issueNumber`: the issue (or pull request) number to assign.
+
+Optional parameters:
+
+- `paperclipIssueId`.
+
+Security note: there is deliberately **no** `username`/`assignee` parameter. The only assignee this action
+can ever produce is `execution.identity.identity.githubUsername` -- the value resolved from the per-agent
+GitHub App identity config, never a caller-supplied string, an environment variable, or a
+personal-access-token-associated account. This makes "assign to some other user" and "silently fall back to
+a personal token's account" both structurally impossible rather than merely validated at runtime.
+
+Runtime behavior:
+
+1. validates parameter types;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. calls `POST .../issues/{issueNumber}/assignees` with `assignees: [githubUsername]` -- this endpoint
+   *adds* up to 10 assignees without removing existing ones, so "preserve existing assignees" falls out of
+   the endpoint choice rather than a read-then-write against the current assignee list;
+5. logs an `issue` activity entry with repository, issue number/URL, assignee, resulting assignees, agent
+   ID, and optional Paperclip issue ID;
+6. returns the issue number, url, and resulting assignee logins.
+
+Failure behavior mirrors the other GitHub tools.
+
+`/tests/providers/github/assign-to-current-user-tool.spec.ts` covers validation, the proof that the
+assignee sent to GitHub is always and only the configured identity (no parameter can override it), activity
+logging, and GitHub API success/failure paths.
+
+## `github_bot_search_repository_items`
+
+Source:
+
+- metadata: `/src/shared/github-bot-search-repository-items-tool.ts`
+- implementation: `/src/providers/github/tools/search-repository-items.ts`
+
+Purpose: search issues or pull requests in a GitHub repository using the GitHub search API (for triage and
+dedup workflows), using the configured agent identity. Read-only.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `query`: search query string (e.g. `"bug label:critical"`), up to 256 characters.
+
+Optional parameters:
+
+- `type`: `"issue"` or `"pr"` (default `"issue"`).
+- `maxResults`: results per page, 1-30 (default 10).
+- `page`: page number, 1 to 34 (GitHub Search API caps results at 1000 total, i.e. 34 pages of 30).
+
+Runtime behavior:
+
+1. validates parameter types and bounds, including the 256-character query cap and the 1-34 page cap;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. calls `GET /search/issues` with the caller's `query` combined with a repository- and
+   `type:issue`/`type:pr`-scoped qualifier (both URL-encoded together, so the caller cannot widen the search
+   beyond the target repository by injecting its own `repo:` qualifier into `query`);
+5. derives `hasMore` from `page * maxResults < total_count`;
+6. logs a `repository` activity entry with repository, query, type, result count, and agent ID;
+7. returns `totalCount`, `page`, `perPage`, `hasMore`, and normalized items (`number`, `title`, `state`,
+   `url`, `labels`, `assignees`).
+
+Failure behavior mirrors the other GitHub tools; this tool is read-only.
+
+`/tests/providers/github/search-repository-items-tool.spec.ts` covers validation (query length, page/type/
+maxResults bounds), the repo/type-scoped query construction, `hasMore` derivation, activity logging, and
+GitHub API success/failure paths.
+
+## `github_bot_link_github_item`
+
+Source:
+
+- metadata: `/src/shared/github-bot-link-github-item-tool.ts`
+- implementation: `/src/providers/github/tools/link-github-item.ts`
+
+Purpose: link a Paperclip issue to a GitHub issue or pull request URL, even when the target repository is
+not mapped to a Paperclip project. This tool is **Paperclip-side only** -- it never calls the GitHub API and
+requires no GitHub App credential (`requiresCredential: false`). The link is stored in Paperclip plugin
+state, scoped to the Paperclip issue, independent of any project-repo mapping. Links are additive: linking
+the same `githubUrl` again updates its recorded note/timestamp rather than creating a duplicate entry. Use
+`github_bot_get_issue` or `github_bot_get_pull_request` separately to verify the target still exists on
+GitHub.
+
+Required parameters:
+
+- `paperclipIssueId`: UUID of the Paperclip issue to link from.
+- `githubUrl`: full GitHub URL of the issue or pull request to link to.
+
+Optional parameters:
+
+- `note`: free-text note describing why this link exists.
+- `llmModel`: model identifier to include in activity metadata.
+
+Runtime behavior:
+
+1. validates parameter types, including that `githubUrl` parses as an absolute URL whose hostname is
+   exactly `github.com` (case-insensitive) -- this rejects non-GitHub URLs and lookalike hosts before any
+   state write;
+2. persists the link via `persistGithubLink`, which is scoped to the calling agent's company and the given
+   Paperclip issue;
+3. logs an `issue` activity entry with the Paperclip issue ID, GitHub URL, agent ID, and optional model
+   identifier;
+4. returns the Paperclip issue ID, GitHub URL, recorded note, `linkedAt` timestamp, and total link count for
+   that issue.
+
+Failure behavior: a persistence failure returns `{ error }` rather than throwing; since no GitHub API call
+is ever made, there is no token to leak and no GitHub-side authorization decides whether the link succeeds.
+
+`/tests/providers/github/link-github-item-tool.spec.ts` covers `github.com`-hostname validation (including
+rejection of non-GitHub and lookalike URLs), additive-link/update-on-relink behavior, persistence-failure
+handling, and activity logging.
+
 ## Shared redaction and helper utilities
 
 `/src/lib/redaction.ts` provides recursive redaction for strings, arrays, and objects, plus safe error conversion.
@@ -385,6 +985,22 @@ and GitHub API success/failure paths including token-leakage checks on activity 
 - `/tests/identity-policy.spec.ts`: identity and credential resolution used by all tools.
 - `/tests/providers/github/get-issue-interaction-summary-tool.spec.ts`: Paperclip-side-only interaction summary -- window validation, missing-issue/listComments-failure handling, `[from, to)` filtering, soft-delete exclusion, deterministic ordering, secret redaction/truncation, activity logging.
 - `/tests/providers/github/upload-pull-request-asset-tool.spec.ts`: PR asset upload -- validation, fail-closed on missing token, proof that every request/branch field targets only `artifacts/pr-{n}` (never `/pulls/` or `refs/pull/...`), image-vs-link Markdown selection, existing-file sha reuse, GitHub API success/failure paths.
+- `/tests/providers/github/add-issue-comment-tool.spec.ts`: comment posting -- validation, authorship-footer application, activity logging, GitHub API success/failure paths.
+- `/tests/providers/github/list-issue-comments-tool.spec.ts`: comment listing -- validation, pagination bounds, `Link` header `hasMore`, GitHub API success/failure paths.
+- `/tests/providers/github/get-issue-tool.spec.ts`: issue fetch -- validation, field normalization, GitHub API success/failure paths.
+- `/tests/providers/github/update-issue-tool.spec.ts`: issue update -- validation (including "at least one field" and milestone-clearing), authorship-footer application, partial-PATCH body construction, activity logging, GitHub API success/failure paths.
+- `/tests/providers/github/get-pull-request-tool.spec.ts`: PR fetch -- validation, field normalization, GitHub API success/failure paths.
+- `/tests/providers/github/list-pull-request-files-tool.spec.ts`: PR file listing -- validation, pagination bounds, `Link` header `hasMore`, GitHub API success/failure paths.
+- `/tests/providers/github/update-pull-request-tool.spec.ts`: PR update -- validation, REST PATCH body construction, REST-then-GraphQL draft-toggle sequencing and post-toggle refetch, activity logging, GitHub API success/failure paths.
+- `/tests/providers/github/list-pull-request-review-threads-tool.spec.ts`: review thread listing -- validation and `first` clamping, missing/inaccessible-PR error path, field normalization, GraphQL success/failure paths.
+- `/tests/providers/github/reply-to-review-thread-tool.spec.ts`: review thread reply -- validation, authorship-footer application, activity logging, GraphQL success/failure paths.
+- `/tests/providers/github/resolve-review-thread-tool.spec.ts`: review thread resolution -- validation, activity logging, GraphQL success/failure paths.
+- `/tests/providers/github/unresolve-review-thread-tool.spec.ts`: review thread reopening -- validation, activity logging, GraphQL success/failure paths.
+- `/tests/providers/github/list-organization-projects-tool.spec.ts`: org Projects v2 listing -- validation and `first` clamping, missing/inaccessible-organization error path, GraphQL success/failure paths.
+- `/tests/providers/github/add-pull-request-to-project-tool.spec.ts`: PR-to-project addition -- validation, PR-lookup-then-add sequencing, missing-PR/missing-item error paths, activity logging, GraphQL success/failure paths.
+- `/tests/providers/github/assign-to-current-user-tool.spec.ts`: self-assignment -- validation, proof the assignee is always and only the configured identity, activity logging, GitHub API success/failure paths.
+- `/tests/providers/github/search-repository-items-tool.spec.ts`: issue/PR search -- validation, repo/type-scoped query construction, `hasMore` derivation, activity logging, GitHub API success/failure paths.
+- `/tests/providers/github/link-github-item-tool.spec.ts`: Paperclip-side GitHub link -- `github.com`-hostname validation, additive-link/update-on-relink behavior, persistence-failure handling, activity logging.
 
 ## Change guidance
 

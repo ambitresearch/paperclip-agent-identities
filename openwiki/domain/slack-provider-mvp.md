@@ -671,4 +671,3 @@ accept — not a separately-defined, weaker notion of "connected".
   registered `check-slack-connection` action itself (missing `agentId`,
   missing `companyId`, no configured identity, and a full round trip
   asserting the returned payload never contains a token-shaped string).
-

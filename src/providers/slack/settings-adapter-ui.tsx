@@ -360,6 +360,18 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     setLegacySlackRebindBusy(false);
     setLegacySlackRebindError(null);
     setLegacySlackRebindResult(null);
+    // Cross-identity leak fix (DRO-1161 review): the live Connection check
+    // result/error/loading/timestamp are keyed to whichever identity was
+    // being viewed when the check ran. Closing/switching identities without
+    // clearing this state let a stale "Connected" result from agent A render
+    // under agent B's label. Bump the generation so any in-flight check
+    // response is discarded, and clear all connection state so a new
+    // identity always starts from "never checked".
+    slackConnectionStatusGenerationRef.current += 1;
+    setSlackConnectionStatus(null);
+    setSlackConnectionStatusLoading(false);
+    setSlackConnectionStatusError(null);
+    setSlackConnectionStatusCheckedAtMs(null);
   }
 
   // Any edit to the Slack install fields invalidates a prior successful
@@ -1540,7 +1552,13 @@ function SlackConnectionStatusPanel(props: {
   const { agentId, label, loading, result, error, lastSuccessAtMs, onCheck } = props;
   const now = Date.now();
   const ageMs = lastSuccessAtMs !== null ? now - lastSuccessAtMs : null;
-  const isStale = ageMs !== null && ageMs > SLACK_CONNECTION_STATUS_STALE_AFTER_MS;
+  // A refresh failure over a preserved last-known-good result must mark it
+  // stale immediately, not just after SLACK_CONNECTION_STATUS_STALE_AFTER_MS
+  // elapses -- otherwise a check that failed seconds after a healthy check
+  // still renders as plain "Connected" while the surrounding text claims
+  // "marked stale" (review finding: refresh failure not actually marked
+  // stale until 5 minutes pass).
+  const isStale = Boolean(error) || (ageMs !== null && ageMs > SLACK_CONNECTION_STATUS_STALE_AFTER_MS);
 
   return (
     <div style={inlineNoticeStyle}>

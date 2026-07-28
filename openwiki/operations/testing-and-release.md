@@ -85,6 +85,11 @@ Current test files:
   - manifest `events.emit` capability and provider-owned self-event registration/draining through the real worker composition seam
 - `/tests/providers/slack/ingress-response-stream.spec.ts`, `ingress-webhook-handler.spec.ts`, `ingress-routing.spec.ts`, `ingress-signature.spec.ts`, and `ingress-rate-limit.spec.ts`
   - native Slack stream behavior plus the unchanged authentication, filtering, routing, and ingress-rate boundaries around durable enqueue
+- `/tests/providers/slack/connection-status.spec.ts` (DRO-1161)
+  - `runSlackConnectionCheck`/`check-slack-connection` action: healthy, auth-rejected, workspace-mismatch, user-token, missing-secret, resolution-failure, and timeout outcomes, plus token/response-body redaction and the registered action's own validation and error paths
+- `/tests/ui/settings-page-slack-status.spec.tsx` (DRO-1161)
+  - Connection panel lifecycle: never-tested, successful check, refresh-failure preserving and immediately marking the last known result stale (not just after the 5-minute freshness window), and a result aging past that window without a refresh
+  - identity-switch regression: closing/reopening the edit dialog on a different Slack identity clears the previous identity's Connection result instead of leaking it under the new identity's label
 - `/tests/identity-policy.spec.ts`
   - config parsing and missing-agent fail-closed behavior
   - GitHub repo normalization from HTTPS/SSH/git URL forms

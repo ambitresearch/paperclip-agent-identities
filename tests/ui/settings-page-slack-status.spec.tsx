@@ -565,6 +565,153 @@ describe("Released Slack credential recovery", () => {
   });
 });
 
+describe("Slack Connection panel (check-slack-connection)", () => {
+  function secondSlackIdentityEntry() {
+    return {
+      id: "id-2",
+      agentId: "agent-1",
+      provider: SLACK_IDENTITY_PROVIDER_ID,
+      label: "Second Bot",
+      slack: { teamId: "T9999999999", appId: "A9999999999", botUserId: "U9999999999" },
+      credential: {},
+      credentialStatus: "ok",
+    };
+  }
+
+  async function openSlackEditDialogFor(entry: ReturnType<typeof slackIdentityEntry>, existing: unknown[] = []) {
+    bridgeData["bot-identity-config"] = {
+      identities: [...existing, entry],
+      providers,
+      companyName: "Acme",
+      credentialSidecarPath: "",
+      credentialSidecarError: null,
+    };
+    if (root) {
+      rerenderSettingsPage();
+    } else {
+      renderSettingsPage();
+    }
+    const editButtons = Array.from(container.querySelectorAll("button")).filter((b) => b.textContent === "Edit");    // Rows render in identities order; pick the row matching this entry's label.
+    const rows = Array.from(container.querySelectorAll(".agent-identities-list-row"));
+    const rowIndex = rows.findIndex((row) => row.textContent?.includes(entry.label));
+    click(editButtons[rowIndex === -1 ? 0 : rowIndex] ?? null);
+    const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+    click(nextButton ?? null);
+  }
+
+  it("shows a 'never tested' state before any check has run", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+    });
+
+    await openSlackEditDialog();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(text()).toMatch(/Never tested\. Run a live check/i);
+  });
+
+  it("marks a successful result stale after it ages past the freshness window", async () => {
+    vi.useFakeTimers();
+    try {
+      actionFor("slack_bot_whoami").mockResolvedValue({
+        data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+      });
+      actionFor("check-slack-connection").mockResolvedValue({
+        outcome: { ok: true },
+        checkedAt: Date.now(),
+      });
+
+      await openSlackEditDialog();
+      const checkButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Check Slack connection");
+      await act(async () => {
+        click(checkButton ?? null);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(text()).toMatch(/Connected\./i);
+      expect(text()).not.toMatch(/\(stale --/i);
+
+      // Advance the clock past the 5-minute freshness window without
+      // running another check -- the panel derives staleness from
+      // Date.now() on every render, so this alone must flip it stale.
+      await act(async () => {
+        vi.advanceTimersByTime(6 * 60 * 1000);
+      });
+      rerenderSettingsPage();
+
+      expect(text()).toMatch(/\(stale --/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("marks a refresh failure over a preserved last-known-good result as stale immediately, not just after 5 minutes", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+    });
+    actionFor("check-slack-connection")
+      .mockResolvedValueOnce({ outcome: { ok: true }, checkedAt: Date.now() })
+      .mockRejectedValueOnce(new Error("Slack API unreachable"));
+
+    await openSlackEditDialog();
+    const checkButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Check Slack connection");
+
+    // First check succeeds.
+    await act(async () => {
+      click(checkButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(text()).toMatch(/Connected\./i);
+    expect(text()).not.toMatch(/marked stale|\(stale --/i);
+
+    // Second check (a refresh) fails immediately after -- well within the 5m
+    // freshness window -- but must still mark the preserved result stale.
+    await act(async () => {
+      click(checkButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(text()).toMatch(/Could not refresh the connection check/i);
+    expect(text()).toMatch(/Showing the last known result below, marked stale/i);
+    expect(text()).toMatch(/Connected\..*\(stale/i);
+  });
+
+  it("clears the previous identity's connection result when switching to a different identity (no cross-identity leak)", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+    });
+    actionFor("check-slack-connection").mockResolvedValue({ outcome: { ok: true }, checkedAt: Date.now() });
+
+    await openSlackEditDialogFor(slackIdentityEntry());
+    const checkButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Check Slack connection");
+    await act(async () => {
+      click(checkButton ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(text()).toMatch(/Connected\./i);
+
+    // Close the dialog (Cancel) and open a different identity's edit dialog.
+    const cancelButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Cancel");
+    click(cancelButton ?? null);
+
+    await openSlackEditDialogFor(secondSlackIdentityEntry(), [slackIdentityEntry()]);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(text()).not.toMatch(/Connected\./i);
+    expect(text()).toMatch(/Never tested\. Run a live check/i);
+  });
+});
+
 describe("Slack removal confirmation copy", () => {
   it("calls window.confirm with Slack-specific recovery-guidance copy, and only deletes when confirmed", async () => {
     bridgeData["bot-identity-config"] = {

@@ -123,9 +123,7 @@ describe("fetchSlackThreadHistory", () => {
 
     expect(history.messages.length).toBeLessThanOrEqual(SLACK_THREAD_HISTORY_MESSAGE_LIMIT);
     expect(history.messages.every(({ text }) => Buffer.byteLength(text ?? "", "utf8") <= SLACK_THREAD_HISTORY_TEXT_MAX_LENGTH)).toBe(true);
-    expect(Buffer.byteLength(JSON.stringify(history.messages), "utf8")).toBeLessThanOrEqual(
-      SLACK_THREAD_HISTORY_MAX_BYTES + history.messages.length + 1,
-    );
+    expect(Buffer.byteLength(JSON.stringify(history), "utf8")).toBeLessThanOrEqual(SLACK_THREAD_HISTORY_MAX_BYTES);
     expect(history.truncated).toBe(true);
   });
 

@@ -944,6 +944,30 @@ describe("Slack provider durable ingress", () => {
     expect(sendMessage.mock.calls[0][2].prompt).not.toContain("Quoted Slack thread history:");
   });
 
+  it("does not rehydrate thread history when the conversation already has a session", async () => {
+    const threadReplies = vi.fn(async () => new Response(JSON.stringify({ ok: true, messages: [] })));
+    const { ctx, store, sendMessage } = makeCtx({
+      threadReplies,
+      sendMessage: async () => ({ runId: "run-existing-session" }),
+    });
+    const session = await ctx.agents.sessions.create("agent-1", "co-1");
+    await handleSlackProviderWebhook(delivery("Ev-existing-session", "<@U111> continue", {
+      type: "app_mention",
+      channel_type: "channel",
+      channel: "C111",
+      ts: "1719000000.000011",
+      thread_ts: "1719000000.000001",
+    }), ctx as never);
+    queueState(store).sessionId = session.sessionId;
+    const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
+
+    await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime());
+
+    expect(threadReplies).not.toHaveBeenCalled();
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(sendMessage.mock.calls[0][2].prompt).not.toContain("Quoted Slack thread history:");
+  });
+
   it("falls back secret-free when existing-thread history is unavailable", async () => {
     const threadReplies = vi.fn(async () => new Response(JSON.stringify({
       ok: false,

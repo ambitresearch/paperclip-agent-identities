@@ -121,18 +121,21 @@ function applyHistoryBounds(
   const unique = [...new Map(messages.map((message) => [message.ts, message])).values()]
     .sort((left, right) => compareSlackTs(left.ts, right.ts));
   const selected: SlackThreadHistoryMessage[] = [];
-  let bytes = 0;
   let truncated = sourceTruncated || unique.length > SLACK_THREAD_HISTORY_MESSAGE_LIMIT;
   for (const message of unique.slice(-SLACK_THREAD_HISTORY_MESSAGE_LIMIT).reverse()) {
-    const messageBytes = Buffer.byteLength(JSON.stringify(message), "utf8");
-    if (messageBytes > SLACK_THREAD_HISTORY_MAX_BYTES || bytes + messageBytes > SLACK_THREAD_HISTORY_MAX_BYTES) {
+    const candidate = [message, ...selected];
+    const candidateBytes = Buffer.byteLength(JSON.stringify({
+      channel,
+      threadTs,
+      messages: candidate,
+      truncated: false,
+    }), "utf8");
+    if (candidateBytes > SLACK_THREAD_HISTORY_MAX_BYTES) {
       truncated = true;
       continue;
     }
-    selected.push(message);
-    bytes += messageBytes;
+    selected.unshift(message);
   }
-  selected.reverse();
   return { channel, threadTs, messages: selected, truncated };
 }
 

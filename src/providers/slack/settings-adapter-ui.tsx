@@ -88,6 +88,17 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
   slackStatusLoading: boolean;
   slackStatusError: string | null;
   handleCheckSlackStatus: () => Promise<void>;
+  // DRO-1161: bounded live Slack "Connection" check (auth.test against the
+  // resolved bot credential) -- distinct from slackStatus above, which only
+  // reflects saved/configured metadata. Never surfaces the bot token; see
+  // src/providers/slack/connection-status.ts.
+  slackConnectionStatus: SlackConnectionCheckResult | null;
+  slackConnectionStatusLoading: boolean;
+  slackConnectionStatusError: string | null;
+  // When the last successful check happened, so the UI can mark a
+  // previously-good result as stale rather than implying continuous health.
+  slackConnectionStatusCheckedAtMs: number | null;
+  handleCheckSlackConnection: () => Promise<void>;
   hasPersistedIdentity: boolean;
   // Reinstall: re-runs the manifest-assisted setup flow against an existing
   // identity row, confirmation-gated. Reuses handleCreateSlackAppManifest;
@@ -121,6 +132,30 @@ export interface SlackBotWhoamiData {
   appId?: string;
   botUserId?: string;
   hasDefaultChannel?: boolean;
+}
+
+// Mirrors `SlackConnectionCheckResult`/`SlackConnectionFailureCategory` in
+// connection-status.ts, kept as a separate UI-local type (rather than a
+// direct import) for the same reason settings-adapter.ts avoids importing
+// index.ts -- connection-status.ts pulls in credentials.ts, which is fine
+// (fetch-only, no node builtins), but keeping the UI's response shape
+// declared locally makes the client/server contract explicit at this
+// boundary and matches the existing SlackBotWhoamiData pattern above.
+export type SlackConnectionFailureCategory =
+  | "credential_missing"
+  | "credential_resolution_failed"
+  | "auth_test_failed"
+  | "workspace_mismatch"
+  | "identity_mismatch"
+  | "timeout"
+  | "unknown";
+
+export interface SlackConnectionCheckResult {
+  outcome:
+    | { ok: true }
+    | { ok: false; category: SlackConnectionFailureCategory; reason: string };
+  checkedAt: string;
+  nextStep?: string;
 }
 
 const SLACK_MANIFEST_STATE_STORAGE_PREFIX = "paperclip-agent-identities:slack-app-manifest-state:";
@@ -216,7 +251,7 @@ async function copyTextToClipboard(value: string): Promise<void> {
 type SlackCredentialStepInput = ProviderSettingsUIHookInput<SlackSettingsUIFormConfig> & SlackSettingsUIActionsInput;
 
 function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsUIHookResult {
-  const { config, hasPersistedIdentity, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, discoverSlackInstallMetadata, saveSlackInstallMetadata, rebindLegacySlackCredentials, slackBotWhoami, companyId } = input;
+  const { config, hasPersistedIdentity, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, discoverSlackInstallMetadata, saveSlackInstallMetadata, rebindLegacySlackCredentials, slackBotWhoami, checkSlackConnection, companyId } = input;
 
   // Slack posts events straight at the host's company-scoped webhook route, so
   // in a deployed Paperclip the Request URL is fully derivable and the operator
@@ -243,6 +278,14 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
   const [slackStatus, setSlackStatus] = useState<SlackBotWhoamiData | null>(null);
   const [slackStatusLoading, setSlackStatusLoading] = useState(false);
   const [slackStatusError, setSlackStatusError] = useState<string | null>(null);
+  // DRO-1161: bounded live Slack "Connection" check state, kept fully
+  // separate from slackStatus/slackStatusLoading/slackStatusError above so
+  // Configured and Connection never collapse into one loading/error state.
+  const [slackConnectionStatus, setSlackConnectionStatus] = useState<SlackConnectionCheckResult | null>(null);
+  const [slackConnectionStatusLoading, setSlackConnectionStatusLoading] = useState(false);
+  const [slackConnectionStatusError, setSlackConnectionStatusError] = useState<string | null>(null);
+  const [slackConnectionStatusCheckedAtMs, setSlackConnectionStatusCheckedAtMs] = useState<number | null>(null);
+  const slackConnectionStatusGenerationRef = useRef(0);
   const [legacySlackRebindBusy, setLegacySlackRebindBusy] = useState(false);
   const [legacySlackRebindError, setLegacySlackRebindError] = useState<string | null>(null);
   const [legacySlackRebindResult, setLegacySlackRebindResult] = useState<LegacySlackCredentialRebindResult | null>(null);
@@ -754,6 +797,41 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     }
   }
 
+  // DRO-1161: bounded live Slack "Connection" check -- calls
+  // `check-slack-connection` (a bounded server-side Slack `auth.test`
+  // against the resolved bot credential). This is distinct from
+  // handleCheckSlackStatus above: that reflects only saved/configured
+  // metadata and never verifies the token is still valid, while this
+  // actually authenticates. Never receives the token itself; the worker
+  // resolves and discards it entirely within the action handler.
+  async function handleCheckSlackConnection() {
+    const agentId = config?.agentId?.trim();
+    if (!agentId) return;
+    const generation = ++slackConnectionStatusGenerationRef.current;
+    setSlackConnectionStatusLoading(true);
+    setSlackConnectionStatusError(null);
+    try {
+      const result = (await checkSlackConnection({ agentId, companyId })) as SlackConnectionCheckResult;
+      if (slackConnectionStatusGenerationRef.current !== generation) return;
+      setSlackConnectionStatus(result);
+      if (result?.outcome?.ok) {
+        setSlackConnectionStatusCheckedAtMs(Date.now());
+      }
+    } catch (err) {
+      if (slackConnectionStatusGenerationRef.current !== generation) return;
+      // Preserve the last known result on a refresh failure (per DRO-1161's
+      // "UI preserves the last known state on refresh failure and marks it
+      // stale" requirement) -- do not clear slackConnectionStatus here.
+      setSlackConnectionStatusError(
+        err instanceof Error ? err.message : "Slack connection check failed to run.",
+      );
+    } finally {
+      if (slackConnectionStatusGenerationRef.current === generation) {
+        setSlackConnectionStatusLoading(false);
+      }
+    }
+  }
+
   // Confirmation-gated reinstall: re-runs the same manifest-assisted setup
   // flow as "Create Slack App manifest" (handleCreateSlackAppManifest),
   // against an already-configured identity row. Mirrors GitHub's "Replace
@@ -823,6 +901,11 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     slackStatusLoading,
     slackStatusError,
     handleCheckSlackStatus,
+    slackConnectionStatus,
+    slackConnectionStatusLoading,
+    slackConnectionStatusError,
+    slackConnectionStatusCheckedAtMs,
+    handleCheckSlackConnection,
     hasPersistedIdentity,
     handleReinstallSlackApp,
     legacySlackRebindBusy,
@@ -854,6 +937,9 @@ export interface SlackSettingsUIActionsInput {
   // The credential-free `slack_bot_whoami` tool (DRO-972), invoked identically
   // to the actions above via `usePluginAction` in SettingsPage.
   slackBotWhoami: (input: Record<string, unknown>) => Promise<unknown>;
+  // DRO-1161: bounded live Slack "Connection" check (auth.test against the
+  // resolved bot credential), distinct from slackBotWhoami above.
+  checkSlackConnection: (input: Record<string, unknown>) => Promise<unknown>;
 }
 
 function getSecretFieldHint(input: {
@@ -934,6 +1020,11 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     slackStatus,
     slackStatusLoading,
     slackStatusError,
+    slackConnectionStatus,
+    slackConnectionStatusLoading,
+    slackConnectionStatusError,
+    slackConnectionStatusCheckedAtMs,
+    handleCheckSlackConnection,
     handleReinstallSlackApp,
     legacySlackRebindBusy,
     legacySlackRebindError,
@@ -973,6 +1064,17 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           loading={slackStatusLoading}
           status={slackStatus}
           error={slackStatusError}
+        />
+      )}
+      {hasPersistedIdentity && (
+        <SlackConnectionStatusPanel
+          agentId={config.agentId}
+          label={config.label}
+          loading={slackConnectionStatusLoading}
+          result={slackConnectionStatus}
+          error={slackConnectionStatusError}
+          lastSuccessAtMs={slackConnectionStatusCheckedAtMs}
+          onCheck={handleCheckSlackConnection}
         />
       )}
       {hasPersistedIdentity && config.slackLegacyCredentialStatus && (
@@ -1406,7 +1508,73 @@ function SlackStatusPanel(props: {
       bot user {status.botUserId ?? "unknown"}
       {status.hasDefaultChannel ? ", default channel configured" : ", no default channel configured"}.
       {" "}This reflects saved install metadata only - it does not verify the bot token is still valid; a revoked or
-      stale token is not detected here.
+      stale token is not detected here. See "Connection" below for a live credential check.
+    </div>
+  );
+}
+
+// DRO-1161: how long a successful live connection check is considered fresh
+// before the UI marks it stale. A stale "last known good" result must never
+// be presented as current health -- see the module doc on
+// runSlackConnectionCheck in connection-status.ts.
+const SLACK_CONNECTION_STATUS_STALE_AFTER_MS = 5 * 60 * 1000;
+
+function formatRelativeAge(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h ago`;
+}
+
+function SlackConnectionStatusPanel(props: {
+  agentId: string;
+  label: string;
+  loading: boolean;
+  result: SlackConnectionCheckResult | null;
+  error: string | null;
+  lastSuccessAtMs: number | null;
+  onCheck: () => Promise<void>;
+}) {
+  const { agentId, label, loading, result, error, lastSuccessAtMs, onCheck } = props;
+  const now = Date.now();
+  const ageMs = lastSuccessAtMs !== null ? now - lastSuccessAtMs : null;
+  const isStale = ageMs !== null && ageMs > SLACK_CONNECTION_STATUS_STALE_AFTER_MS;
+
+  return (
+    <div style={inlineNoticeStyle}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
+        <strong>Connection.</strong>
+        <button type="button" style={secondaryButtonStyle} onClick={() => void onCheck()} disabled={loading}>
+          {loading ? "Checking..." : "Check Slack connection"}
+        </button>
+      </div>
+      {!result && !error && !loading && (
+        <div>
+          Never tested. Run a live check to verify the bot credential for <strong>{label || agentId}</strong> still
+          authenticates with Slack -- this never exposes the bot token.
+        </div>
+      )}
+      {loading && <div>Running a bounded live Slack `auth.test` check for {label || agentId}...</div>}
+      {error && (
+        <div style={errorStyle}>
+          Could not refresh the connection check ({error}).
+          {result ? " Showing the last known result below, marked stale." : ""}
+        </div>
+      )}
+      {result && result.outcome.ok && (
+        <div style={successStyle}>
+          Connected. Slack accepted the resolved bot credential at {new Date(result.checkedAt).toLocaleString()}
+          {isStale ? ` (stale -- ${formatRelativeAge(ageMs as number)}, re-check to confirm it still holds)` : ""}.
+        </div>
+      )}
+      {result && !result.outcome.ok && (
+        <div style={errorStyle}>
+          Not connected ({result.outcome.category}): {result.outcome.reason}
+          {result.nextStep ? <div style={hintStyle}>Next step: {result.nextStep}</div> : null}
+        </div>
+      )}
     </div>
   );
 }

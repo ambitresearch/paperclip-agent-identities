@@ -741,6 +741,34 @@ fixture ever contains a real-shaped Slack token pattern (`xoxb-`, `xoxp-`)
 being written to a comment, log, or committed file — same discipline as
 existing credential tests for GitHub App keys.
 
+### T7 — Live connection-check triggers as a new caller path to the credential (DRO-1161)
+**Risk:** `check-slack-connection` (`src/providers/slack/connection-status.ts`)
+introduces a new, human-operator-triggered live call to Slack's `auth.test`
+using the resolved bot token — a second code path (alongside
+`resolveSlackCredential`/the tool pipeline) that touches the credential. A
+bug here could either leak the token to the Settings UI, or become an
+unbounded/uncapped way to hammer Slack's `auth.test` endpoint from a
+company's own settings page.
+**Mitigation:** `runSlackConnectionCheck` reuses `resolveSlackBotToken`
+itself (not a parallel re-implementation) so it inherits the exact same
+fail-closed checks as tool credential resolution (workspace match, bot- vs
+user-token rejection, `botUserId` match) — "Connection: ok" cannot mean
+anything looser than what a real tool call would also accept. The action's
+return value is a closed, bounded shape
+(`{ outcome: { ok, category?, reason? }, checkedAt, nextStep? }`) built by
+`categorizeConnectionError`, which maps thrown errors to one of seven fixed
+category strings — the resolved token, the raw Slack response body, and the
+original thrown `Error.message` are never included. The check is also
+capped at a fixed 8s timeout (`SLACK_CONNECTION_CHECK_TIMEOUT_MS`) via
+`withTimeout`, and the action itself is gated the same way every other
+settings action is (`context.companyId` is host-authorized, never a
+caller-supplied `params.companyId`); the operator UI additionally only
+allows one check at a time per identity (loading-gated button), so this
+does not add a new unbounded-retry surface against Slack's API. Test
+coverage (`tests/providers/slack/connection-status.spec.ts`) explicitly
+asserts the token never appears in the serialized result, including on a
+Slack error body engineered to echo the token back.
+
 ## 10. Implementation notes and deferred questions
 
 - `defaultChannelId` receives syntax-only validation at save time and remains

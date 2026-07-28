@@ -601,3 +601,74 @@ branch was added to `src/worker.ts` or `src/manifest.ts`.
   token-redaction on a thrown network error), and two full pipeline
   round-trips through `createProviderTool` covering both the happy path and
   the wrong-team-denies-before-credential path end-to-end.
+
+## Implementation status (DRO-1161: live Slack connection health in Settings)
+
+`slack_bot_whoami` (§ "Implementation status (DRO-969...)" above) was always a
+credential-free echo of stored public metadata — it has never made a live
+Slack call. During an incident, that let the Settings UI report an identity
+as effectively "Ready" while every inbound mention was actually failing
+before it ever reached the queue: Configured, Connection, Ingress, and
+Delivery had all collapsed into a single undifferentiated state.
+
+DRO-1161 adds a **second, separate** live check —
+`src/providers/slack/connection-status.ts` — that performs a bounded,
+server-side Slack `auth.test` against the *resolved* bot credential and
+reuses `resolveSlackBotToken`'s existing fail-closed checks (workspace match,
+bot-vs-user-token rejection, configured `botUserId` match). "Connection: ok"
+therefore means exactly what tool/reply credential resolution would also
+accept — not a separately-defined, weaker notion of "connected".
+
+- **New settings action**: `check-slack-connection`, registered by
+  `contributeSlackConnectionStatusAction` (called from
+  `contributeSlackActionsAndIngress` in `src/providers/slack/index.ts`
+  alongside the existing manifest-flow actions). Human-actor-gated
+  (`requireHumanSettingsActor` is implicit via the same
+  `PluginPerformActionContext`), company-scoped (`context.companyId`, never
+  a caller-supplied `params.companyId`), and bounded by an 8s internal
+  timeout (`SLACK_CONNECTION_CHECK_TIMEOUT_MS`) so a hanging Slack API call
+  cannot hang the settings action indefinitely.
+- **Bounded, secret-free response shape**: `{ outcome: { ok: true } |
+  { ok: false, category, reason }, checkedAt, nextStep? }`. `category` is one
+  of a small closed set (`credential_missing`, `credential_resolution_failed`,
+  `auth_test_failed`, `workspace_mismatch`, `identity_mismatch`, `timeout`,
+  `unknown`) — never a raw Slack error string, response body, header, or
+  stack trace. `nextStep` is a fixed, per-category guidance string (see
+  `CONNECTION_FAILURE_GUIDANCE`), satisfying the "next-step guidance for
+  credential ... failures" acceptance criterion for the credential/routing
+  half of DRO-1161's scope.
+- **UI**: `src/providers/slack/settings-adapter-ui.tsx` renders a new
+  `SlackConnectionStatusPanel`, separate from the existing `SlackStatusPanel`
+  (which still only reflects saved/configured metadata and is now annotated
+  as such). The Connection panel has its own loading/error/result state
+  (`slackConnectionStatus*`), an explicit "never tested" state before the
+  first check, an operator-triggered "Check Slack connection" button
+  (`handleCheckSlackConnection`), and marks a previously-successful result
+  **stale** once it is older than `SLACK_CONNECTION_STATUS_STALE_AFTER_MS`
+  (5 minutes) rather than implying continuous health from an old success. A
+  refresh failure (the action itself erroring, e.g. a network blip reaching
+  the plugin action bridge) preserves the last known result and shows it
+  alongside the error, per "UI preserves the last known state on refresh
+  failure and marks it stale."
+- **Scope of this increment**: this lands the **Configured vs. Connection**
+  separation described in DRO-1161's "Required states". The **Ingress**
+  (most recent verified event time/type and routing result) and **Delivery**
+  (enqueue/drain/session-start/completion/failure phase) states are tracked
+  as a separate follow-up (durable queue recovery is explicitly out of scope
+  per the issue too) — see the Ingress/Delivery telemetry work item linked
+  from DRO-1161. That follow-up will read from
+  `src/providers/slack/ingress/provider-webhook.ts` and
+  `src/providers/slack/ingress/conversation-session.ts`'s existing
+  queue/session state rather than adding a new live network call.
+- Test coverage: `tests/providers/slack/connection-status.spec.ts` — healthy
+  `auth.test` round trip (asserts the response never contains the token),
+  auth-rejected credential, workspace mismatch, user-token
+  (missing `bot_id`) rejection, missing secret reference
+  (`credential_missing`, no network call attempted), a secret-resolution
+  rejection (`credential_resolution_failed`, no network call attempted), a
+  bounded timeout on a hung `fetch` (via `vi.useFakeTimers`), token-redaction
+  on a Slack error body that happens to echo the token back, and the
+  registered `check-slack-connection` action itself (missing `agentId`,
+  missing `companyId`, no configured identity, and a full round trip
+  asserting the returned payload never contains a token-shaped string).
+

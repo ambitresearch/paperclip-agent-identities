@@ -17,6 +17,7 @@ import {
 } from "./config.js";
 import { resolveSlackCredential } from "./credentials.js";
 import { contributeSlackAppManifestActions } from "./app-manifest.js";
+import { contributeSlackConnectionStatusAction } from "./connection-status.js";
 import { slackWhoamiToolSpec } from "./tools/whoami.js";
 import { slackManifestTools } from "./manifest-tools.js";
 import {
@@ -115,6 +116,7 @@ async function handleSlackIngressWebhook(input: PluginWebhookInput, ctx: PluginC
 
 function contributeSlackActionsAndIngress(ctx: PluginContext): void {
   contributeSlackAppManifestActions(ctx);
+  contributeSlackConnectionStatusAction(ctx);
   contributeSlackIngress(
     ctx,
     (reply) => postSlackAgentReply(ctx, reply),

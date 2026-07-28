@@ -602,3 +602,185 @@ branch was added to `src/worker.ts` or `src/manifest.ts`.
   token-redaction on a thrown network error), and two full pipeline
   round-trips through `createProviderTool` covering both the happy path and
   the wrong-team-denies-before-credential path end-to-end.
+
+## Implementation status (DRO-1161: live Slack connection health in Settings)
+
+`slack_bot_whoami` (§ "Implementation status (DRO-969...)" above) was always a
+credential-free echo of stored public metadata — it has never made a live
+Slack call. During an incident, that let the Settings UI report an identity
+as effectively "Ready" while every inbound mention was actually failing
+before it ever reached the queue: Configured, Connection, Ingress, and
+Delivery had all collapsed into a single undifferentiated state.
+
+DRO-1161 adds a **second, separate** live check —
+`src/providers/slack/connection-status.ts` — that performs a bounded,
+server-side Slack `auth.test` against the *resolved* bot credential and
+reuses `resolveSlackBotToken`'s existing fail-closed checks (workspace match,
+bot-vs-user-token rejection, configured `botUserId` match). "Connection: ok"
+therefore means exactly what tool/reply credential resolution would also
+accept — not a separately-defined, weaker notion of "connected".
+
+- **New settings action**: `check-slack-connection`, registered by
+  `contributeSlackConnectionStatusAction` (called from
+  `contributeSlackActionsAndIngress` in `src/providers/slack/index.ts`
+  alongside the existing manifest-flow actions). Human-actor-gated
+  (`requireHumanSettingsActor` is implicit via the same
+  `PluginPerformActionContext`), company-scoped (`context.companyId`, never
+  a caller-supplied `params.companyId`), and bounded by an 8s internal
+  timeout (`SLACK_CONNECTION_CHECK_TIMEOUT_MS`) so a hanging Slack API call
+  cannot hang the settings action indefinitely.
+- **Bounded, secret-free response shape**: `{ outcome: { ok: true } |
+  { ok: false, category, reason }, checkedAt, nextStep? }`. `category` is one
+  of a small closed set (`credential_missing`, `credential_resolution_failed`,
+  `auth_test_failed`, `workspace_mismatch`, `identity_mismatch`,
+  `network_failed`, `timeout`, `unknown`) — never a raw Slack error string,
+  response body, header, or stack trace. The check tags each stage
+  (secret resolution vs. `auth.test` verification) so only a genuine secret
+  resolution rejection maps to `credential_resolution_failed`; a
+  transport/DNS throw while reaching Slack maps to `network_failed`, and
+  anything else falls through to `unknown` rather than blaming the secret
+  reference. `nextStep` is a fixed, per-category guidance string (see
+  `CONNECTION_FAILURE_GUIDANCE`), satisfying the "next-step guidance for
+  credential ... failures" acceptance criterion for the credential/routing
+  half of DRO-1161's scope.
+- **UI**: `src/providers/slack/settings-adapter-ui.tsx` renders a new
+  `SlackConnectionStatusPanel`, separate from the existing `SlackStatusPanel`
+  (which still only reflects saved/configured metadata and is now annotated
+  as such). The Connection panel has its own loading/error/result state
+  (`slackConnectionStatus*`), an explicit "never tested" state before the
+  first check, an operator-triggered "Check Slack connection" button
+  (`handleCheckSlackConnection`), and marks a previously-successful result
+  **stale** once it is older than `SLACK_CONNECTION_STATUS_STALE_AFTER_MS`
+  (5 minutes) rather than implying continuous health from an old success. A
+  refresh failure (the action itself erroring, e.g. a network blip reaching
+  the plugin action bridge) preserves the last known result and shows it
+  alongside the error, per "UI preserves the last known state on refresh
+  failure and marks it stale."
+- **Scope of this increment**: this lands the full
+  **Configured / Connection / Ingress / Delivery** split described in
+  DRO-1161's "Required states". Configured and Connection are implemented as
+  described above; **Ingress** (most recent verified event time/type and
+  routing result) and **Delivery** (enqueue/drain/session-start/completion/
+  failure phase) are implemented alongside them in
+  `src/providers/slack/telemetry.ts`, recorded from
+  `src/providers/slack/ingress/provider-webhook.ts` against
+  `src/providers/slack/ingress/conversation-session.ts`'s existing
+  queue/session state rather than adding a new live network call — see
+  "Implementation status (DRO-1187)" below. **Durable queue recovery remains
+  out of scope** here and is tracked as the separate recovery issue.
+- Test coverage: `tests/providers/slack/connection-status.spec.ts` — healthy
+  `auth.test` round trip (asserts the response never contains the token),
+  auth-rejected credential, workspace mismatch, user-token
+  (missing `bot_id`) rejection, missing secret reference
+  (`credential_missing`, no network call attempted), a secret-resolution
+  rejection (`credential_resolution_failed`, no network call attempted), a
+  bounded timeout on a hung `fetch` (via `vi.useFakeTimers`), token-redaction
+  on a Slack error body that happens to echo the token back, and the
+  registered `check-slack-connection` action itself (missing `agentId`,
+  missing `companyId`, no configured identity, and a full round trip
+  asserting the returned payload never contains a token-shaped string).
+
+## Implementation status (DRO-1187: deferred Ingress and Delivery telemetry in Settings)
+
+Completes the Configured/Connection/Ingress/Delivery split named in DRO-1161's
+"Required states" and left as a follow-up above. Unlike Connection (a live,
+on-demand `auth.test` call), Ingress and Delivery are **recorded**, not
+checked on demand: `src/providers/slack/telemetry.ts` persists one small
+bounded record per (companyId, agentId) as real webhook/queue/session
+activity happens, and Settings only *projects* the most recent record back.
+
+- **Storage**: one bounded, `structuredClone`-serializable record per agent,
+  keyed the same way `conversation-session.ts` scopes its durable queue
+  state (`scopeKind: "agent"`), under a dedicated `slack-telemetry` plugin
+  state namespace (never mixed into `SLACK_CONVERSATION_STATE_NAMESPACE`, so
+  telemetry recording can never contend with or corrupt queue ownership).
+  Fields are strictly bounded: ISO-shaped/epoch-ms timestamps, closed enum
+  categories, and the same correlation-safe `teamId`/`appId` identifiers
+  already treated as safe elsewhere in this provider — **never** message
+  text, prompts, model output, tokens, signing secrets, HTTP headers, or
+  stack traces. There is deliberately no caller-supplied free-text `reason`
+  field anywhere in the persisted record: every failure carries only a
+  closed-enum `category` and that category's fixed, static `nextStep`
+  guidance string (`SLACK_INGRESS_FAILURE_GUIDANCE` /
+  `SLACK_DELIVERY_FAILURE_GUIDANCE`), so there is no per-call text a caller
+  could ever need to bound, redact, or accidentally leak operational detail
+  through. Reads are additionally scoped by the caller's authorized
+  `companyId`: because the state key is keyed by `agentId` alone, a stored
+  record's own `companyId` is checked against the caller's before it is ever
+  returned, so knowing (or guessing) a valid `agentId` can never disclose
+  another company's ingress/delivery telemetry for that agent.
+- **Ingress** (pre-queue, recorded via an optional `recordIngressOutcome` dep
+  threaded through `handleSlackWebhook` in `webhook-handler.ts` — kept a pure
+  callback seam, exactly like `onAgentEvent`/`shouldProcessEvent`, so the
+  handler itself never touches state/db directly): records the most recent
+  verified event's timestamp and a bounded event-type category (`message` |
+  `app_mention` | `other` — never raw event/text content) plus routing result
+  (`routed` | `routing_failed`) on success, and a bounded failure (category
+  `signature_failed` | `routing_failed`, fixed operator guidance, timestamp)
+  on failure. A post-signature routing failure is attributed to the one
+  identity whose secret already matched — the only safe scope, since the
+  request is by then authenticated. A pre-signature failure (no identity has
+  authenticated this raw body yet) is **never** attributed to any identity,
+  including a routing-hint-named candidate: `team_id`/`api_app_id` are
+  attacker-controlled input at that point, and attributing to them would let
+  anyone who merely knows or guesses a configured team/app pair poison that
+  identity's ingress health without ever proving control of the signing
+  secret.
+- **Delivery** (post-queue, recorded from `provider-webhook.ts`, which is the
+  only ingress module that already touches `ctx.state`/`ctx.agents.sessions`):
+  records enqueue, drain/session-start, completion, and failure phase
+  transitions at the existing call sites — `enqueueSlackConversationTurn`
+  success/failure, `kickSlackConversation` success/failure, and
+  `finishAcceptedRun`'s/`finalizeAmbiguousSend`'s/`retireBlockingTurn`'s
+  terminal outcomes. `drain_started` is recorded from `startClaimedTurn` once
+  a session has actually been claimed/resolved for the turn — not at the
+  point a queue-drain self-event kick is merely scheduled, which proves only
+  that an event was enqueued, not that draining ever began. Failure
+  categories are `queue_failed` (durable queue full or conflicted),
+  `session_failed` (session create/resume/kick/lifecycle failure), and
+  `reply_failed` (an ambiguous or failed reply send, classified the same way
+  `classifySlackSendFailure` already does for retry safety). All telemetry
+  writes are wrapped to never throw — a telemetry write failure must never
+  affect queue ownership, session lifecycle, or webhook acknowledgement.
+- **New read-only settings action**: `get-slack-telemetry`, registered by
+  `contributeSlackTelemetryAction` alongside `check-slack-connection` in
+  `contributeSlackActionsAndIngress`. Company-scoped and `agentId`-validated
+  identically to `check-slack-connection` — the resolved `context.companyId`
+  is passed through to `getSlackTelemetry` and enforced against the stored
+  record's own `companyId` (see Storage above); returns
+  `{ ingress: SlackIngressTelemetry | null, delivery: SlackDeliveryTelemetry
+  | null }`, with `null` (rendered as "Never observed") rather than an error
+  when nothing has ever been recorded for that agent, or when a record
+  exists but belongs to a different company.
+- **UI**: `src/providers/slack/settings-adapter-ui.tsx` adds
+  `SlackIngressStatusPanel` and `SlackDeliveryStatusPanel`, rendered next to
+  `SlackConnectionStatusPanel`. Unlike Connection, neither has a manual
+  "check" button — there is no live check to trigger, only a projection of
+  already-recorded activity — so both are fetched via
+  `handleRefreshSlackTelemetry` (`get-slack-telemetry`) automatically
+  whenever the viewed identity changes, mirroring how `refresh()` is already
+  used elsewhere in this hook. On a refresh failure, the last-known
+  telemetry is preserved (not cleared) and marked stale once older than
+  `SLACK_TELEMETRY_STALE_AFTER_MS` (5 minutes, the same window as
+  Connection's `SLACK_CONNECTION_STATUS_STALE_AFTER_MS`) — identical pattern
+  to `SlackConnectionStatusPanel`'s staleness handling. `SettingsPage.tsx`
+  wires the new `get-slack-telemetry` plugin action through the same
+  `usePluginAction` seam as `check-slack-connection`.
+- Test coverage: `tests/providers/slack/telemetry.spec.ts` (healthy record,
+  never-observed projection, routing/signature/queue/session/reply failure
+  categories with their guidance strings, the full
+  enqueue-drain-completed delivery lifecycle, per-agent scoping, a
+  cross-company scoping test proving a shared `agentId` never leaks another
+  company's record, and the registered `get-slack-telemetry` action's
+  validation including its own cross-company case); plus focused wiring
+  regressions in `tests/providers/slack/ingress-webhook-handler.spec.ts` (a
+  healthy verified event, a post-signature routing failure, and a
+  pre-auth signature failure that asserts no ingress outcome is recorded at
+  all) and `tests/providers/slack/ingress-provider-webhook.spec.ts` (a
+  routed ingress event through the real webhook path, a queue-full delivery
+  failure under a enqueue burst, delivery completion through a full
+  webhook -> enqueue -> drain -> completion round trip, and a regression
+  proving `lastDrainStartedAt` is absent immediately after enqueue and only
+  appears once the drain worker actually claims/starts the turn) reusing
+  this suite's existing `makeCtx`/`delivery`/`runtime` fixtures rather than
+  duplicating route/service setup.

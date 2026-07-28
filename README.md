@@ -215,6 +215,27 @@ Saving a GitHub identity patches the selected agent environment with the GitHub 
 
 Deleting an identity removes only matching GitHub App env bindings for that identity, preserving unrelated environment variables. `secretId`/`tokenFile` token fallback is still accepted, but GitHub App mode is the durable path.
 
+### Slack bot tools
+
+Slack is a fully `enabled` provider with five agent-callable tools, each requiring only the minimum bot scope for its action (see [`openwiki/domain/slack-provider-mvp.md`](openwiki/domain/slack-provider-mvp.md) for the full design record):
+
+| Tool | Required scope | Notes |
+| --- | --- | --- |
+| `slack_bot_whoami` | none | Credential-free; echoes the configured identity's `label`, `teamId`, `appId`, and `botUserId`. |
+| `slack_bot_post_message` | `chat:write` | Posts a message to a channel; also handles threaded replies via `threadTs`. |
+| `slack_bot_add_reaction` | `reactions:write` | Adds an emoji reaction to an existing message. |
+| `slack_bot_remove_reaction` | `reactions:write` | Removes an emoji reaction the bot previously added. |
+| `slack_bot_lookup_channel` | `channels:read`, `groups:read` | Resolves a human-readable channel name (`"general"` or `"#general"`) to its canonical conversation ID via `conversations.list`; already-resolved conversation IDs pass through unchanged with no extra API call. |
+
+`slack_bot_lookup_channel` exists because the other Slack tools' resource-ref resolution runs before any credential is available and therefore only accepts an already-resolved conversation ID (see the large comment block in `src/providers/slack/channel-ref.ts`). Callers that only have a channel name should call `slack_bot_lookup_channel` first and pass the returned ID into the other Slack tools.
+
+Failure modes every credentialed Slack tool shares:
+
+- **Rate limiting**: a Slack `429`/`rate_limited` response is retried a bounded number of times, honoring the Slack `Retry-After` response header when present and falling back to a fixed backoff schedule otherwise, then fails closed with an actionable error rather than retrying forever.
+- **Network failures**: a request that fails before a response is received returns a generic "request failed" error; the raw thrown error is never logged or returned, since the bot token is already attached to the request by that point.
+- **Non-ok Slack responses**: an `ok: false` Slack API response surfaces the Slack error code and a human-readable message, never the raw response body.
+- **Ambiguous name lookups**: `slack_bot_lookup_channel` fails closed with an explicit error listing the conflicting conversation IDs (bounded to at most 20) when more than one accessible channel shares the requested name, rather than silently picking one.
+
 ## Documentation site
 
 OpenWiki Markdown lives in [`openwiki/`](openwiki/quickstart.md). Coding agents update affected pages in the same feature or behavior-change pull request; local or cloud agents may submit weekly or manual catch-up documentation pull requests. GitHub Actions builds and validates the content, then publishes it as a searchable VitePress site through GitHub Pages.

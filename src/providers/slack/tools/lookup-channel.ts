@@ -49,8 +49,10 @@ import {
  *    API calls; if the result set is truncated and no match was found yet,
  *    the tool still fails closed rather than looping forever.
  *  - Bounded rate-limit retries: a `429`/`rate_limited` response is retried
- *    up to `MAX_RATE_LIMIT_RETRIES` times (bounded backoff), then fails
- *    closed with an actionable error — never an unbounded retry loop.
+ *    up to `MAX_RATE_LIMIT_RETRIES` times, honoring the Slack `Retry-After`
+ *    response header when present (falling back to a fixed linear backoff
+ *    otherwise — mirrors `post-message.ts`'s handling), then fails closed
+ *    with an actionable error — never an unbounded retry loop.
  *  - Secret-free errors: network failures and non-ok responses are logged
  *    as a bare classification only (mirrors `performReaction`'s catch
  *    block in ../tools/react.ts) — the bot token is already in the
@@ -80,6 +82,10 @@ const PAGE_LIMIT = 1000;
 const MAX_PAGES = 10;
 const MAX_RATE_LIMIT_RETRIES = 3;
 const RATE_LIMIT_BACKOFF_MS = 500;
+// Upper bound on any single rate-limit sleep. Slack's `Retry-After` is honored
+// only up to this ceiling, so an extreme (or hostile) header value cannot
+// stall the tool for an unbounded period.
+const MAX_RATE_LIMIT_DELAY_MS = 30_000;
 // Bounds the ambiguity-error payload: at most this many conflicting IDs are
 // ever named in a response, so a name shared by thousands of channels can't
 // blow up response size.
@@ -225,6 +231,25 @@ type ListPageResult =
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * Parses a Slack `Retry-After` header value (seconds, per Slack's rate
+ * limit docs) into a millisecond delay, clamped to
+ * `MAX_RATE_LIMIT_DELAY_MS` so an extreme value cannot stall the tool.
+ * Returns `undefined` when the header is absent or not a valid
+ * non-negative number, so callers fall back to the fixed backoff schedule.
+ */
+function parseRetryAfterMs(response: Response): number | undefined {
+  const retryAfter = response.headers.get("Retry-After");
+  if (!retryAfter) {
+    return undefined;
+  }
+  const seconds = Number(retryAfter);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return undefined;
+  }
+  return Math.min(seconds * 1000, MAX_RATE_LIMIT_DELAY_MS);
+}
+
 async function fetchConversationsListPage(
   fetchImpl: FetchLike,
   token: string,
@@ -261,7 +286,8 @@ async function fetchConversationsListPage(
           error: "Slack API rate limit exceeded after repeated retries. Try again later."
         };
       }
-      await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_BACKOFF_MS * attempt));
+      const delayMs = parseRetryAfterMs(response) ?? RATE_LIMIT_BACKOFF_MS * attempt;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
       continue;
     }
 
@@ -280,7 +306,8 @@ async function fetchConversationsListPage(
           error: "Slack API rate limit exceeded after repeated retries. Try again later."
         };
       }
-      await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT_BACKOFF_MS * attempt));
+      const delayMs = parseRetryAfterMs(response) ?? RATE_LIMIT_BACKOFF_MS * attempt;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
       continue;
     }
 

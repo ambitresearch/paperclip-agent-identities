@@ -79,11 +79,11 @@ paperclipai plugin install . --local
 ## Runtime model in one page
 
 1. Paperclip reads the plugin package metadata in `/package.json`, then loads the built manifest, worker, and UI from `dist`.
-2. `/src/manifest.ts` declares plugin ID `ambitresearch.paperclip-agent-identities`, version `0.2.7`, required capabilities, 28 tools, and two UI slots.
+2. `/src/manifest.ts` declares plugin ID `ambitresearch.paperclip-agent-identities`, version `0.2.9`, required capabilities, 29 tools, and two UI slots.
 3. `/src/worker.ts` calls `definePlugin()` and registers:
    - data loaders: `health`, `bot-identity-config`, `paperclip-agents`
    - actions: `ping`, identity save/delete, GitHub/Slack manifest setup, Slack metadata discovery, and the released-sidecar Slack rebind action
-   - tools: 24 GitHub tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`, `github_bot_submit_pull_request_review`, and 20 others covering issues, pull requests, review threads, Projects v2, search, and Paperclip-side linking — see `/openwiki/tools/github-contribution-tools.md`) plus four Slack tools (`slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, and `slack_bot_remove_reaction`) — GitHub is still the only *enabled* provider (`registry.enabled()`), while Slack exposes its current tool surface independently via `toolsStatus: "enabled"` and `registry.liveTools()`/`registry.toolsEnabled()` despite remaining `"coming-soon"` in the settings UI.
+   - tools: 24 GitHub tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`, `github_bot_submit_pull_request_review`, and 20 others covering issues, pull requests, review threads, Projects v2, search, and Paperclip-side linking — see `/openwiki/tools/github-contribution-tools.md`) plus five Slack tools (`slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, `slack_bot_remove_reaction`, and `slack_bot_lookup_channel`) — both GitHub and Slack are now fully `enabled` providers (`registry.enabled()`), with Slack's tool surface also registered via `toolsStatus: "enabled"`/`registry.liveTools()`.
     - an `issue.created` event observer that marks issues as seen in plugin state
     - Slack's provider-owned `slack-turn-drain` self-event, which drains one durable queued turn under fresh company scope
 4. `/src/ui/index.tsx` exports a dashboard widget summarizing identity coverage and re-exports the settings page.
@@ -93,7 +93,7 @@ See [Plugin runtime architecture](architecture/plugin-runtime.md) for details.
 
 ## Key business/domain concepts
 
-- **Agent identity**: a provider-aware mapping keyed by `${agentId}:${provider}`, with label, provider ID, provider account fields, selected-agent credential cascade, and optional commit author fields. GitHub is the only enabled provider today; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are listed as coming soon.
+- **Agent identity**: a provider-aware mapping keyed by `${agentId}:${provider}`, with label, provider ID, provider account fields, selected-agent credential cascade, and optional commit author fields. GitHub and Slack are enabled providers today; Mattermost, Microsoft Entra, Google Cloud, and AWS are listed as coming soon.
 - **Provider authorization**: repository/resource access is owned by the provider. For GitHub, App installation permissions and scopes decide which repositories tools can access.
 - **Credential sidecar**: an operator-local JSON file, defaulting to `<runtime-home>/.paperclip/agent-identities/credentials.json` via `os.homedir()`, used for GitHub credentials and one-release parsing/migration of Slack refs written by `v0.1.7`/`v0.1.8`. Current Slack runtime refs live in company host config. Native and container runs therefore use their own writable runtime homes.
 - **GitHub App path**: preferred credential mode. The settings UI creates a GitHub App manifest, the worker converts the one-time code, writes a private key file, and later mints short-lived installation tokens on tool calls.

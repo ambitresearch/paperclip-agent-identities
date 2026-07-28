@@ -336,6 +336,92 @@ describe("slackLookupChannelToolSpec.perform — rate limiting", () => {
     const result = (await slackLookupChannelToolSpec.perform(execution)) as { error: string };
     expect(result.error).toMatch(/rate limit/i);
   });
+
+  it("honors the Slack Retry-After header instead of the fixed linear backoff", async () => {
+    vi.useFakeTimers();
+    try {
+      let call = 0;
+      const fetchImpl = vi.fn(async () => {
+        call += 1;
+        if (call === 1) {
+          // 5s Retry-After is far longer than RATE_LIMIT_BACKOFF_MS * 1 (500ms).
+          return jsonResponse(false, {}, 429, { "Retry-After": "5" });
+        }
+        return conversationsListResponse([
+          { id: "C0000000009", name: "general", is_archived: false }
+        ]);
+      });
+      const execution = buildExecution(fetchImpl, { channel: "general" });
+      const pending = slackLookupChannelToolSpec.perform(execution) as Promise<{
+        data: { channelId: string };
+      }>;
+
+      // The fixed backoff alone would have already fired the retry by now.
+      await vi.advanceTimersByTimeAsync(600);
+      expect(call).toBe(1);
+
+      // Advancing to the full Retry-After window releases the retry.
+      await vi.advanceTimersByTimeAsync(4_500);
+      expect((await pending).data.channelId).toBe("C0000000009");
+      expect(call).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clamps an extreme Retry-After value to the bounded maximum delay", async () => {
+    vi.useFakeTimers();
+    try {
+      let call = 0;
+      const fetchImpl = vi.fn(async () => {
+        call += 1;
+        if (call === 1) {
+          // One hour: must be clamped to MAX_RATE_LIMIT_DELAY_MS (30s), so a
+          // hostile or extreme header cannot stall the tool indefinitely.
+          return jsonResponse(false, {}, 429, { "Retry-After": "3600" });
+        }
+        return conversationsListResponse([
+          { id: "C0000000010", name: "general", is_archived: false }
+        ]);
+      });
+      const execution = buildExecution(fetchImpl, { channel: "general" });
+      const pending = slackLookupChannelToolSpec.perform(execution) as Promise<{
+        data: { channelId: string };
+      }>;
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await pending).data.channelId).toBe("C0000000010");
+      expect(call).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("falls back to the fixed backoff when Retry-After is absent or malformed", async () => {
+    vi.useFakeTimers();
+    try {
+      let call = 0;
+      const fetchImpl = vi.fn(async () => {
+        call += 1;
+        if (call === 1) {
+          return jsonResponse(false, {}, 429, { "Retry-After": "not-a-number" });
+        }
+        return conversationsListResponse([
+          { id: "C0000000011", name: "general", is_archived: false }
+        ]);
+      });
+      const execution = buildExecution(fetchImpl, { channel: "general" });
+      const pending = slackLookupChannelToolSpec.perform(execution) as Promise<{
+        data: { channelId: string };
+      }>;
+
+      await vi.advanceTimersByTimeAsync(600);
+      expect((await pending).data.channelId).toBe("C0000000011");
+      expect(call).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("slackLookupChannelToolSpec.perform — API/network failure handling", () => {

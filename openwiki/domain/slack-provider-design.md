@@ -109,6 +109,25 @@ including threaded replies. Private-group and channel threads use separate sessi
 keyed by their root `thread_ts`, and different channels or thread roots never share
 context. Only DMs may carry context across Slack threads.
 
+When the first routed turn is an `app_mention` inside an already-existing channel or
+private-group thread, the drain resolves the exactly routed identity's verified bot
+token and calls `conversations.replies` for only the inbound event's canonical
+`channel` and `thread_ts`. Hydration is skipped for root mentions and for any
+conversation that already has a Paperclip session, so successor turns rely on the
+session instead of repeatedly reloading Slack history. Retrieval is capped at three
+pages of 100 source rows, 20 projected messages, 8 KiB of serialized quoted history,
+2,048 UTF-8 bytes per message, and a two-second timeout. Rows are deduplicated by
+timestamp, filtered to messages before the current event, and sorted chronologically.
+The projection preserves only timestamp, root-thread timestamp, bounded user/bot ID,
+bounded text, and a deletion tombstone; attachments, blocks, `previous_message`,
+transport IDs, and other envelope metadata are discarded. Missing scope, rate limit,
+timeout, deletion races, malformed cross-channel/thread rows, and other Slack API
+failures degrade to the current-message prompt with a stable secret-free warning.
+
+The invocation prompt separates verified routing/privacy metadata, explicitly quoted
+untrusted thread history, and the current Slack user message. Quoted history never
+receives instruction authority, even when its text is shaped like a system prompt.
+
 The webhook never waits behind that session. After signature/routing checks, it
 persists a bounded safe turn in one version-2 per-conversation state record, awaits
 a company-scoped `slack-turn-drain` self-event emit, and acknowledges. The record
@@ -728,6 +747,22 @@ the signing secret. For temporary local tests,
 the unchanged body and Slack headers to
 `/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events`.
 This adapter does not implement Socket Mode.
+
+#### Thread-history hydration boundary
+**Risk:** a first mention in an existing thread could cause cross-channel disclosure,
+unbounded Slack reads, repeated history amplification, or prompt injection from an
+earlier participant.
+**Mitigation (implemented by DRO-1158):** history lookup is permitted only after
+signature verification, exact `(team_id, api_app_id)` identity routing, company-scoped
+config resolution, and verified bot-token binding. The request uses only the routed
+event's channel and root timestamp, never search or link traversal. Page, message,
+serialized-byte, per-message, and timeout limits are fixed constants. Response rows
+with a conflicting channel or thread fail closed; only messages preceding the current
+event are projected. Unsupported metadata is dropped, deleted messages become empty
+tombstones, and the prompt labels all retained history as quoted untrusted data below
+verified metadata and above the separately labeled current message. Failures are
+non-fatal and logged without Slack errors, message text, credentials, or transport
+metadata. Existing session mappings suppress later rehydration.
 
 ### T6 — Secret leakage through tool output or manifest-flow logs
 **Risk:** same class of risk the project constraints already name explicitly

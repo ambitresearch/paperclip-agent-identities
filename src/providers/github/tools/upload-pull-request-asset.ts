@@ -190,16 +190,31 @@ export const githubUploadPullRequestAssetToolSpec: ProviderToolSpec<GitHubAgentI
           }
         );
         if (!createRefResponse.ok) {
-          // 422 "Reference already exists" means a concurrent call won the
-          // race to create the branch; that's fine, proceed with the write.
-          if (createRefResponse.status !== 422) {
-            let details = "";
+          let details = "";
+          try {
+            const errBody = (await createRefResponse.json()) as { message?: string };
+            details = errBody.message ?? "";
+          } catch {
+            details = await createRefResponse.text().catch(() => "");
+          }
+          // GitHub returns 422 both for "Reference already exists" (a
+          // concurrent caller won the race to create the branch — benign)
+          // and for unrelated validation/abuse failures. Don't trust the
+          // status code alone: only treat this as the race if the message
+          // says the ref already exists, AND confirm by re-GETing the ref.
+          // Any other 422/failure, or a failed re-GET, is a real error.
+          const looksLikeAlreadyExists =
+            createRefResponse.status === 422 && /already exists/i.test(details);
+          let verifiedExists = false;
+          if (looksLikeAlreadyExists) {
             try {
-              const errBody = (await createRefResponse.json()) as { message?: string };
-              details = errBody.message ?? "";
+              const verifyResponse = await ctx.http.fetch(refUrl, { method: "GET", headers });
+              verifiedExists = verifyResponse.ok;
             } catch {
-              details = await createRefResponse.text().catch(() => "");
+              verifiedExists = false;
             }
+          }
+          if (!verifiedExists) {
             return {
               error: `GitHub API returned ${createRefResponse.status} creating artifact branch '${branch}'. ${details}`.trim()
             };
@@ -270,7 +285,23 @@ export const githubUploadPullRequestAssetToolSpec: ProviderToolSpec<GitHubAgentI
       };
     }
 
-    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${filePath}`;
+    // The returned Markdown must stay valid even if a later upload changes
+    // this filename on the mutable artifact branch. Pin the raw URL to the
+    // exact commit SHA the Contents API just created, not to the branch
+    // name, so previously-shared links keep resolving to what was actually
+    // embedded at the time.
+    let commitSha: string | undefined;
+    try {
+      const putBody = (await putResponse.json()) as { commit?: { sha?: string } };
+      commitSha = putBody.commit?.sha;
+    } catch {
+      commitSha = undefined;
+    }
+    if (!commitSha) {
+      return { error: "GitHub API did not return a commit SHA for the uploaded asset." };
+    }
+
+    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${commitSha}/${filePath}`;
     const isImage = isImageFile(validated.fileName, validated.mimeType);
     const markdown = isImage
       ? `![${validated.fileName}](${rawUrl})`
@@ -286,6 +317,7 @@ export const githubUploadPullRequestAssetToolSpec: ProviderToolSpec<GitHubAgentI
         pullNumber: validated.pullNumber,
         fileName: validated.fileName,
         branch,
+        commitSha,
         rawUrl,
         agentId: runCtx.agentId
       }
@@ -297,6 +329,7 @@ export const githubUploadPullRequestAssetToolSpec: ProviderToolSpec<GitHubAgentI
       data: {
         rawUrl,
         branch,
+        commitSha,
         filePath,
         markdown
       }

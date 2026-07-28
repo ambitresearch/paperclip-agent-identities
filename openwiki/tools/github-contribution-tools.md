@@ -325,36 +325,48 @@ Optional parameters:
 
 Runtime behavior:
 
-1. validates parameter types;
+1. validates parameter types, including a strict single-path-segment `fileName` check (letters, digits, `.`,
+   `_`, `-` only; no path separators or `..`) that rejects traversal attempts before any GitHub call;
 2. resolves the agent identity and normalizes `repository` before any credential is resolved;
 3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
 4. computes `branch = artifacts/pr-{pullNumber}` and `filePath = pr-{pullNumber}/{fileName}` -- both are
    derived only from `pullNumber`/`fileName`, never from the PR's actual head/base ref;
-5. probes `GET .../contents/{filePath}?ref={branch}` to see whether the file already exists on that branch
+5. checks `GET .../git/ref/heads/{branch}` for the artifact branch. The Contents API can only write to a
+   branch that already exists -- it does **not** create one -- so if the ref is missing, this tool resolves
+   the repository's default branch and its HEAD SHA, then explicitly creates the artifact ref via
+   `POST .../git/refs`. A `422` response to that create call is only treated as a benign concurrent-creation
+   race if GitHub's message says the reference already exists **and** a follow-up `GET` on the ref confirms
+   it now exists; any other `422` (GitHub also returns `422` for validation/abuse failures) or a failed
+   verification is surfaced as an error instead of silently proceeding;
+6. probes `GET .../contents/{filePath}?ref={branch}` to see whether the file already exists on that branch
    (to include its `sha` and update in place rather than fail on a duplicate-create);
-6. calls `PUT .../contents/{filePath}` with `branch` set to the artifact branch. The GitHub Contents API
-   creates the branch automatically from the repository's default branch if `artifacts/pr-{pullNumber}`
-   does not yet exist -- it never reads or references the PR's head/base/merge branch to do so;
-7. builds a `raw.githubusercontent.com/{owner}/{repo}/{branch}/{filePath}` URL and wraps it in Markdown;
-8. logs a `pull_request` activity entry with the artifact branch, file name, and raw URL (never the token);
-9. returns the raw URL, branch, file path, and Markdown snippet.
+7. calls `PUT .../contents/{filePath}` with `branch` set to the (now-confirmed-to-exist) artifact branch;
+8. reads the `commit.sha` GitHub returns from that `PUT` and builds a **commit-pinned**
+   `raw.githubusercontent.com/{owner}/{repo}/{commitSha}/{filePath}` URL (not a branch-relative URL), so a
+   later upload to the same file name never changes what a previously-shared Markdown reference renders. If
+   the response omits a commit sha, the tool returns an error rather than a URL that isn't durable;
+9. logs a `pull_request` activity entry with the artifact branch, commit sha, file name, and raw URL (never
+   the token);
+10. returns the commit-pinned raw URL, branch, commit sha, file path, and Markdown snippet.
 
 Failure behavior mirrors the other GitHub tools: malformed params and repositories fail before credential
 resolution; a missing/null resolved token fails closed; network failures return a generic connectivity
-error without leaking the token; non-OK GitHub responses on the `PUT` surface GitHub's message when
-parseable.
+error without leaking the token; non-OK GitHub responses on the ref-creation or `PUT` calls surface GitHub's
+message when parseable.
 
-**Never touches the PR's merge branch**: this tool makes exactly two GitHub API calls per invocation --
-`GET`/`PUT` against `/repos/{owner}/{repo}/contents/{filePath}` -- and both are pinned to the
-`artifacts/pr-{pullNumber}` branch via the request body's `branch` field. It never calls any
-`/pulls/{pullNumber}` endpoint (GET, PATCH, merge, or otherwise), so the PR's actual head branch, base
-branch, and GitHub's synthetic merge ref are structurally unreachable from this code path.
+**Never touches the PR's merge branch**: every request this tool makes targets `/repos/{owner}/{repo}/contents/{filePath}`
+or `/repos/{owner}/{repo}/git/ref(s)/...`, and all of them are pinned to the `artifacts/pr-{pullNumber}`
+branch (or, for branch creation, the default branch used only as the *base* SHA to fork from). It never
+calls any `/pulls/{pullNumber}` endpoint (GET, PATCH, merge, or otherwise), so the PR's actual head branch,
+base branch, and GitHub's synthetic merge ref are structurally unreachable from this code path.
 
-`/tests/providers/github/upload-pull-request-asset-tool.spec.ts` covers validation, fail-closed behavior on
-a missing token, that every request URL and request body's `branch` field target only
-`artifacts/pr-{pullNumber}` (asserting no request ever touches a `/pulls/` path or a `refs/pull/...` ref),
-image-vs-non-image Markdown selection, existing-file `sha` reuse on update, and GitHub API success/failure
-paths including token-leakage checks on activity logs and error messages.
+`/tests/providers/github/upload-pull-request-asset-tool.spec.ts` covers validation (including path-traversal
+rejection), fail-closed behavior on a missing token, explicit artifact-branch creation from the default
+branch HEAD, the strict 422-race-vs-real-failure distinction (including a re-GET verification), that every
+request URL and request body's `branch` field target only `artifacts/pr-{pullNumber}` (asserting no request
+ever touches a `/pulls/` path or a `refs/pull/...` ref), image-vs-non-image Markdown selection, existing-file
+`sha` reuse on update, commit-pinned URL construction (and the error path when no commit sha is returned),
+and GitHub API success/failure paths including token-leakage checks on activity logs and error messages.
 
 ## Shared redaction and helper utilities
 

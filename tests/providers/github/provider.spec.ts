@@ -56,6 +56,41 @@ describe("githubProvider", () => {
     expect(names).toContain("github_bot_request_pull_request_reviewers");
   });
 
+  it("registers exactly the 24 required GitHub tools: the 21-action parity set plus the 3 non-overlapping identity tools", () => {
+    const names = githubProvider.tools.map((tool) => tool.name);
+    const REQUIRED_TOOL_SET = new Set([
+      // Plugin-specific identity tools (not in the Github Sync reference app).
+      "github_bot_whoami",
+      "github_bot_push_branch",
+      "github_bot_submit_pull_request_review",
+      // 21-action Github Sync parity set.
+      "github_bot_add_issue_comment",
+      "github_bot_reply_to_review_thread",
+      "github_bot_get_issue_interaction_summary",
+      "github_bot_unresolve_review_thread",
+      "github_bot_list_organization_projects",
+      "github_bot_add_pull_request_to_project",
+      "github_bot_upload_pull_request_asset",
+      "github_bot_get_pull_request_checks",
+      "github_bot_list_issue_comments",
+      "github_bot_request_pull_request_reviewers",
+      "github_bot_get_issue",
+      "github_bot_assign_to_current_user",
+      "github_bot_link_github_item",
+      "github_bot_search_repository_items",
+      "github_bot_get_pull_request",
+      "github_bot_list_pull_request_files",
+      "github_bot_list_pull_request_review_threads",
+      "github_bot_resolve_review_thread",
+      "github_bot_update_issue",
+      "github_bot_create_pull_request",
+      "github_bot_update_pull_request"
+    ]);
+    expect(REQUIRED_TOOL_SET.size).toBe(24);
+    expect(new Set(names)).toEqual(REQUIRED_TOOL_SET);
+    expect(names.length).toBe(24);
+  });
+
   it("exposes a manifest tool fragment for every live tool, plus a contributeActions hook", () => {
     expect(githubProvider.manifestTools.length).toBe(githubProvider.tools.length);
     expect(typeof githubProvider.contributeActions).toBe("function");

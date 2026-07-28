@@ -69,7 +69,10 @@ function newBranchFetchImpl() {
       return new Response("not found", { status: 404 });
     }
     if (init?.method === "PUT" && url.includes("/contents/")) {
-      return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
+      return new Response(
+        JSON.stringify({ content: { sha: "abc123" }, commit: { sha: "commit-sha-abc123" } }),
+        { status: 201 }
+      );
     }
     return new Response("unexpected", { status: 500 });
   });
@@ -182,15 +185,23 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
       expect(body.branch).not.toBe("main");
     }
     expect(result.data.rawUrl).toBe(
-      "https://raw.githubusercontent.com/acme/widgets/artifacts/pr-42/pr-42/report.png"
+      "https://raw.githubusercontent.com/acme/widgets/commit-sha-abc123/pr-42/report.png"
     );
-    expect(result.data.markdown).toBe("![report.png](https://raw.githubusercontent.com/acme/widgets/artifacts/pr-42/pr-42/report.png)");
+    expect(result.data.markdown).toBe("![report.png](https://raw.githubusercontent.com/acme/widgets/commit-sha-abc123/pr-42/report.png)");
+    expect((result as unknown as { data: { commitSha: string } }).data.commitSha).toBe("commit-sha-abc123");
   });
 
-  it("treats a 422 'ref already exists' race on branch creation as success and proceeds", async () => {
+  it("treats a 422 'ref already exists' race on branch creation as success after verifying the ref exists", async () => {
+    let refCheckCount = 0;
     const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.includes("/git/ref/") && url.includes("artifacts")) {
-        return new Response("not found", { status: 404 });
+        refCheckCount += 1;
+        // First check (before create attempt): branch doesn't exist yet.
+        // Second check (verification after the 422 race): it now exists.
+        if (refCheckCount === 1) {
+          return new Response("not found", { status: 404 });
+        }
+        return new Response(JSON.stringify({ object: { sha: "existing-branch-sha" } }), { status: 200 });
       }
       if (url.includes("/git/ref/") && url.includes("main")) {
         return new Response(JSON.stringify({ object: { sha: "base-sha-123" } }), { status: 200 });
@@ -205,7 +216,10 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
         return new Response("not found", { status: 404 });
       }
       if (init?.method === "PUT" && url.includes("/contents/")) {
-        return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
+        return new Response(
+          JSON.stringify({ content: { sha: "abc123" }, commit: { sha: "commit-sha-abc123" } }),
+          { status: 201 }
+        );
       }
       return new Response("unexpected", { status: 500 });
     });
@@ -216,6 +230,53 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
     };
     expect(result.error).toBeUndefined();
     expect(result.data?.branch).toBe("artifacts/pr-42");
+    expect(refCheckCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("rejects a 422 branch-creation failure that is NOT the 'already exists' race", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/ref/") && url.includes("artifacts")) {
+        return new Response("not found", { status: 404 });
+      }
+      if (url.includes("/git/ref/") && url.includes("main")) {
+        return new Response(JSON.stringify({ object: { sha: "base-sha-123" } }), { status: 200 });
+      }
+      if (init?.method === "GET" && /\/repos\/[^/]+\/[^/]+$/.test(url)) {
+        return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      }
+      if (init?.method === "POST" && url.endsWith("/git/refs")) {
+        // A validation/abuse 422 that is NOT the already-exists race.
+        return new Response(JSON.stringify({ message: "Validation Failed" }), { status: 422 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
+    const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as { error?: string };
+    expect(result.error).toContain("422");
+    expect(result.error).toContain("Validation Failed");
+  });
+
+  it("rejects an 'already exists'-worded 422 if the ref cannot actually be verified afterward", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/ref/") && url.includes("artifacts")) {
+        // Always 404s, even on the post-422 verification GET -- the
+        // "already exists" message was spurious/misleading.
+        return new Response("not found", { status: 404 });
+      }
+      if (url.includes("/git/ref/") && url.includes("main")) {
+        return new Response(JSON.stringify({ object: { sha: "base-sha-123" } }), { status: 200 });
+      }
+      if (init?.method === "GET" && /\/repos\/[^/]+\/[^/]+$/.test(url)) {
+        return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      }
+      if (init?.method === "POST" && url.endsWith("/git/refs")) {
+        return new Response(JSON.stringify({ message: "Reference already exists" }), { status: 422 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
+    const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as { error?: string };
+    expect(result.error).toContain("422");
   });
 
   it("skips branch creation entirely when the artifact branch already exists", async () => {
@@ -230,7 +291,10 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
         return new Response("not found", { status: 404 });
       }
       if (init?.method === "PUT" && url.includes("/contents/")) {
-        return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
+        return new Response(
+          JSON.stringify({ content: { sha: "abc123" }, commit: { sha: "commit-sha-abc123" } }),
+          { status: 201 }
+        );
       }
       return new Response("unexpected", { status: 500 });
     });
@@ -253,7 +317,7 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
     const exec = execution("tok", { ...baseParams, fileName: "log.txt" }, buildCtx(fetchImpl as never));
     const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as { data: { markdown: string } };
     expect(result.data.markdown).toBe(
-      "[log.txt](https://raw.githubusercontent.com/acme/widgets/artifacts/pr-42/pr-42/log.txt)"
+      "[log.txt](https://raw.githubusercontent.com/acme/widgets/commit-sha-abc123/pr-42/log.txt)"
     );
   });
 
@@ -269,13 +333,29 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
       if (init?.method === "PUT" && url.includes("/contents/")) {
         const body = JSON.parse(init!.body as string);
         expect(body.sha).toBe("existing-sha");
-        return new Response(JSON.stringify({ content: { sha: "new-sha" } }), { status: 200 });
+        return new Response(JSON.stringify({ content: { sha: "new-sha" }, commit: { sha: "commit-sha-new" } }), { status: 200 });
       }
       return new Response("unexpected", { status: 500 });
     });
     const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
     const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as { data: { branch: string } };
     expect(result.data.branch).toBe("artifacts/pr-42");
+  });
+
+  it("errors when the PUT response omits a commit sha (cannot pin the markdown to a durable commit)", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/ref/") && url.includes("artifacts")) {
+        return new Response(JSON.stringify({ object: { sha: "existing-branch-sha" } }), { status: 200 });
+      }
+      if (init?.method === "GET" && url.includes("/contents/")) return new Response("not found", { status: 404 });
+      if (init?.method === "PUT" && url.includes("/contents/")) {
+        return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
+    const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as { error?: string };
+    expect(result.error).toContain("commit SHA");
   });
 
   it("returns a generic error on network failure without leaking the token", async () => {

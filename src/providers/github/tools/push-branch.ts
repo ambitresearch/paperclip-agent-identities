@@ -184,11 +184,12 @@ async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext):
     }
   }
 
-  if (!projectId) {
+  const fallbackProjectId = usableWorkspacePath(activeIssue?.projectId) ?? projectId;
+  if (!fallbackProjectId) {
     return null;
   }
 
-  const primaryWorkspace = await ctx.projects.getPrimaryWorkspace(projectId, runCtx.companyId);
+  const primaryWorkspace = await ctx.projects.getPrimaryWorkspace(fallbackProjectId, runCtx.companyId);
   return usableWorkspacePath(primaryWorkspace?.path);
 }
 

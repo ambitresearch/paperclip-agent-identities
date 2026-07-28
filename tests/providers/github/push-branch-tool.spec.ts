@@ -233,6 +233,36 @@ describe("githubPushBranchToolSpec.resolveResourceRef", () => {
     }));
   });
 
+  it("falls back through the matching issue project when the tool run project id is blank", async () => {
+    const ctx = buildCtx({
+      issues: [{
+        projectId: "issue-project-1",
+        executionRunId: "r-1",
+        checkoutRunId: null,
+        executionWorkspaceId: "execution-workspace-1"
+      }],
+      executionWorkspace: null
+    });
+    __setGitCommandRunnerForTests(async () => ({
+      exitCode: 0,
+      stdout: "https://github.com/acme/widgets.git\n",
+      stderr: ""
+    }));
+
+    const res = await githubPushBranchToolSpec.resolveResourceRef!({
+      params: { branch: "feature/x" },
+      identity,
+      ctx: ctx as never,
+      runCtx: { agentId: "agent-1", companyId: "co-1", projectId: "", runId: "r-1" } as never
+    });
+
+    expect(ctx.projects.getPrimaryWorkspace).toHaveBeenCalledWith("issue-project-1", "co-1");
+    expect(res).toEqual(expect.objectContaining({
+      ok: true,
+      ref: expect.objectContaining({ workspacePath: "/work/repo" })
+    }));
+  });
+
   it("fails closed without querying a primary workspace when the tool run project id is blank", async () => {
     const ctx = buildCtx();
 

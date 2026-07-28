@@ -16,6 +16,7 @@ import {
 import {
   buildGitAuthEnvironment,
   redactSecretText,
+  resolveWorkspacePath,
   runGitCommandForTools,
   toBranchRef,
   validateBranchName,
@@ -73,6 +74,9 @@ function validateParams(params: unknown): ParamsValidation {
   }
   if (p.dryRun !== undefined && typeof p.dryRun !== "boolean") {
     return { ok: false, error: "dryRun must be a boolean if provided" };
+  }
+  if (p.dryRun === true && p.commit === undefined) {
+    return { ok: false, error: "dryRun requires commit to be provided; dryRun has no effect without an exact-commit publish." };
   }
   const validated: CreatePullRequestParams = {
     repository: p.repository,
@@ -200,11 +204,11 @@ export const githubCreatePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdenti
         return { error: "Invalid remote. Use a non-empty remote name without whitespace." };
       }
 
-      const workspace = await ctx.projects.getPrimaryWorkspace(runCtx.projectId, runCtx.companyId);
-      if (!workspace?.path) {
-        return { error: "No primary workspace is configured for this project." };
+      const workspace = await resolveWorkspacePath(ctx, runCtx);
+      if (!workspace) {
+        return { error: "No execution workspace is configured for this run, and no primary workspace is configured for this project." };
       }
-      const workspacePath = workspace.path;
+      const workspacePath = workspace;
 
       const headResult = await runGitCommandForTools({ args: ["rev-parse", "HEAD"], cwd: workspacePath });
       if (headResult.exitCode !== 0) {
@@ -272,9 +276,15 @@ export const githubCreatePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdenti
 
       const verified = await getRemoteRefSha({ fetchImpl, token, owner, repo, branch });
       if (verified.error) {
+        if (pushedNewBranch) {
+          await deleteRemoteRef({ fetchImpl, token, owner, repo, branch });
+        }
         return { error: `Push succeeded but remote verification failed: ${verified.error}` };
       }
       if (verified.sha !== localSha) {
+        if (pushedNewBranch) {
+          await deleteRemoteRef({ fetchImpl, token, owner, repo, branch });
+        }
         return {
           error:
             `Push succeeded but the remote branch '${branch}' landed at '${verified.sha ?? "(missing)"}', ` +

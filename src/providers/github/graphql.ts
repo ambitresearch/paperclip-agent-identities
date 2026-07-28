@@ -1,4 +1,5 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
+import { redactSecretText } from "./tools/push-branch.js";
 
 export interface GitHubGraphQLErrorPayload {
   readonly message: string;
@@ -43,20 +44,87 @@ export async function executeGitHubGraphQL<T>(
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : "Unknown network error";
-    return { ok: false, error: `GitHub GraphQL request failed before a response was received: ${reason}` };
+    // Some fetch implementations embed request details (including the
+    // Authorization header) in thrown-error text. Redact the token before it
+    // can leak into logs/tool output.
+    return { ok: false, error: redactSecretText(`GitHub GraphQL request failed before a response was received: ${reason}`, [token]) };
   }
 
   if (!response.ok) {
     const details = await response.text().catch(() => "");
-    return { ok: false, error: `GitHub GraphQL API returned ${response.status}. ${details}`.trim() };
+    return { ok: false, error: redactSecretText(`GitHub GraphQL API returned ${response.status}. ${details}`.trim(), [token]) };
   }
 
   const body = (await response.json()) as { data?: T; errors?: GitHubGraphQLErrorPayload[] };
   if (body.errors && body.errors.length > 0) {
-    return { ok: false, error: body.errors.map((e) => e.message).join("; ") };
+    return { ok: false, error: redactSecretText(body.errors.map((e) => e.message).join("; "), [token]) };
   }
   if (body.data === undefined) {
     return { ok: false, error: "GitHub GraphQL API returned no data." };
   }
   return { ok: true, data: body.data };
+}
+
+interface ReviewThreadRepositoryData {
+  node: {
+    __typename?: string;
+    repository?: {
+      owner: { login: string };
+      name: string;
+    };
+  } | null;
+}
+
+const REVIEW_THREAD_REPOSITORY_QUERY = `
+query($threadId: ID!) {
+  node(id: $threadId) {
+    ... on PullRequestReviewThread {
+      repository {
+        owner { login }
+        name
+      }
+    }
+  }
+}`;
+
+/**
+ * Review-thread global node IDs are not scoped to a repository by
+ * construction -- GitHub will happily resolve/unresolve any thread ID a
+ * caller passes, regardless of the `repository` parameter the tool was
+ * invoked with. Look up which repository the thread actually belongs to and
+ * compare it against the requested repository before allowing the mutation,
+ * so a thread ID from one repo can't be used to mutate state associated with
+ * (and logged/attributed to) a different repo the caller specified.
+ */
+export async function verifyReviewThreadBelongsToRepository(
+  ctx: PluginContext,
+  token: string,
+  threadId: string,
+  expected: { owner: string; repo: string }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const result = await executeGitHubGraphQL<ReviewThreadRepositoryData>(
+    ctx,
+    token,
+    REVIEW_THREAD_REPOSITORY_QUERY,
+    { threadId }
+  );
+  if (!result.ok) {
+    return { ok: false, error: `Failed to verify review thread repository: ${result.error}` };
+  }
+  const repository = result.data.node?.repository;
+  if (!repository) {
+    return { ok: false, error: "Review thread not found or is not a pull request review thread." };
+  }
+  if (
+    repository.owner.login.toLowerCase() !== expected.owner.toLowerCase() ||
+    repository.name.toLowerCase() !== expected.repo.toLowerCase()
+  ) {
+    return {
+      ok: false,
+      error:
+        `Review thread belongs to '${repository.owner.login}/${repository.name}', ` +
+        `not the requested repository '${expected.owner}/${expected.repo}'.`
+    };
+  }
+  return { ok: true };
 }

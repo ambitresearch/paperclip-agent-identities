@@ -185,9 +185,9 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
       expect(body.branch).not.toBe("main");
     }
     expect(result.data.rawUrl).toBe(
-      "https://raw.githubusercontent.com/acme/widgets/commit-sha-abc123/pr-42/report.png"
+      "https://github.com/acme/widgets/blob/commit-sha-abc123/pr-42/report.png?raw=true"
     );
-    expect(result.data.markdown).toBe("![report.png](https://raw.githubusercontent.com/acme/widgets/commit-sha-abc123/pr-42/report.png)");
+    expect(result.data.markdown).toBe("![report.png](https://github.com/acme/widgets/blob/commit-sha-abc123/pr-42/report.png?raw=true)");
     expect((result as unknown as { data: { commitSha: string } }).data.commitSha).toBe("commit-sha-abc123");
   });
 
@@ -317,7 +317,7 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
     const exec = execution("tok", { ...baseParams, fileName: "log.txt" }, buildCtx(fetchImpl as never));
     const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as { data: { markdown: string } };
     expect(result.data.markdown).toBe(
-      "[log.txt](https://raw.githubusercontent.com/acme/widgets/commit-sha-abc123/pr-42/log.txt)"
+      "[log.txt](https://github.com/acme/widgets/blob/commit-sha-abc123/pr-42/log.txt?raw=true)"
     );
   });
 

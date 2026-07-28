@@ -60,6 +60,13 @@ Optional parameters:
 - `body`
 - `draft`
 - `paperclipIssueId` for activity metadata
+- `commit` / `remote` / `dryRun` (exact-commit publish, DRO-1173): when `commit` is provided, the tool
+  publishes the local run's execution workspace HEAD (not the project's primary workspace -- see
+  `resolveWorkspacePath` in `/src/providers/github/tools/push-branch.ts`, shared with
+  `github_bot_push_branch`) at that exact commit before creating the PR, verifies the remote branch landed
+  there, and rolls back a branch it just created if either the verification or the subsequent PR-creation
+  call fails. `dryRun: true` is only meaningful together with `commit`; validation rejects `dryRun: true`
+  without `commit` rather than silently ignoring it and creating a real PR.
 
 Runtime behavior:
 
@@ -235,13 +242,15 @@ Failure behavior mirrors the other GitHub tools: malformed params and repositori
 resolution; network failures return a generic connectivity error without leaking the token; non-OK GitHub
 responses (e.g. requesting a review from the PR author) surface GitHub's message when parseable.
 
-**Manifest permissions**: `github_bot_get_pull_request_checks` reads Checks-API and commit-status data that
-requires the App to hold `checks: read` and `statuses: read` repository permissions in addition to the
+**Manifest permissions**: `github_bot_get_pull_request_checks` reads Checks-API, commit-status, and
+Actions workflow-run data (it calls `GET /repos/{owner}/{repo}/actions/runs` to resolve run
+status/conclusion detail beyond what the Checks API alone exposes), which requires the App to hold
+`checks: read`, `statuses: read`, and `actions: read` repository permissions in addition to the
 existing `pull_requests`/`contents`/`issues`/`workflows` grants. `/src/providers/github/app-manifest.ts`'s
-`createGitHubAppManifestFlow` now requests both by default for *newly created* App manifests. As documented
-in that file, this has no effect on an already-installed App -- existing installations must add `checks:read`
-and `statuses:read` themselves (GitHub App settings -> Permissions & events) before
-`github_bot_get_pull_request_checks` will succeed against them. `github_bot_request_pull_request_reviewers`
+`createGitHubAppManifestFlow` now requests all three by default for *newly created* App manifests. As
+documented in that file, this has no effect on an already-installed App -- existing installations must add
+`checks:read`, `statuses:read`, and `actions:read` themselves (GitHub App settings -> Permissions & events)
+before `github_bot_get_pull_request_checks` will succeed against them. `github_bot_request_pull_request_reviewers`
 uses the existing `pull_requests: write` permission and requires no manifest change.
 
 `/tests/providers/github/request-pull-request-reviewers-tool.spec.ts` covers validation, repository-format
@@ -342,12 +351,17 @@ Runtime behavior:
    (to include its `sha` and update in place rather than fail on a duplicate-create);
 7. calls `PUT .../contents/{filePath}` with `branch` set to the (now-confirmed-to-exist) artifact branch;
 8. reads the `commit.sha` GitHub returns from that `PUT` and builds a **commit-pinned**
-   `raw.githubusercontent.com/{owner}/{repo}/{commitSha}/{filePath}` URL (not a branch-relative URL), so a
-   later upload to the same file name never changes what a previously-shared Markdown reference renders. If
-   the response omits a commit sha, the tool returns an error rather than a URL that isn't durable;
-9. logs a `pull_request` activity entry with the artifact branch, commit sha, file name, and raw URL (never
-   the token);
-10. returns the commit-pinned raw URL, branch, commit sha, file path, and Markdown snippet.
+   `github.com/{owner}/{repo}/blob/{commitSha}/{filePath}?raw=true` URL (not a branch-relative URL, and not
+   `raw.githubusercontent.com`, which is an unauthenticated domain that 404s for private repositories even
+   for viewers with access -- the `github.com/.../blob/...?raw=true` form authenticates via the viewer's
+   normal session/token and works for both public and private repos), so a later upload to the same file
+   name never changes what a previously-shared Markdown reference renders. The tool also returns an
+   `apiContentsUrl` (`api.github.com/repos/{owner}/{repo}/contents/{filePath}?ref={commitSha}`) for
+   programmatic/bot consumers that hold an installation token. If the response omits a commit sha, the tool
+   returns an error rather than a URL that isn't durable;
+9. logs a `pull_request` activity entry with the artifact branch, commit sha, file name, and raw/API URLs
+   (never the token);
+10. returns the commit-pinned raw URL, API contents URL, branch, commit sha, file path, and Markdown snippet.
 
 Failure behavior mirrors the other GitHub tools: malformed params and repositories fail before credential
 resolution; a missing/null resolved token fails closed; network failures return a generic connectivity
@@ -725,15 +739,19 @@ Runtime behavior:
 1. validates parameter types;
 2. resolves the agent identity and normalizes `repository` before any credential is resolved;
 3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
-4. calls the GraphQL mutation `resolveReviewThread`;
-5. logs a `review_thread` activity entry with repository, thread ID, `isResolved`, agent ID, and optional
+4. verifies via GraphQL that `reviewThreadId` actually belongs to the requested `repository` -- review
+   thread node IDs are global and not scoped to a repository by GitHub, so without this check a caller
+   could pass a thread ID from a different repo and have it resolved while the tool reports/logs it against
+   `repository`; a mismatch or lookup failure is returned as an error and the mutation is never attempted;
+5. calls the GraphQL mutation `resolveReviewThread`;
+6. logs a `review_thread` activity entry with repository, thread ID, `isResolved`, agent ID, and optional
    Paperclip issue ID;
-6. returns the thread's ID and `isResolved`.
+7. returns the thread's ID and `isResolved`.
 
 Failure behavior mirrors the other GitHub tools; GraphQL errors are surfaced without leaking the token.
 
-`/tests/providers/github/resolve-review-thread-tool.spec.ts` covers validation, activity logging, and
-GraphQL success/failure paths.
+`/tests/providers/github/resolve-review-thread-tool.spec.ts` covers validation, cross-repository thread
+rejection, activity logging, and GraphQL success/failure paths.
 
 ## `github_bot_unresolve_review_thread`
 

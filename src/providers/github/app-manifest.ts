@@ -121,6 +121,11 @@ export function createGitHubAppManifestFlow(input: CreateGitHubAppManifestInput)
       workflows: "write",
       checks: "read",
       statuses: "read",
+      // Required for github_bot_get_pull_request_checks, which calls
+      // GET /repos/{owner}/{repo}/actions/runs (and related Checks-adjacent
+      // Actions endpoints) to resolve workflow run status/conclusion detail
+      // beyond what the Checks API alone exposes.
+      actions: "read",
       // Organization-level permission (not a repository permission) required
       // for the Projects v2 GraphQL API: listing org Projects
       // (github_bot_list_organization_projects) and adding a pull request as

@@ -301,7 +301,18 @@ export const githubUploadPullRequestAssetToolSpec: ProviderToolSpec<GitHubAgentI
       return { error: "GitHub API did not return a commit SHA for the uploaded asset." };
     }
 
-    const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${commitSha}/${filePath}`;
+    // raw.githubusercontent.com is an unauthenticated, cookie-less domain --
+    // for a private repository it 404s for any viewer, even one logged into
+    // GitHub with repo access, because the request carries no credentials at
+    // all. Use the repo-relative blob URL with `?raw=true` instead: it's
+    // served from github.com itself, so it authenticates via the viewer's
+    // normal logged-in session/permissions and then redirects to a
+    // short-lived signed asset URL. This works for both public and private
+    // repositories. Also surface the Contents API URL, which any bot/script
+    // with an installation token can fetch directly regardless of visibility.
+    const blobRawUrl = `https://github.com/${owner}/${repo}/blob/${commitSha}/${filePath}?raw=true`;
+    const apiContentsUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${filePath}?ref=${commitSha}`;
+    const rawUrl = blobRawUrl;
     const isImage = isImageFile(validated.fileName, validated.mimeType);
     const markdown = isImage
       ? `![${validated.fileName}](${rawUrl})`
@@ -319,6 +330,7 @@ export const githubUploadPullRequestAssetToolSpec: ProviderToolSpec<GitHubAgentI
         branch,
         commitSha,
         rawUrl,
+        apiContentsUrl,
         agentId: runCtx.agentId
       }
     });
@@ -328,6 +340,7 @@ export const githubUploadPullRequestAssetToolSpec: ProviderToolSpec<GitHubAgentI
       content: `Asset uploaded successfully. Markdown reference: ${markdown}`,
       data: {
         rawUrl,
+        apiContentsUrl,
         branch,
         commitSha,
         filePath,

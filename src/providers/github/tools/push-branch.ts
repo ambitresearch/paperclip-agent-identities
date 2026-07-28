@@ -168,7 +168,11 @@ function usableWorkspacePath(path: string | null | undefined): string | null {
   return path && path.trim().length > 0 ? path : null;
 }
 
-async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext): Promise<string | null> {
+// Exposed so other provider tools (e.g. create-pull-request.ts) can resolve
+// the same run-scoped execution workspace rather than falling back to the
+// project's primary workspace, which may differ from the worktree the
+// current run's commits actually live in.
+export async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext): Promise<string | null> {
   const projectId = usableWorkspacePath(runCtx.projectId);
   const issues = await ctx.issues.list({
     companyId: runCtx.companyId,

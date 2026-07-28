@@ -75,12 +75,23 @@ describe("githubResolveReviewThreadToolSpec.perform", () => {
   });
 
   it("resolves the thread on a successful GraphQL response", async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({
-        data: { resolveReviewThread: { thread: { id: "PRRT_1", isResolved: true } } }
-      })
-    })) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(async (_url: string, init: { body?: string }) => {
+      const body = JSON.parse(String(init.body));
+      if (typeof body.query === "string" && body.query.includes("node(id: $threadId)")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: { node: { repository: { owner: { login: "acme" }, name: "widgets" } } }
+          })
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          data: { resolveReviewThread: { thread: { id: "PRRT_1", isResolved: true } } }
+        })
+      };
+    }) as unknown as typeof fetch;
     const activityLog = vi.fn();
 
     const result = await githubResolveReviewThreadToolSpec.perform(execution("tok", buildCtx(fetchImpl, activityLog)));
@@ -93,12 +104,37 @@ describe("githubResolveReviewThreadToolSpec.perform", () => {
   });
 
   it("surfaces a GraphQL error", async () => {
-    const fetchImpl = vi.fn(async () => ({
-      ok: true,
-      json: async () => ({ errors: [{ message: "Resource not accessible by integration" }] })
-    })) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(async (_url: string, init: { body?: string }) => {
+      const body = JSON.parse(String(init.body));
+      if (typeof body.query === "string" && body.query.includes("node(id: $threadId)")) {
+        return {
+          ok: true,
+          json: async () => ({
+            data: { node: { repository: { owner: { login: "acme" }, name: "widgets" } } }
+          })
+        };
+      }
+      return {
+        ok: true,
+        json: async () => ({ errors: [{ message: "Resource not accessible by integration" }] })
+      };
+    }) as unknown as typeof fetch;
 
     const result = await githubResolveReviewThreadToolSpec.perform(execution("tok", buildCtx(fetchImpl)));
     expect(result).toEqual({ error: "Failed to resolve review thread: Resource not accessible by integration" });
+  });
+
+  it("rejects a thread that belongs to a different repository", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        data: { node: { repository: { owner: { login: "other-org" }, name: "other-repo" } } }
+      })
+    })) as unknown as typeof fetch;
+
+    const result = await githubResolveReviewThreadToolSpec.perform(execution("tok", buildCtx(fetchImpl)));
+    expect(result).toEqual({
+      error: "Review thread belongs to 'other-org/other-repo', not the requested repository 'acme/widgets'."
+    });
   });
 });

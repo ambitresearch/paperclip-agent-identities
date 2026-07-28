@@ -8,7 +8,7 @@ import type {
 import type { GitHubAgentIdentity } from "../config.js";
 import type { GitHubRepoRef } from "../repo-ref.js";
 import { normalizeGitHubRepoRef } from "../repo-ref.js";
-import { executeGitHubGraphQL } from "../graphql.js";
+import { executeGitHubGraphQL, verifyReviewThreadBelongsToRepository } from "../graphql.js";
 import {
   githubBotUnresolveReviewThreadToolMetadata,
   githubBotUnresolveReviewThreadToolName
@@ -86,6 +86,14 @@ export const githubUnresolveReviewThreadToolSpec: ProviderToolSpec<GitHubAgentId
     const runCtx = execution.runCtx;
     const validated = execution.params as UnresolveReviewThreadParams;
     const repository = execution.resourceRef as GitHubRepoRef;
+
+    const ownership = await verifyReviewThreadBelongsToRepository(ctx, token, validated.reviewThreadId, {
+      owner: repository.owner,
+      repo: repository.repo
+    });
+    if (!ownership.ok) {
+      return { error: ownership.error };
+    }
 
     const result = await executeGitHubGraphQL<UnresolveReviewThreadGraphQLData>(
       ctx,

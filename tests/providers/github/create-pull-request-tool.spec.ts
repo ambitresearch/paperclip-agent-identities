@@ -29,6 +29,8 @@ function buildCtx(
     logger: { info: vi.fn(), error: vi.fn() },
     activity: { log: activityLog },
     projects: { getPrimaryWorkspace: vi.fn(async () => ({ path: workspacePath })) },
+    issues: { list: vi.fn(async () => []) },
+    executionWorkspaces: { get: vi.fn(async () => null) },
     state: {
       get: vi.fn(async (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => {
         const storeKey = `${key.scopeKind}:${key.scopeId ?? ""}:${key.namespace ?? "default"}:${key.stateKey}`;

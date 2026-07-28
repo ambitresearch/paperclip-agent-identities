@@ -112,7 +112,7 @@ Runtime behavior:
 10. redacts raw token, URL-encoded token, and basic-auth token forms from stdout/stderr and thrown errors;
 11. cleans the temporary askpass directory in `finally`.
 
-Activity logging captures outcomes such as invalid branch, missing workspace, remote resolution failure, unsupported remote, expected-repository mismatch, invalid `expectedCurrentSha`, credential failure, push failure (including a stale-lease rejection, tagged distinctly in the outcome), exception, and success — each carrying a `forceWithLease` flag when the push used the guarded lease.
+Activity logging captures outcomes such as invalid branch, missing workspace, remote resolution failure, unsupported remote, expected-repository mismatch, invalid `expectedCurrentSha`, credential failure, push failure, exception, and success — each carrying a `forceWithLease` flag when the push used the guarded lease. A push failure while `expectedCurrentSha` was set is tagged based on git's own output: it is reported as `push_failed_stale_lease` only when git's stderr contains its own `(stale info)` rejection line (the evidence of an actual diverged-tip rejection), and as the neutral `push_failed_force_with_lease` for any other leased-push failure (authentication, authorization, DNS, network, or another git error) — a leased push failure is never assumed to be a stale lease without that evidence. A non-leased push failure is reported as plain `push_failed`.
 
 Failure behavior intentionally stops before credential resolution for unsupported remotes, malformed expected repositories, and expected-repository mismatches. GitHub App installation permissions decide whether a normalized GitHub repository is accessible. `/tests/plugin.spec.ts` covers these cases.
 

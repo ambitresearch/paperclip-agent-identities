@@ -167,6 +167,14 @@ function validateExpectedCurrentSha(sha: string): string | null {
   return trimmed.toLowerCase();
 }
 
+// A genuine force-with-lease rejection is git's own "stale info" rejection
+// line, e.g. `! [rejected]        branch -> branch (stale info)`. Any other
+// push failure (auth, authorization, DNS, network, unrelated non-fast-forward,
+// etc.) must NOT be reported as a stale lease without this evidence.
+function isStaleLeaseRejection(stderr: string): boolean {
+  return /!\s*\[rejected\][^\n]*\(stale info\)/.test(stderr);
+}
+
 function toBranchRef(branch: string): string {
   return branch.startsWith("refs/heads/") ? branch : `refs/heads/${branch}`;
 }
@@ -516,9 +524,15 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
       const redactedStderr = redactSecretText(pushResult.stderr, [token]);
 
       if (pushResult.exitCode !== 0) {
+        const outcome =
+          expectedCurrentSha !== null
+            ? isStaleLeaseRejection(pushResult.stderr)
+              ? "push_failed_stale_lease"
+              : "push_failed_force_with_lease"
+            : "push_failed";
         await logPushBranchOutcome(ctx, runCtx, {
           message: "github_bot_push_branch failed: git push",
-          outcome: expectedCurrentSha !== null ? "push_failed_stale_lease" : "push_failed",
+          outcome,
           repository: fullName,
           branch,
           remote: remoteName,

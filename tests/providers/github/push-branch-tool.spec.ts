@@ -466,14 +466,15 @@ describe("githubPushBranchToolSpec.perform", () => {
 
   function execution(
     token: string | null,
-    ref: GitHubPushTarget | null
+    ref: GitHubPushTarget | null,
+    ctx: unknown = buildCtx()
   ): ProviderToolExecution<GitHubAgentIdentity, GitHubPushTarget> {
     return {
       token,
       identity,
       resourceRef: ref,
       params: { branch: "feature/x" },
-      ctx: buildCtx() as never,
+      ctx: ctx as never,
       runCtx
     };
   }
@@ -558,12 +559,45 @@ describe("githubPushBranchToolSpec.perform", () => {
         "error: failed to push some refs to 'https://github.com/acme/widgets.git'\n"
     }));
     const sha = "24a86a4c3a8c2cad076682ae9c64f937a4ab6b88";
+    const ctx = buildCtx();
     const result = (await githubPushBranchToolSpec.perform(
-      execution("tok", target({ expectedCurrentSha: sha }))
+      execution("tok", target({ expectedCurrentSha: sha }), ctx)
     )) as { error: string; data: { stderr: string } };
 
     expect(result.error).toBe("git push failed for 'acme/widgets' branch 'feature/x'.");
     expect(result.data.stderr).toContain("stale info");
+    expect(ctx.activity.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ outcome: "push_failed_stale_lease" })
+      })
+    );
+  });
+
+  it("tags a non-stale leased push failure (e.g. auth) with a neutral outcome, not stale-lease", async () => {
+    __setGitCommandRunnerForTests(async () => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: "remote: Repository not found.\n" +
+        "fatal: Authentication failed for 'https://github.com/acme/widgets.git/'\n"
+    }));
+    const sha = "24a86a4c3a8c2cad076682ae9c64f937a4ab6b88";
+    const ctx = buildCtx();
+    const result = (await githubPushBranchToolSpec.perform(
+      execution("tok", target({ expectedCurrentSha: sha }), ctx)
+    )) as { error: string; data: { stderr: string } };
+
+    expect(result.error).toBe("git push failed for 'acme/widgets' branch 'feature/x'.");
+    expect(result.data.stderr).toContain("Authentication failed");
+    expect(ctx.activity.log).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ outcome: "push_failed_force_with_lease" })
+      })
+    );
+    expect(ctx.activity.log).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ outcome: "push_failed_stale_lease" })
+      })
+    );
   });
 
   it("redacts the credential token from stdout/stderr on a force-with-lease push", async () => {

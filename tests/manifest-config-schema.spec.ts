@@ -68,7 +68,7 @@ describe("manifest instance config schema", () => {
     // Slack Events URLs keep pointing at the old id and the ingress guard in
     // src/providers/slack/ingress/provider-webhook.ts rejects every delivery.
     expect(manifest.id).toBe(AGENT_IDENTITIES_PLUGIN_ID);
-    expect(manifest.version).toBe("0.2.5");
+    expect(manifest.version).toBe("0.2.7");
   });
 
   it("accepts GitHub and strict Slack config for the same agent", () => {

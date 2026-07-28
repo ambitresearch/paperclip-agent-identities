@@ -161,11 +161,11 @@ function usableWorkspacePath(path: string | null | undefined): string | null {
 }
 
 async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext): Promise<string | null> {
+  const projectId = usableWorkspacePath(runCtx.projectId);
   const issues = await ctx.issues.list({
     companyId: runCtx.companyId,
-    projectId: runCtx.projectId,
-    assigneeAgentId: runCtx.agentId,
-    status: "in_progress"
+    ...(projectId ? { projectId } : {}),
+    assigneeAgentId: runCtx.agentId
   });
   const activeIssue = issues.find(
     (issue) => issue.executionRunId === runCtx.runId || issue.checkoutRunId === runCtx.runId
@@ -183,7 +183,12 @@ async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext):
     }
   }
 
-  const primaryWorkspace = await ctx.projects.getPrimaryWorkspace(runCtx.projectId, runCtx.companyId);
+  const fallbackProjectId = usableWorkspacePath(activeIssue?.projectId) ?? projectId;
+  if (!fallbackProjectId) {
+    return null;
+  }
+
+  const primaryWorkspace = await ctx.projects.getPrimaryWorkspace(fallbackProjectId, runCtx.companyId);
   return usableWorkspacePath(primaryWorkspace?.path);
 }
 

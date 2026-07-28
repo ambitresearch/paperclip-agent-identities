@@ -25,7 +25,7 @@ function buildCtx(options: BuildCtxOptions = {}) {
         ? { path: "/work/repo" }
         : options.primaryWorkspace)
     },
-    issues: { list: vi.fn(async () => options.issues ?? []) },
+    issues: { list: vi.fn(async (_input?: Record<string, unknown>) => options.issues ?? []) },
     executionWorkspaces: {
       get: vi.fn(async () => options.executionWorkspace ?? null)
     },
@@ -112,8 +112,7 @@ describe("githubPushBranchToolSpec.resolveResourceRef", () => {
     expect(ctx.issues.list).toHaveBeenCalledWith({
       companyId: "co-1",
       projectId: "p-1",
-      assigneeAgentId: "agent-1",
-      status: "in_progress"
+      assigneeAgentId: "agent-1"
     });
     expect(ctx.executionWorkspaces.get).toHaveBeenCalledWith("execution-workspace-1", "co-1");
     expect(ctx.projects.getPrimaryWorkspace).not.toHaveBeenCalled();
@@ -121,6 +120,40 @@ describe("githubPushBranchToolSpec.resolveResourceRef", () => {
       args: ["remote", "get-url", "origin"],
       cwd: "/work/execution-cwd"
     }]);
+    expect(res).toEqual(expect.objectContaining({
+      ok: true,
+      ref: expect.objectContaining({ workspacePath: "/work/execution-cwd" })
+    }));
+  });
+
+  it("uses the matching execution workspace when the tool run project id is blank", async () => {
+    const ctx = buildCtx({
+      issues: [{
+        executionRunId: "r-1",
+        checkoutRunId: null,
+        executionWorkspaceId: "execution-workspace-1"
+      }],
+      executionWorkspace: { cwd: "/work/execution-cwd" }
+    });
+    __setGitCommandRunnerForTests(async () => ({
+      exitCode: 0,
+      stdout: "https://github.com/acme/widgets.git\n",
+      stderr: ""
+    }));
+
+    const res = await githubPushBranchToolSpec.resolveResourceRef!({
+      params: { branch: "feature/x" },
+      identity,
+      ctx: ctx as never,
+      runCtx: { agentId: "agent-1", companyId: "co-1", projectId: "", runId: "r-1" } as never
+    });
+
+    expect(ctx.issues.list).toHaveBeenCalledWith({
+      companyId: "co-1",
+      assigneeAgentId: "agent-1"
+    });
+    expect(ctx.executionWorkspaces.get).toHaveBeenCalledWith("execution-workspace-1", "co-1");
+    expect(ctx.projects.getPrimaryWorkspace).not.toHaveBeenCalled();
     expect(res).toEqual(expect.objectContaining({
       ok: true,
       ref: expect.objectContaining({ workspacePath: "/work/execution-cwd" })
@@ -160,6 +193,56 @@ describe("githubPushBranchToolSpec.resolveResourceRef", () => {
     }));
   });
 
+  it("uses an isolated execution workspace when the invoking issue is blocked and project id is blank", async () => {
+    const ctx = buildCtx({
+      issues: [{
+        status: "blocked",
+        projectId: "issue-project-1",
+        executionRunId: "r-1",
+        checkoutRunId: "r-1",
+        executionWorkspaceId: "execution-workspace-3"
+      }],
+      executionWorkspace: {
+        cwd: "/work/repo/.paperclip/worktrees/feature-x",
+        path: null
+      }
+    });
+    ctx.issues.list.mockImplementation(async (input) => input && "status" in input ? [] : [{
+      status: "blocked",
+      projectId: "issue-project-1",
+      executionRunId: "r-1",
+      checkoutRunId: "r-1",
+      executionWorkspaceId: "execution-workspace-3"
+    }]);
+    __setGitCommandRunnerForTests(async ({ cwd }) => ({
+      exitCode: 0,
+      stdout: cwd.endsWith("/.paperclip/worktrees/feature-x")
+        ? "https://github.com/acme/widgets.git\n"
+        : "",
+      stderr: ""
+    }));
+
+    const res = await githubPushBranchToolSpec.resolveResourceRef!({
+      params: { branch: "feature/x" },
+      identity,
+      ctx: ctx as never,
+      runCtx: { agentId: "agent-1", companyId: "co-1", projectId: "", runId: "r-1" } as never
+    });
+
+    expect(ctx.issues.list).toHaveBeenCalledWith({
+      companyId: "co-1",
+      assigneeAgentId: "agent-1"
+    });
+    expect(ctx.executionWorkspaces.get).toHaveBeenCalledWith("execution-workspace-3", "co-1");
+    expect(ctx.projects.getPrimaryWorkspace).not.toHaveBeenCalled();
+    expect(res).toEqual(expect.objectContaining({
+      ok: true,
+      ref: expect.objectContaining({
+        workspacePath: "/work/repo/.paperclip/worktrees/feature-x"
+      })
+    }));
+  });
+
   it.each([
     ["missing", null],
     ["unusable", { cwd: " ", path: "" }]
@@ -196,6 +279,54 @@ describe("githubPushBranchToolSpec.resolveResourceRef", () => {
       ok: true,
       ref: expect.objectContaining({ workspacePath: "/work/repo" })
     }));
+  });
+
+  it("falls back through the matching issue project when the tool run project id is blank", async () => {
+    const ctx = buildCtx({
+      issues: [{
+        projectId: "issue-project-1",
+        executionRunId: "r-1",
+        checkoutRunId: null,
+        executionWorkspaceId: "execution-workspace-1"
+      }],
+      executionWorkspace: null
+    });
+    __setGitCommandRunnerForTests(async () => ({
+      exitCode: 0,
+      stdout: "https://github.com/acme/widgets.git\n",
+      stderr: ""
+    }));
+
+    const res = await githubPushBranchToolSpec.resolveResourceRef!({
+      params: { branch: "feature/x" },
+      identity,
+      ctx: ctx as never,
+      runCtx: { agentId: "agent-1", companyId: "co-1", projectId: "", runId: "r-1" } as never
+    });
+
+    expect(ctx.projects.getPrimaryWorkspace).toHaveBeenCalledWith("issue-project-1", "co-1");
+    expect(res).toEqual(expect.objectContaining({
+      ok: true,
+      ref: expect.objectContaining({ workspacePath: "/work/repo" })
+    }));
+  });
+
+  it("fails closed without querying a primary workspace when the tool run project id is blank", async () => {
+    const ctx = buildCtx();
+
+    const res = await githubPushBranchToolSpec.resolveResourceRef!({
+      params: { branch: "feature/x" },
+      identity,
+      ctx: ctx as never,
+      runCtx: { agentId: "agent-1", companyId: "co-1", projectId: "", runId: "r-1" } as never
+    });
+
+    expect(ctx.issues.list).toHaveBeenCalledWith({
+      companyId: "co-1",
+      assigneeAgentId: "agent-1"
+    });
+    expect(ctx.projects.getPrimaryWorkspace).not.toHaveBeenCalled();
+    expect(res).toEqual({ ok: false, error: "No primary workspace is configured for this project." });
   });
 
   it("fails closed on an invalid branch name", async () => {

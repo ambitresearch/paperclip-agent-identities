@@ -180,6 +180,7 @@ const manifest: PaperclipPluginManifestV1 = {
     // Slack webhook scope persists a turn, then awaits a company-scoped
     // provider self-event instead of invoking an agent session inline.
     "events.emit",
+    "jobs.schedule",
     "plugin.state.read",
     "plugin.state.write",
     "ui.dashboardWidget.register",
@@ -205,6 +206,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "activity.log.write",
     "webhooks.receive"
   ],
+  jobs: [{
+    jobKey: "slack-queue-recovery",
+    displayName: "Slack queue recovery scan",
+    description: "Recovers durable Slack conversation queues after worker restarts or failed self-event kicks.",
+    schedule: "*/2 * * * *"
+  }],
   // Webhook endpoints contributed by any registered provider (e.g. Slack's
   // HTTP Events API ingress, DRO-975), composed generically via
   // `ProviderRegistry.webhooks()` -- no provider-specific branch here. See

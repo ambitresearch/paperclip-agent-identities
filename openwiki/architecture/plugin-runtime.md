@@ -30,6 +30,7 @@ Important capabilities include:
 - `agent.tools.register` for the GitHub tools
 - `agents.read` for populating the settings-page agent dropdown
 - `events.subscribe` / `events.emit` for the provider-owned, company-scoped Slack queue-drain self-event
+- `jobs.schedule` for the host-backed Slack queue recovery scan
 - `agent.sessions.create`, `agent.sessions.list`, `agent.sessions.send`, and `agent.sessions.close` for the Slack inbound
   message reply lifecycle
 - `http.outbound` for GitHub API and host REST calls
@@ -93,8 +94,9 @@ This is scaffold-like behavior but is covered by `/tests/plugin.spec.ts`.
 - for **every registered provider, enabled or not** (`registry.all()`), calls the provider's optional `contributeActions(ctx)` hook. This is how the GitHub provider registers its GitHub App manifest actions (`create-github-app-manifest`, `get-github-app-manifest-flow`, `convert-github-app-manifest`) without `/src/worker.ts` importing GitHub-specific action code directly, and it's also why a "coming-soon" provider with no tool surface yet (e.g. Slack) can still ship setup/bootstrap actions ahead of `tools` landing — `contributeActions` is intentionally not gated on `enabled()`.
 
 The hook name is historical: it is the existing provider setup seam and may
-also register provider-owned event handlers. Slack composes its single queue
-drain self-event there; the worker still contains no Slack-specific branch.
+also register provider-owned event handlers and jobs. Slack composes its queue
+drain self-event and `slack-queue-recovery` scheduled job there; the worker still
+contains no Slack-specific branch.
 
 Concretely, GitHub's tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`, and `github_bot_submit_pull_request_review`) live in `/src/providers/github/tools/*.ts` and are exposed through `githubProvider.tools` in `/src/providers/github/index.ts` — the worker loop is provider-agnostic and would pick up a new provider's tools/actions the same way once it's added to the registry.
 
@@ -108,13 +110,22 @@ phase, and completed event hashes retained for 24 hours from completion. The web
 company-scoped `slack-turn-drain` emit and returns HTTP 200; it does not call session APIs or wait for
 an earlier run.
 
-Slack contributes one self-event handler through its provider setup hook. A fresh event invocation
-drains at most one queued turn, resolves/reuses the conversation session, and calls `sendMessage`.
+Slack contributes one self-event handler and one host-backed scheduled job through its provider setup
+hook. A fresh self-event invocation drains at most one queued turn, resolves/reuses the conversation
+session, and calls `sendMessage`. Every enqueue first registers its conversation key in a durable,
+agent-scoped index. Every two minutes, `slack-queue-recovery` enumerates companies, their non-terminated
+agents, and those indexed conversation records, then invokes the same drain path used by the self-event.
+This recovers persisted work after a worker restart and queued FIFO successors whose post-finalization
+self-event emit failed, without requiring another Slack webhook.
+
 The callback is bound to the persisted accepted `runId`; pre-result events are buffered, stale events
 are ignored, and terminal handling awaits reply finalization before completing the event claim,
-clearing active state, and kicking the FIFO successor. There is no detached timer that calls the host:
-the 30-minute accepted lease is retired only by a later fresh webhook/self-event; the accepted
-session callback finalizes its own run.
+clearing active state, and kicking the FIFO successor. A live 30-minute accepted lease remains owned
+and is left untouched by recovery. An expired accepted or uncertain claim is retired, its session is
+closed, and the claim is retained as a terminal dead letter rather than replayed. Queued turns carry a
+bounded attempt counter and are dead-lettered after five dispatch attempts; diagnostics expose only
+bounded company, agent, conversation, reason, and count metadata rather than event bodies or tokens.
+The accepted session callback still finalizes its own run.
 Different Slack threads and channels remain isolated; DMs intentionally share one conversation.
 
 The agent returns plain text and does not call Slack tools for this path. Threaded replies first use
@@ -131,14 +142,38 @@ company-scoped config and secret RPC contracts described in the README. The repo
 patch covers only the worker side of those calls and cannot add the corresponding server behavior.
 
 The host has no session-send request key. A non-`Session not found` send failure is therefore
-ambiguous: ingress persists `uncertain`, closes/retires the session, completes the event claim, and
-does not resend automatically. A restart plus any later duplicate/new webhook re-kicks persisted
-work. A restart after acknowledgement with no later trigger remains a host limitation requiring
-durable scheduling or request-key support.
+ambiguous: ingress persists `uncertain`, closes/retires the session, and does not resend automatically.
+The scheduled recovery path restores only clearly queued work and reconciles expired leases into
+terminal dead letters; it never blindly replays accepted or uncertain work.
 
-The queue uses plugin state plus process-local enqueue/drain tails and write/read-back claim tokens.
-Because `ctx.state` exposes no compare-and-set transaction, two worker processes can still race after
-one confirms ownership; cross-worker exactly-once claiming is not promised.
+The queue uses plugin state plus process-local enqueue/drain/job tails and write/read-back claim tokens.
+Because `ctx.state` exposes no compare-and-set transaction, two worker processes can still race
+after one confirms ownership; cross-worker exactly-once claiming is not promised.
+
+The recovery registry that tells the scan *which* conversations to revisit deliberately does not use
+plugin state. It lives in `ctx.entities` as one record per conversation, keyed by an `externalId` of
+`${companyId}:${conversationKey}` under the agent scope. A single shared index array would be
+read-modify-write: two workers registering different conversations could each read the same snapshot,
+and the later write would drop the earlier key permanently, stranding that queue from recovery
+forever. Because the host upserts by `externalId`, concurrent registrations touch disjoint rows and
+cannot overwrite one another, and repeat registrations of the same conversation collapse onto one
+row. Company scoping lives in the `externalId` rather than a single in-record discriminator, so an
+agent belonging to more than one company keeps one registry per company instead of silently losing
+coverage for the second.
+
+Conversations are retired from the registry once a recovery drain observes a fully idle queue, so
+per-tick cost tracks conversations with real work rather than every conversation the agent has ever
+seen. Enqueue re-registers unconditionally, so a retired conversation that goes active again is
+picked back up.
+
+The scan itself is failure-isolated at two levels. A per-conversation drain failure is logged and the
+sweep continues; a per-company failure — including the agent listing — is caught so one bad tenant
+cannot starve every tenant ordered after it. Because iteration order is stable, an unisolated throw
+would have starved those same tenants on every subsequent tick, not just once. Per-tick bounds
+truncate and report through the scan summary rather than throwing, so an oversized tenant degrades to
+partial coverage instead of a fleet-wide recovery outage. Each tick logs a secret-free summary
+(companies/agents/conversations visited, failure counts, and whether the tick truncated) so
+saturation and starvation are observable.
 
 ## Config and state sources
 

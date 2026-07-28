@@ -84,24 +84,28 @@ This path is designed to fit Slack's three-second acknowledgement window, but
 the actual latency still includes host config/secret/state RPCs and the awaited
 event emit. Those host operations must themselves remain available and timely.
 
-The self-event drains one turn under fresh company scope. Accepted runs carry a
-durable 30-minute lease; only a later fresh webhook/self-event or a terminal
-session callback may finalize its accepted run; expired-run retirement and
-session close happen only under a later fresh webhook/self-event scope. Generic
-`sendMessage` failures are ambiguous because the host has no request-key API:
-the provider marks the turn uncertain, retires the session, completes the event
-claim, and never auto-resends. Only the host's definitive `Session not found`
-response is safe to retry on a replacement session. This prevents duplicate
-runs but cannot provide exactly-once delivery beyond that host boundary.
+The self-event drains one turn under fresh company scope. The manifest also
+declares a host-backed `slack-queue-recovery` scheduled job that runs every two
+minutes. Each enqueue durably registers its conversation in an agent-scoped
+index, so the job can enumerate companies, agents, and known queues after a
+worker restart without waiting for another Slack webhook. It uses the same
+claim/drain path as the self-event, preserving per-conversation FIFO ordering;
+a failed successor emit therefore leaves a queued turn that the next scan can
+recover.
 
-A worker restart is recoverable when a duplicate or new webhook arrives and
-re-kicks the persisted queue. If the worker restarts after acknowledgement and
-no later webhook/event arrives, queued work has no trigger; closing that gap
-requires host-backed durable event scheduling or a request-key/idempotency API.
-Likewise, a failed successor emit after terminal finalization leaves that
-successor durable but waiting for the next duplicate/new webhook trigger.
-Plugin state also has no compare-and-set primitive, so claim-token read-back
-detects observable write races but does not make multi-worker execution atomic.
+Accepted runs carry a durable 30-minute lease. A live lease remains owned and
+is not replayed; an expired accepted or uncertain claim is retired and retained
+as a terminal dead letter rather than resent blindly. Generic `sendMessage`
+failures remain ambiguous because the host has no request-key API: the provider
+marks the turn uncertain, retires the session, and never auto-resends. Only the
+host's definitive `Session not found` response is safe to retry on a replacement
+session. Queued turns track bounded dispatch attempts and move to a secret-free
+dead-letter record after five attempts, preventing poison work from hot-looping.
+
+Recovery still cannot provide exactly-once delivery beyond the host boundary.
+Plugin state has no compare-and-set primitive, so process-local coalescing plus
+claim-token write/read-back detects observable races but does not make
+multi-worker execution atomic.
 
 Slack public install metadata lives in plugin state and is authoritative at runtime. Current
 company-config records contain only typed refs under

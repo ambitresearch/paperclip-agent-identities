@@ -45,6 +45,39 @@ The package metadata points Paperclip at:
 
 `/rollup.config.mjs` exists as an alternate Rollup build path via `pnpm build:rollup`.
 
+## Slack queue recovery operations
+
+Slack ingress uses the host-backed scheduled-job support shipped by
+[`@paperclipai/plugin-sdk@2026.707.0`](https://www.npmjs.com/package/@paperclipai/plugin-sdk/v/2026.707.0).
+The manifest requests `jobs.schedule` and declares `slack-queue-recovery` on a
+two-minute schedule. The worker registers the matching handler through
+`ctx.jobs.register`, so Paperclip re-runs the bounded scan after worker or host
+restarts without waiting for another Slack webhook.
+
+Each scan enumerates at most 1,000 companies, at most 10,000 agents per company,
+and only the durable conversation keys indexed for each non-terminated agent.
+Failures are isolated per conversation and logged with company, agent, and
+conversation identifiers only; Slack payload text and credentials are never
+included.
+
+Recovery preserves the durable queue state machine rather than replaying every
+non-terminal turn:
+
+- queued, undispatched work may be claimed and dispatched in FIFO order;
+- rejected sends release the claim with exponential backoff and jitter;
+- accepted work keeps its durable lease and is not resent while the lease is live;
+- ambiguous sends become `uncertain` and are retired without automatic replay;
+- expired accepted leases and exhausted attempts become dead letters after the
+  configured limit, preventing poison work from hot-looping.
+
+The recovery job and webhook/self-event drains share write/read-back claim
+tokens plus process-local serialization. This makes duplicate schedulers and
+stale callbacks idempotent within the host state contract while preserving one
+active turn per conversation. Because plugin state does not expose a
+compare-and-set transaction, cross-process exactly-once claiming is not
+promised; operators should inspect dead-letter diagnostics before manually
+requeueing uncertain work.
+
 ## Test suite
 
 Tests run with Vitest. `/vitest.config.ts` includes both `tests/**/*.spec.ts` (plain Node-environment tests, the default) and `tests/**/*.spec.tsx` (React/DOM interaction tests, e.g. `tests/ui/settings-page-interactions.spec.tsx`, which opt into jsdom per-file via a `// @vitest-environment jsdom` comment at the top of the file).
@@ -86,6 +119,7 @@ Current test files:
   - persist-before-ack and no session send in webhook scope
   - first-mention existing-thread hydration, root-mention and existing-session no-fetch behavior, prompt section ordering, current-message deduplication, and secret-free unavailable-history fallback
   - deferred self-event draining, duplicate-drain coalescing, cross-conversation concurrency, FIFO successor kicks, accepted-run callback binding, stale callback rejection, host terminal sequence resets, and terminal reply-finalization ordering
+  - restart between persistence and dispatch, restart after accepted dispatch, failed successor emit recovery, duplicate schedulers, stale leases, FIFO queue ordering, attempt backoff/dead-letter behavior, and ambiguous-send uncertain retirement without replay
   - kick failure retention, ambiguous-send uncertain retirement/no replay, expired-lease retirement only under fresh scope, and restart plus webhook recovery
 - `/tests/providers/slack/ingress-thread-history.spec.ts`
   - canonical channel/thread request parameters, deterministic pagination bounds, chronological timestamp deduplication, and recent-message count/byte selection
@@ -93,7 +127,7 @@ Current test files:
 - `/tests/providers/slack/ingress-session-reply.spec.ts`
   - structured adapter-output reduction and bounded Slack reply truncation
 - `/tests/providers/slack/ingress-worker-integration.spec.ts`
-  - manifest `events.emit` capability and provider-owned self-event registration/draining through the real worker composition seam
+  - manifest `events.emit` and `jobs.schedule` capabilities plus provider-owned self-event and scheduled recovery-job registration through the real worker composition seam
 - `/tests/providers/slack/ingress-response-stream.spec.ts`, `ingress-webhook-handler.spec.ts`, `ingress-routing.spec.ts`, `ingress-signature.spec.ts`, and `ingress-rate-limit.spec.ts`
   - native Slack stream behavior plus the unchanged authentication, filtering, routing, and ingress-rate boundaries around durable enqueue
 - `/tests/providers/slack/connection-status.spec.ts` (DRO-1161)

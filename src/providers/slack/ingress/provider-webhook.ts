@@ -31,13 +31,17 @@ import {
 import {
   completeSlackTurnClaim,
   createSlackActiveTurn,
+  deadLetterSlackTurnClaim,
   enqueueSlackConversationTurn,
+  getSlackConversationQueueSummary,
+  incrementSlackTurnAttempt,
   isMissingAgentSessionError,
   isSlackConversationKey,
   mutateSlackConversationState,
   readSlackConversationState,
   SLACK_COMPLETED_EVENT_RETENTION_MS,
   SLACK_EVENT_CLAIM_LIMIT,
+  SLACK_TURN_MAX_ATTEMPTS,
   SLACK_TURN_FIELD_MAX_LENGTH,
   SLACK_TURN_TEXT_MAX_LENGTH,
   SLACK_TURN_TEXT_MAX_BYTES,
@@ -50,6 +54,8 @@ import {
   type SlackQueuedTurnEvent,
 } from "./conversation-session.js";
 import { SlackSessionReplyAccumulator } from "./session-reply.js";
+import { contributeSlackQueueRecoveryJob } from "./recovery-job.js";
+import { unregisterSlackConversationKey } from "./conversation-registry.js";
 import {
   fetchSlackThreadHistory,
   type SlackThreadHistory,
@@ -908,12 +914,23 @@ async function retireBlockingTurn(
   await closeSessionDefinitively(ctx, retiredSessionId, reference.companyId);
   const completedRetirement = await mutateSlackConversationState(reference, (current) => {
     if (current.active?.attemptId !== active.attemptId) return { result: false };
-    completeSlackTurnClaim(current, current.active.turn, nowMs);
+    const reason = active.phase === "accepted"
+      ? "lease-expired"
+      : active.phase === "uncertain" && active.reason === "send-failed"
+        ? "ambiguous-send"
+        : "ownership-lost";
+    deadLetterSlackTurnClaim(current, current.active.turn, reason, nowMs);
     current.active = undefined;
     if (retiredSessionId && current.sessionId === retiredSessionId) current.sessionId = undefined;
     return { result: true, changed: true };
   }, nowMs);
   if (!completedRetirement) return "blocked";
+  safeLog(ctx.logger, "error", "Slack ingress: retired terminal queue turn to dead letter", {
+    companyId: reference.companyId,
+    agentId: reference.agentId,
+    conversationKey: reference.conversationKey,
+    reason: uncertainReason,
+  });
   await recordSlackDeliveryTelemetrySafely(
     ctx,
     reference.companyId,
@@ -927,22 +944,41 @@ async function retireBlockingTurn(
 }
 
 async function claimNextTurn(
+  ctx: PluginContext,
   reference: SlackConversationReference,
   retireAfter: number,
   nowMs: number,
 ): Promise<SlackActiveTurn | null> {
-  const claimed = await mutateSlackConversationState(reference, (state) => {
+  const claimed = await mutateSlackConversationState<{
+    active: SlackActiveTurn | null;
+    deadLetteredCount: number;
+  }>(reference, (state) => {
     if (state.active || state.legacyAcceptedRun || state.pending.length === 0) {
-      return { result: null };
+      return { result: { active: null, deadLetteredCount: 0 } };
     }
-    const turn = state.pending.shift()!;
+    let deadLetteredCount = 0;
+    while (state.pending[0]?.attemptCount >= SLACK_TURN_MAX_ATTEMPTS) {
+      deadLetterSlackTurnClaim(state, state.pending.shift()!, "attempt-limit", nowMs);
+      deadLetteredCount += 1;
+    }
+    const queuedTurn = state.pending.shift();
+    if (!queuedTurn) return { result: { active: null, deadLetteredCount }, changed: deadLetteredCount > 0 };
+    const turn = incrementSlackTurnAttempt(queuedTurn);
     const active = createSlackActiveTurn(turn, retireAfter, nowMs);
     state.active = active;
-    return { result: active, changed: true };
+    return { result: { active, deadLetteredCount }, changed: true };
   }, nowMs);
-  if (!claimed) return null;
+  if (claimed.deadLetteredCount > 0) {
+    safeLog(ctx.logger, "error", "Slack ingress: recovery attempt limit moved queue turns to dead letter", {
+      companyId: reference.companyId,
+      agentId: reference.agentId,
+      conversationKey: reference.conversationKey,
+      deadLetteredCount: claimed.deadLetteredCount,
+    });
+  }
+  if (!claimed.active) return null;
   const confirmed = await readSlackConversationState(reference);
-  return confirmed.active?.attemptId === claimed.attemptId ? confirmed.active : null;
+  return confirmed.active?.attemptId === claimed.active.attemptId ? confirmed.active ?? null : null;
 }
 
 async function attachSession(
@@ -1087,11 +1123,22 @@ async function finalizeAmbiguousSend(
     if (state.active?.attemptId !== controller.attemptId || state.active.phase !== "uncertain") {
       throw new Error("Slack conversation uncertain turn changed before retirement completed.");
     }
-    completeSlackTurnClaim(state, state.active.turn, now);
+    deadLetterSlackTurnClaim(
+      state,
+      state.active.turn,
+      reason === "send-failed" ? "ambiguous-send" : "ownership-lost",
+      now,
+    );
     state.active = undefined;
     if (state.sessionId === sessionId) state.sessionId = undefined;
     return { result: undefined, changed: true };
   }, now);
+  safeLog(ctx.logger, "error", "Slack ingress: ambiguous queue turn moved to dead letter", {
+    companyId: reference.companyId,
+    agentId: reference.agentId,
+    conversationKey: reference.conversationKey,
+    reason,
+  });
   await recordSlackDeliveryTelemetrySafely(
     ctx,
     reference.companyId,
@@ -1665,6 +1712,7 @@ export async function drainSlackConversationQueue(
       throw new Error("Slack queue drain lease exceeds the safe timestamp range.");
     }
     const active = await claimNextTurn(
+      ctx,
       reference,
       claimRetireAfter,
       claimTime,
@@ -1691,6 +1739,31 @@ export function contributeSlackIngress(
   }
   if (typeof postReply !== "function") throw new Error("Slack ingress requires a reply finalizer.");
   const runtime: SlackIngressRuntime = { postReply, createReplyStream, acceptedRunLeaseMs };
+  contributeSlackQueueRecoveryJob(ctx, async (companyId, agentId, conversationKey) => {
+    await drainSlackConversationQueue(
+      ctx,
+      companyId,
+      createSlackTurnDrainPayload(agentId, conversationKey),
+      runtime,
+    );
+    // Retire fully-idle conversations so the registry -- and therefore the cost
+    // of every future tick -- tracks conversations with real work rather than
+    // every conversation this agent has ever seen. Enqueue re-registers
+    // unconditionally, so retiring a conversation that goes active again is safe.
+    try {
+      const summary = await getSlackConversationQueueSummary({
+        state: ctx.state,
+        agentId,
+        companyId,
+        conversationKey,
+      });
+      if (summary.status === "idle" && summary.pendingCount === 0) {
+        await unregisterSlackConversationKey(ctx.entities, agentId, companyId, conversationKey);
+      }
+    } catch {
+      // Retirement is an optimization; never fail a recovered drain over it.
+    }
+  });
   const drainEventType = `plugin.${ctx.manifest.id}.${SLACK_TURN_DRAIN_EVENT_NAME}` as `plugin.${string}`;
   if (ctx.manifest.id !== SLACK_PLUGIN_ID) {
     throw new Error("Slack queue-drain registration requires the installed plugin manifest ID.");
@@ -1802,6 +1875,7 @@ export async function handleSlackProviderWebhook(
       try {
         queued = await enqueueSlackConversationTurn({
           state: ctx.state,
+          entities: ctx.entities,
           agentId: dispatch.agentId,
           companyId,
           conversation,

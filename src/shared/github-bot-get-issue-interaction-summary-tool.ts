@@ -3,9 +3,12 @@ export const githubBotGetIssueInteractionSummaryToolName = "github_bot_get_issue
 export const githubBotGetIssueInteractionSummaryToolMetadata = {
   displayName: "Get Issue Interaction Summary (Agent Identity)",
   description:
-    "Returns a summary of agent interactions recorded against a Paperclip issue. " +
-    "Optionally filters by a date range. " +
-    "Note: full implementation requires DRO-1166 (Paperclip API client in PluginContext).",
+    "Returns a deterministic, sanitized summary of comment interactions recorded against a single " +
+    "Paperclip issue, scoped to the calling agent's company. Paperclip-side only — this never calls " +
+    "GitHub. Interactions are ordered ascending by creation time (tie-broken by comment id) so repeated " +
+    "calls over the same window always return the same order. Comment bodies are truncated to 280 " +
+    "characters and redacted for common secret shapes (GitHub tokens, OpenAI-style keys, PEM private " +
+    "keys, bearer tokens) before being returned.",
   parametersSchema: {
     type: "object",
     properties: {
@@ -15,11 +18,13 @@ export const githubBotGetIssueInteractionSummaryToolMetadata = {
       },
       from: {
         type: "string",
-        description: "Optional ISO 8601 start date for the filter range (inclusive)",
+        description: "Optional ISO 8601 UTC start of the window, inclusive. Defaults to unbounded.",
       },
       to: {
         type: "string",
-        description: "Optional ISO 8601 end date for the filter range (inclusive)",
+        description:
+          "Optional ISO 8601 UTC end of the window, exclusive ([from, to)). Defaults to unbounded. " +
+          "When both from and to are given, the window must not exceed 30 days.",
       },
     },
     required: ["issueId"],

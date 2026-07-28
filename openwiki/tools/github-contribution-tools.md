@@ -248,6 +248,114 @@ uses the existing `pull_requests: write` permission and requires no manifest cha
 fail-closed behavior, reviewers/team_reviewers request body construction, activity logging with agent
 attribution and no token leakage, and GitHub API success/failure paths.
 
+## `github_bot_get_issue_interaction_summary`
+
+Source:
+
+- metadata: `/src/shared/github-bot-get-issue-interaction-summary-tool.ts`
+- implementation: `/src/providers/github/tools/get-issue-interaction-summary.ts`
+
+Purpose: return a deterministic, sanitized summary of comment interactions recorded against a single
+Paperclip issue, over a bounded window. This tool is **Paperclip-side only** -- it never calls the GitHub
+API and requires no GitHub App credential (`requiresCredential: false`). It exists so an agent can reason
+about "what has happened on this issue" without walking raw comment bodies (which may contain pasted
+secrets) or paginating manually.
+
+Required parameters:
+
+- `issueId`: UUID of the Paperclip issue to summarise, scoped to the calling agent's company.
+
+Optional parameters:
+
+- `from`: ISO 8601 UTC start of the window, inclusive.
+- `to`: ISO 8601 UTC end of the window, exclusive (`[from, to)`). When both `from` and `to` are given, the
+  window must not exceed 30 days -- this keeps the tool a cheap bounded read rather than an unbounded export.
+
+Runtime behavior:
+
+1. validates parameter types and, when both `from`/`to` are present, that `to` is strictly after `from` and
+   the window is at most 30 days;
+2. loads the issue via `ctx.issues.get(issueId, companyId)`, returning an error if it does not exist in the
+   calling agent's company (issue lookups are always company-scoped, so this cannot leak another company's
+   issue);
+3. loads all comments via `ctx.issues.listComments(issueId, companyId)`, drops soft-deleted comments, and
+   filters to the `[from, to)` window;
+4. sorts survivors ascending by `createdAt`, tie-broken by comment `id`, so repeated calls over the same
+   window return interactions in the same order regardless of underlying storage ordering;
+5. redacts each comment body for common secret shapes (GitHub PAT/App/OAuth token prefixes, OpenAI-style
+   `sk-` keys, PEM private key blocks, `Bearer <token>`) and truncates the result to 280 characters;
+6. logs an `issue` activity entry with the interaction count and the calling agent's ID (never comment
+   bodies);
+7. returns the issue's id/title/status, the resolved window, per-interaction records (`id`, author agent/user
+   ID, `createdAt`, sanitized `bodyPreview`), and distinct-author counts.
+
+Failure behavior: a non-existent issue or a comment-listing failure both return `{ error }` rather than
+throwing; no GitHub API call is ever attempted, so there is no token to leak.
+
+`/tests/providers/github/get-issue-interaction-summary-tool.spec.ts` covers window validation (bad dates,
+`to <= from`, windows over 30 days), the missing-issue and listComments-failure paths, `[from, to)` boundary
+filtering, soft-deleted-comment exclusion, deterministic ordering under duplicate timestamps, secret
+redaction/truncation, and activity logging with agent attribution.
+
+## `github_bot_upload_pull_request_asset`
+
+Source:
+
+- metadata: `/src/shared/github-bot-upload-pull-request-asset-tool.ts`
+- implementation: `/src/providers/github/tools/upload-pull-request-asset.ts`
+
+Purpose: upload an image, PDF, log, archive, or report file for a pull request and return a durable,
+embeddable Markdown reference (`![...]` for images, `[...]` otherwise), **without ever touching the PR's
+own head, base, or merge branch**. Every upload lands on a dedicated, per-PR, non-merge artifact branch
+(`artifacts/pr-{pullNumber}`) that GitHub creates independently of the PR's branches.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `pullNumber`: the pull request number the asset belongs to (used only to namespace the artifact branch and
+  path -- this tool never reads or writes the PR resource itself).
+- `fileName`: the file name to store the asset under.
+- `contentBase64`: base64-encoded file content.
+
+Optional parameters:
+
+- `mimeType`: used together with the file extension to decide whether the returned Markdown uses image
+  (`![]`) or link (`[]`) syntax.
+- `commitMessage`: overrides the default `Upload asset for PR #{pullNumber}: {fileName}` commit message.
+
+Runtime behavior:
+
+1. validates parameter types;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. computes `branch = artifacts/pr-{pullNumber}` and `filePath = pr-{pullNumber}/{fileName}` -- both are
+   derived only from `pullNumber`/`fileName`, never from the PR's actual head/base ref;
+5. probes `GET .../contents/{filePath}?ref={branch}` to see whether the file already exists on that branch
+   (to include its `sha` and update in place rather than fail on a duplicate-create);
+6. calls `PUT .../contents/{filePath}` with `branch` set to the artifact branch. The GitHub Contents API
+   creates the branch automatically from the repository's default branch if `artifacts/pr-{pullNumber}`
+   does not yet exist -- it never reads or references the PR's head/base/merge branch to do so;
+7. builds a `raw.githubusercontent.com/{owner}/{repo}/{branch}/{filePath}` URL and wraps it in Markdown;
+8. logs a `pull_request` activity entry with the artifact branch, file name, and raw URL (never the token);
+9. returns the raw URL, branch, file path, and Markdown snippet.
+
+Failure behavior mirrors the other GitHub tools: malformed params and repositories fail before credential
+resolution; a missing/null resolved token fails closed; network failures return a generic connectivity
+error without leaking the token; non-OK GitHub responses on the `PUT` surface GitHub's message when
+parseable.
+
+**Never touches the PR's merge branch**: this tool makes exactly two GitHub API calls per invocation --
+`GET`/`PUT` against `/repos/{owner}/{repo}/contents/{filePath}` -- and both are pinned to the
+`artifacts/pr-{pullNumber}` branch via the request body's `branch` field. It never calls any
+`/pulls/{pullNumber}` endpoint (GET, PATCH, merge, or otherwise), so the PR's actual head branch, base
+branch, and GitHub's synthetic merge ref are structurally unreachable from this code path.
+
+`/tests/providers/github/upload-pull-request-asset-tool.spec.ts` covers validation, fail-closed behavior on
+a missing token, that every request URL and request body's `branch` field target only
+`artifacts/pr-{pullNumber}` (asserting no request ever touches a `/pulls/` path or a `refs/pull/...` ref),
+image-vs-non-image Markdown selection, existing-file `sha` reuse on update, and GitHub API success/failure
+paths including token-leakage checks on activity logs and error messages.
+
 ## Shared redaction and helper utilities
 
 `/src/lib/redaction.ts` provides recursive redaction for strings, arrays, and objects, plus safe error conversion.
@@ -263,6 +371,8 @@ attribution and no token leakage, and GitHub API success/failure paths.
 - `/tests/plugin.spec.ts`: `whoami`, push success and denial paths, dry-run behavior, sidecar integration, redaction on push failure.
 - `/tests/security.spec.ts`: generic redaction, PR helper redaction, push helper token handling and cleanup.
 - `/tests/identity-policy.spec.ts`: identity and credential resolution used by all tools.
+- `/tests/providers/github/get-issue-interaction-summary-tool.spec.ts`: Paperclip-side-only interaction summary -- window validation, missing-issue/listComments-failure handling, `[from, to)` filtering, soft-delete exclusion, deterministic ordering, secret redaction/truncation, activity logging.
+- `/tests/providers/github/upload-pull-request-asset-tool.spec.ts`: PR asset upload -- validation, fail-closed on missing token, proof that every request/branch field targets only `artifacts/pr-{n}` (never `/pulls/` or `refs/pull/...`), image-vs-link Markdown selection, existing-file sha reuse, GitHub API success/failure paths.
 
 ## Change guidance
 

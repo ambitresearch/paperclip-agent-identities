@@ -192,6 +192,10 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.sessions.send",
     "agent.sessions.close",
     "companies.read",
+    // Required by github_bot_get_issue_interaction_summary, which reads a
+    // Paperclip issue and its comments only -- it never calls GitHub.
+    "issues.read",
+    "issue.comments.read",
     "http.outbound",
     // The local host supports this capability ahead of the published SDK type union.
     "secrets.bind-ref" as PaperclipPluginManifestV1["capabilities"][number],

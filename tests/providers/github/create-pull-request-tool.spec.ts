@@ -18,12 +18,27 @@ function repoRef(): GitHubRepoRef {
   return { kind: "github-repo", owner: "acme", repo: "widgets", fullName: "acme/widgets" };
 }
 
-function buildCtx(fetchImpl: typeof fetch, activityLog = vi.fn(), workspacePath = "/work/repo") {
+function buildCtx(
+  fetchImpl: typeof fetch,
+  activityLog = vi.fn(),
+  workspacePath = "/work/repo",
+  stateStore: Record<string, unknown> = {}
+) {
   return {
     http: { fetch: fetchImpl },
     logger: { info: vi.fn(), error: vi.fn() },
     activity: { log: activityLog },
-    projects: { getPrimaryWorkspace: vi.fn(async () => ({ path: workspacePath })) }
+    projects: { getPrimaryWorkspace: vi.fn(async () => ({ path: workspacePath })) },
+    state: {
+      get: vi.fn(async (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }) => {
+        const storeKey = `${key.scopeKind}:${key.scopeId ?? ""}:${key.namespace ?? "default"}:${key.stateKey}`;
+        return storeKey in stateStore ? stateStore[storeKey] : null;
+      }),
+      set: vi.fn(async (key: { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string }, value: unknown) => {
+        const storeKey = `${key.scopeKind}:${key.scopeId ?? ""}:${key.namespace ?? "default"}:${key.stateKey}`;
+        stateStore[storeKey] = value;
+      })
+    }
   } as never;
 }
 
@@ -114,6 +129,69 @@ describe("githubCreatePullRequestToolSpec.perform", () => {
     expect((init.headers as Record<string, string>)["User-Agent"]).toBe("paperclip-agent-identities/github-api");
     expect(result.data.number).toBe(42);
     expect(result.content).toContain("#42");
+  });
+
+  it("links the created PR to the Paperclip issue when paperclipIssueId is supplied", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ number: 42, html_url: "https://github.com/acme/widgets/pull/42", state: "open", draft: false, head: { ref: "feature" }, base: { ref: "main" } }),
+      { status: 201 }
+    ));
+    const stateStore: Record<string, unknown> = {};
+    const exec = execution("tok");
+    (exec.params as Record<string, unknown>).paperclipIssueId = "iss-1";
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never, vi.fn(), "/work/repo", stateStore);
+    const result = (await githubCreatePullRequestToolSpec.perform(exec)) as {
+      data: { number: number; linked: boolean };
+    };
+    expect(result.data.linked).toBe(true);
+    expect(stateStore["issue:iss-1:github-links:links"]).toEqual([
+      {
+        githubUrl: "https://github.com/acme/widgets/pull/42",
+        note: null,
+        linkedByAgentId: "agent-1",
+        linkedAt: expect.any(String)
+      }
+    ]);
+  });
+
+  it("reports linkError but does not fail the PR creation when link persistence fails", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ number: 42, html_url: "https://github.com/acme/widgets/pull/42", state: "open", draft: false, head: { ref: "feature" }, base: { ref: "main" } }),
+      { status: 201 }
+    ));
+    const exec = execution("tok");
+    (exec.params as Record<string, unknown>).paperclipIssueId = "iss-1";
+    (exec as { ctx: unknown }).ctx = {
+      http: { fetch: fetchImpl },
+      logger: { info: vi.fn(), error: vi.fn() },
+      activity: { log: vi.fn() },
+      state: {
+        get: vi.fn(async () => { throw new Error("storage down"); }),
+        set: vi.fn()
+      }
+    } as never;
+    const result = (await githubCreatePullRequestToolSpec.perform(exec)) as {
+      data: { number: number; linked: boolean; linkError?: string };
+    };
+    // The PR itself must still be reported as created successfully.
+    expect(result.data.number).toBe(42);
+    expect(result.data.linked).toBe(false);
+    expect(result.data.linkError).toBeTruthy();
+  });
+
+  it("does not attempt to link when paperclipIssueId is omitted", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ number: 42, html_url: "https://github.com/acme/widgets/pull/42", state: "open", draft: false, head: { ref: "feature" }, base: { ref: "main" } }),
+      { status: 201 }
+    ));
+    const stateStore: Record<string, unknown> = {};
+    const exec = execution("tok");
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never, vi.fn(), "/work/repo", stateStore);
+    const result = (await githubCreatePullRequestToolSpec.perform(exec)) as {
+      data: { number: number; linked?: boolean };
+    };
+    expect(result.data.linked).toBeUndefined();
+    expect(Object.keys(stateStore)).toHaveLength(0);
   });
 });
 

@@ -37,6 +37,20 @@ function isImageFile(fileName: string, mimeType?: string): boolean {
   return IMAGE_EXTENSIONS.has(ext);
 }
 
+// Only allow a single, safe filename segment: no path separators, no
+// traversal, no NUL/control characters. This is enforced up front so
+// `fileName` can never be used to escape the per-PR directory (e.g.
+// "../pr-43/report.log") once it is embedded into the Contents API
+// path and URL.
+const SAFE_FILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function isSafeFileName(fileName: string): boolean {
+  if (!SAFE_FILE_NAME_RE.test(fileName)) return false;
+  if (fileName === "." || fileName === "..") return false;
+  if (fileName.includes("..")) return false;
+  return true;
+}
+
 function validateParams(params: unknown): ParamsValidation {
   if (!params || typeof params !== "object") {
     return { ok: false, error: "params must be a non-null object" };
@@ -50,6 +64,14 @@ function validateParams(params: unknown): ParamsValidation {
   }
   if (!p.fileName || typeof p.fileName !== "string") {
     return { ok: false, error: "fileName is required" };
+  }
+  if (!isSafeFileName(p.fileName)) {
+    return {
+      ok: false,
+      error:
+        "fileName must be a single safe path segment (letters, digits, '.', '_', '-' only; " +
+        "no path separators or '..')"
+    };
   }
   if (!p.contentBase64 || typeof p.contentBase64 !== "string") {
     return { ok: false, error: "contentBase64 is required" };
@@ -104,7 +126,94 @@ export const githubUploadPullRequestAssetToolSpec: ProviderToolSpec<GitHubAgentI
       "Content-Type": "application/json"
     };
 
-    // Check if file already exists to get its SHA for an update
+    // The Contents API can only write to a branch (ref) that already
+    // exists — it does not create one. Ensure the artifact branch exists
+    // via the Git refs API (creating it from the repo's default branch
+    // HEAD) before attempting any Contents write, so the first upload for
+    // a given PR doesn't fail with a 404/422 from GitHub.
+    const refUrl = `https://api.github.com/repos/${owner}/${repo}/git/ref/${encodeURIComponent(`heads/${branch}`)}`;
+    let branchExists = false;
+    try {
+      const refResponse = await ctx.http.fetch(refUrl, { method: "GET", headers });
+      if (refResponse.ok) {
+        branchExists = true;
+      } else if (refResponse.status !== 404) {
+        return { error: `GitHub API returned ${refResponse.status} checking artifact branch '${branch}'.` };
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown network error";
+      ctx.logger.error(`github_bot_upload_pull_request_asset network failure checking branch: ${reason}`);
+      return { error: "GitHub API request failed before a response was received." };
+    }
+
+    if (!branchExists) {
+      let baseSha: string;
+      try {
+        const repoResponse = await ctx.http.fetch(`https://api.github.com/repos/${owner}/${repo}`, {
+          method: "GET",
+          headers
+        });
+        if (!repoResponse.ok) {
+          return { error: `GitHub API returned ${repoResponse.status} resolving the default branch.` };
+        }
+        const repoInfo = (await repoResponse.json()) as { default_branch?: string };
+        const defaultBranch = repoInfo.default_branch;
+        if (!defaultBranch) {
+          return { error: "Could not determine the repository's default branch." };
+        }
+        const defaultRefResponse = await ctx.http.fetch(
+          `https://api.github.com/repos/${owner}/${repo}/git/ref/${encodeURIComponent(`heads/${defaultBranch}`)}`,
+          { method: "GET", headers }
+        );
+        if (!defaultRefResponse.ok) {
+          return { error: `GitHub API returned ${defaultRefResponse.status} resolving the default branch SHA.` };
+        }
+        const defaultRef = (await defaultRefResponse.json()) as { object?: { sha?: string } };
+        const sha = defaultRef.object?.sha;
+        if (!sha) {
+          return { error: "Could not determine the default branch's commit SHA." };
+        }
+        baseSha = sha;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Unknown network error";
+        ctx.logger.error(`github_bot_upload_pull_request_asset network failure resolving base: ${reason}`);
+        return { error: "GitHub API request failed before a response was received." };
+      }
+
+      try {
+        const createRefResponse = await ctx.http.fetch(
+          `https://api.github.com/repos/${owner}/${repo}/git/refs`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: baseSha })
+          }
+        );
+        if (!createRefResponse.ok) {
+          // 422 "Reference already exists" means a concurrent call won the
+          // race to create the branch; that's fine, proceed with the write.
+          if (createRefResponse.status !== 422) {
+            let details = "";
+            try {
+              const errBody = (await createRefResponse.json()) as { message?: string };
+              details = errBody.message ?? "";
+            } catch {
+              details = await createRefResponse.text().catch(() => "");
+            }
+            return {
+              error: `GitHub API returned ${createRefResponse.status} creating artifact branch '${branch}'. ${details}`.trim()
+            };
+          }
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Unknown network error";
+        ctx.logger.error(`github_bot_upload_pull_request_asset network failure creating branch: ${reason}`);
+        return { error: "GitHub API request failed before a response was received." };
+      }
+    }
+
+    // Check if the file already exists on the artifact branch to get its
+    // SHA for an update (otherwise the Contents API rejects an overwrite).
     let existingSha: string | undefined;
     try {
       const checkResponse = await ctx.http.fetch(`${contentsUrl}?ref=${branch}`, {

@@ -40,6 +40,42 @@ const baseParams = {
   contentBase64: "aGVsbG8="
 };
 
+// Builds a fetch mock that models a brand-new artifact branch: the
+// heads/artifacts/pr-N ref lookup 404s, the repo lookup returns a default
+// branch, the default branch's ref lookup returns a base SHA, the ref
+// creation succeeds, the contents GET (existence probe) 404s, and the
+// contents PUT succeeds.
+function newBranchFetchImpl() {
+  const calledUrls: string[] = [];
+  const calledBodies: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+    calledUrls.push(url);
+    if (init?.body) {
+      calledBodies.push({ url, body: JSON.parse(init.body as string) });
+    }
+    if (url.includes("/git/ref/") && url.includes("artifacts")) {
+      return new Response("not found", { status: 404 });
+    }
+    if (init?.method === "GET" && /\/repos\/[^/]+\/[^/]+$/.test(url)) {
+      return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+    }
+    if (url.includes("/git/ref/") && url.includes("main")) {
+      return new Response(JSON.stringify({ object: { sha: "base-sha-123" } }), { status: 200 });
+    }
+    if (init?.method === "POST" && url.endsWith("/git/refs")) {
+      return new Response(JSON.stringify({ ref: "refs/heads/artifacts/pr-42" }), { status: 201 });
+    }
+    if (init?.method === "GET" && url.includes("/contents/")) {
+      return new Response("not found", { status: 404 });
+    }
+    if (init?.method === "PUT" && url.includes("/contents/")) {
+      return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
+    }
+    return new Response("unexpected", { status: 500 });
+  });
+  return { fetchImpl, calledUrls, calledBodies };
+}
+
 describe("githubUploadPullRequestAssetToolSpec.validateParams", () => {
   it("rejects a missing repository", () => {
     expect(
@@ -68,6 +104,43 @@ describe("githubUploadPullRequestAssetToolSpec.validateParams", () => {
   it("accepts valid params", () => {
     expect(githubUploadPullRequestAssetToolSpec.validateParams(baseParams).ok).toBe(true);
   });
+
+  it("rejects a fileName with a path separator (traversal attempt)", () => {
+    const result = githubUploadPullRequestAssetToolSpec.validateParams({
+      ...baseParams,
+      fileName: "../pr-43/report.log"
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects a fileName that is just '..'", () => {
+    const result = githubUploadPullRequestAssetToolSpec.validateParams({ ...baseParams, fileName: ".." });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects a fileName containing a forward slash", () => {
+    const result = githubUploadPullRequestAssetToolSpec.validateParams({
+      ...baseParams,
+      fileName: "sub/dir/report.log"
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects a fileName containing a backslash", () => {
+    const result = githubUploadPullRequestAssetToolSpec.validateParams({
+      ...baseParams,
+      fileName: "sub\\report.log"
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("accepts a safe fileName with dots, dashes, and underscores", () => {
+    const result = githubUploadPullRequestAssetToolSpec.validateParams({
+      ...baseParams,
+      fileName: "report_v2-final.log"
+    });
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe("githubUploadPullRequestAssetToolSpec.perform", () => {
@@ -78,37 +151,35 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
     expect(result.error).toBe("Internal error: missing resolved credential.");
   });
 
-  it("only ever writes to the dedicated artifacts/pr-<n> branch, never the PR's own branches", async () => {
-    const calledUrls: string[] = [];
-    const calledBodies: Array<Record<string, unknown>> = [];
-    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
-      calledUrls.push(url);
-      if (init?.method === "GET") {
-        return new Response("not found", { status: 404 });
-      }
-      if (init?.body) {
-        calledBodies.push(JSON.parse(init.body as string));
-      }
-      return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
-    });
+  it("creates the artifact branch from the default branch HEAD on first upload, then writes the file", async () => {
+    const { fetchImpl, calledUrls, calledBodies } = newBranchFetchImpl();
     const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
     const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as {
       data: { rawUrl: string; branch: string; markdown: string };
     };
 
+    expect(result.data.branch).toBe("artifacts/pr-42");
+
+    // Must check for the artifact ref, resolve the default branch and its
+    // SHA, then explicitly create the ref -- not just PUT to Contents and
+    // hope GitHub creates the branch (it does not).
+    const refCreateCall = calledBodies.find((c) => c.url.endsWith("/git/refs"));
+    expect(refCreateCall).toBeTruthy();
+    expect(refCreateCall!.body).toMatchObject({ ref: "refs/heads/artifacts/pr-42", sha: "base-sha-123" });
+
     // Every request must reference the artifact branch and its own
     // dedicated contents path — never a PR head/base/merge ref (e.g.
-    // "main", "refs/pull/42/merge", or any branch name supplied via a PR
-    // object). The tool never fetches or writes to /pulls/{n} at all.
-    expect(result.data.branch).toBe("artifacts/pr-42");
+    // "main" as the *target* content branch, "refs/pull/42/merge", or any
+    // branch name supplied via a PR object). The tool never fetches or
+    // writes to /pulls/{n} at all.
     for (const url of calledUrls) {
       expect(url).not.toMatch(/\/pulls\//);
       expect(url).not.toContain("refs/pull");
     }
-    for (const body of calledBodies) {
+    const contentsBodies = calledBodies.filter((c) => c.url.includes("/contents/"));
+    for (const { body } of contentsBodies) {
       expect(body.branch).toBe("artifacts/pr-42");
       expect(body.branch).not.toBe("main");
-      expect(body.branch).not.toMatch(/^refs\/pull\//);
     }
     expect(result.data.rawUrl).toBe(
       "https://raw.githubusercontent.com/acme/widgets/artifacts/pr-42/pr-42/report.png"
@@ -116,29 +187,69 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
     expect(result.data.markdown).toBe("![report.png](https://raw.githubusercontent.com/acme/widgets/artifacts/pr-42/pr-42/report.png)");
   });
 
-  it("never calls the pull request head/base/merge endpoints", async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      if (init?.method === "GET") return new Response("not found", { status: 404 });
-      return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
+  it("treats a 422 'ref already exists' race on branch creation as success and proceeds", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/ref/") && url.includes("artifacts")) {
+        return new Response("not found", { status: 404 });
+      }
+      if (url.includes("/git/ref/") && url.includes("main")) {
+        return new Response(JSON.stringify({ object: { sha: "base-sha-123" } }), { status: 200 });
+      }
+      if (init?.method === "GET" && /\/repos\/[^/]+\/[^/]+$/.test(url)) {
+        return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 });
+      }
+      if (init?.method === "POST" && url.endsWith("/git/refs")) {
+        return new Response(JSON.stringify({ message: "Reference already exists" }), { status: 422 });
+      }
+      if (init?.method === "GET" && url.includes("/contents/")) {
+        return new Response("not found", { status: 404 });
+      }
+      if (init?.method === "PUT" && url.includes("/contents/")) {
+        return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
+      }
+      return new Response("unexpected", { status: 500 });
     });
+    const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
+    const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as {
+      data?: { branch: string };
+      error?: string;
+    };
+    expect(result.error).toBeUndefined();
+    expect(result.data?.branch).toBe("artifacts/pr-42");
+  });
+
+  it("skips branch creation entirely when the artifact branch already exists", async () => {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/ref/") && url.includes("artifacts")) {
+        return new Response(JSON.stringify({ object: { sha: "existing-branch-sha" } }), { status: 200 });
+      }
+      if (init?.method === "POST" && url.endsWith("/git/refs")) {
+        throw new Error("should not create a ref when the branch already exists");
+      }
+      if (init?.method === "GET" && url.includes("/contents/")) {
+        return new Response("not found", { status: 404 });
+      }
+      if (init?.method === "PUT" && url.includes("/contents/")) {
+        return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
+    const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as { data: { branch: string } };
+    expect(result.data.branch).toBe("artifacts/pr-42");
+  });
+
+  it("never calls the pull request head/base/merge endpoints", async () => {
+    const { fetchImpl } = newBranchFetchImpl();
     const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
     await githubUploadPullRequestAssetToolSpec.perform(exec);
 
     const urls = (fetchImpl.mock.calls as unknown as Array<[string]>).map(([url]) => url);
-    // The upload path only ever touches the Contents API for the artifact
-    // path; it must never GET/PUT/PATCH a pull request resource, which is
-    // where head/base/merge branch state lives.
-    for (const url of urls) {
-      expect(url).toContain("/contents/pr-42/report.png");
-    }
     expect(urls.every((url) => !/\/pulls\/\d+(\/|$)/.test(url))).toBe(true);
   });
 
   it("uses the non-image markdown form for non-image files", async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      if (init?.method === "GET") return new Response("not found", { status: 404 });
-      return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
-    });
+    const { fetchImpl } = newBranchFetchImpl();
     const exec = execution("tok", { ...baseParams, fileName: "log.txt" }, buildCtx(fetchImpl as never));
     const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as { data: { markdown: string } };
     expect(result.data.markdown).toBe(
@@ -147,13 +258,20 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
   });
 
   it("includes the existing file's sha on update instead of duplicating", async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      if (init?.method === "GET") {
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/ref/") && url.includes("artifacts")) {
+        // Artifact branch already exists.
+        return new Response(JSON.stringify({ object: { sha: "existing-branch-sha" } }), { status: 200 });
+      }
+      if (init?.method === "GET" && url.includes("/contents/")) {
         return new Response(JSON.stringify({ sha: "existing-sha" }), { status: 200 });
       }
-      const body = JSON.parse(init!.body as string);
-      expect(body.sha).toBe("existing-sha");
-      return new Response(JSON.stringify({ content: { sha: "new-sha" } }), { status: 200 });
+      if (init?.method === "PUT" && url.includes("/contents/")) {
+        const body = JSON.parse(init!.body as string);
+        expect(body.sha).toBe("existing-sha");
+        return new Response(JSON.stringify({ content: { sha: "new-sha" } }), { status: 200 });
+      }
+      return new Response("unexpected", { status: 500 });
     });
     const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
     const result = (await githubUploadPullRequestAssetToolSpec.perform(exec)) as { data: { branch: string } };
@@ -161,8 +279,11 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
   });
 
   it("returns a generic error on network failure without leaking the token", async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      if (init?.method === "GET") return new Response("not found", { status: 404 });
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/ref/") && url.includes("artifacts")) {
+        return new Response(JSON.stringify({ object: { sha: "existing-branch-sha" } }), { status: 200 });
+      }
+      if (init?.method === "GET" && url.includes("/contents/")) return new Response("not found", { status: 404 });
       throw new Error("boom super-secret-token");
     });
     const exec = execution("super-secret-token", baseParams, buildCtx(fetchImpl as never));
@@ -171,8 +292,11 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
   });
 
   it("surfaces the GitHub API error message on a non-OK PUT response", async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      if (init?.method === "GET") return new Response("not found", { status: 404 });
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes("/git/ref/") && url.includes("artifacts")) {
+        return new Response(JSON.stringify({ object: { sha: "existing-branch-sha" } }), { status: 200 });
+      }
+      if (init?.method === "GET" && url.includes("/contents/")) return new Response("not found", { status: 404 });
       return new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 });
     });
     const exec = execution("tok", baseParams, buildCtx(fetchImpl as never));
@@ -182,10 +306,7 @@ describe("githubUploadPullRequestAssetToolSpec.perform", () => {
   });
 
   it("logs activity metadata without leaking the token", async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
-      if (init?.method === "GET") return new Response("not found", { status: 404 });
-      return new Response(JSON.stringify({ content: { sha: "abc123" } }), { status: 201 });
-    });
+    const { fetchImpl } = newBranchFetchImpl();
     const activityLog = vi.fn(async () => {});
     const exec = execution("super-secret-token", baseParams, buildCtx(fetchImpl as never, activityLog));
     await githubUploadPullRequestAssetToolSpec.perform(exec);

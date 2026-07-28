@@ -21,6 +21,7 @@ import {
   validateBranchName,
   validateRemoteName
 } from "./push-branch.js";
+import { persistGithubLink } from "../link-storage.js";
 
 export interface CreatePullRequestParams {
   repository: string;
@@ -345,6 +346,31 @@ export const githubCreatePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdenti
       base: { ref: string };
     };
 
+    // ---- Atomic "create then link" step (DRO-1164 review follow-up) ----
+    // The PR now exists on GitHub. If a paperclipIssueId was supplied,
+    // persist the link in the same call rather than requiring a second,
+    // separate github_bot_link_github_item invocation. A link-persistence
+    // failure here is reported back to the caller (so it can retry the
+    // link, e.g. via github_bot_link_github_item) but never rolls back or
+    // fails the already-created PR -- the PR is a real, valuable side
+    // effect on GitHub, whereas the link is local bookkeeping metadata.
+    let linkResult: { ok: boolean; error?: string } | undefined;
+    if (validated.paperclipIssueId) {
+      const persisted = await persistGithubLink({
+        ctx,
+        runCtx,
+        paperclipIssueId: validated.paperclipIssueId,
+        githubUrl: created.html_url
+      });
+      linkResult = { ok: persisted.ok, error: persisted.error };
+      if (!persisted.ok) {
+        ctx.logger.error(
+          `github_bot_create_pull_request: PR #${created.number} created but linking to Paperclip issue ` +
+            `${validated.paperclipIssueId} failed: ${persisted.error ?? "unknown error"}`
+        );
+      }
+    }
+
     await ctx.activity.log({
       companyId: runCtx.companyId,
       message: `Created pull request #${created.number} in ${repository.fullName}`,
@@ -359,7 +385,8 @@ export const githubCreatePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdenti
         draft: created.draft,
         agentId: runCtx.agentId,
         ...(publishedSha ? { publishedCommit: publishedSha } : {}),
-        ...(validated.paperclipIssueId ? { paperclipIssueId: validated.paperclipIssueId } : {})
+        ...(validated.paperclipIssueId ? { paperclipIssueId: validated.paperclipIssueId } : {}),
+        ...(linkResult ? { linked: linkResult.ok } : {})
       }
     });
     ctx.logger.info(`Created pull request #${created.number} in ${repository.fullName}`);
@@ -373,7 +400,8 @@ export const githubCreatePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdenti
         draft: created.draft,
         head: created.head.ref,
         base: created.base.ref,
-        ...(publishedSha ? { commit: publishedSha } : {})
+        ...(publishedSha ? { commit: publishedSha } : {}),
+        ...(linkResult ? { linked: linkResult.ok, linkError: linkResult.error } : {})
       }
     };
   }

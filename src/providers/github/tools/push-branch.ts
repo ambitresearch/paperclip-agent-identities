@@ -27,6 +27,7 @@ export interface GitHubPushTarget extends ResourceReference {
   readonly remoteName: string;
   readonly branch: string;
   readonly dryRun: boolean;
+  readonly expectedCurrentSha: string | null;
 }
 
 // ---- helpers moved verbatim from src/github-bot-push-branch.ts:10-221 ----
@@ -50,6 +51,7 @@ type GithubBotPushBranchParams = {
   remote?: string;
   expectedRepository?: string;
   dryRun?: boolean;
+  expectedCurrentSha?: string;
 };
 
 type PushBranchOutcomeLogInput = {
@@ -60,6 +62,7 @@ type PushBranchOutcomeLogInput = {
   repository?: string;
   expectedRepository?: string;
   dryRun?: boolean;
+  forceWithLease?: boolean;
 };
 
 const runGitCommandDefault: GitCommandRunner = async ({ args, cwd, env }) => {
@@ -160,6 +163,26 @@ export function validateRemoteName(remote: string): string | null {
   return trimmed;
 }
 
+// Full-length (40-char) hex SHA-1 object id only. Deliberately rejects
+// abbreviated SHAs so the lease target is unambiguous, and rejects anything
+// that could be interpreted as a git revision expression (e.g. "HEAD~1",
+// "branch^") rather than a literal commit id.
+function validateExpectedCurrentSha(sha: string): string | null {
+  const trimmed = sha.trim();
+  if (!/^[0-9a-f]{40}$/i.test(trimmed)) {
+    return null;
+  }
+  return trimmed.toLowerCase();
+}
+
+// A genuine force-with-lease rejection is git's own "stale info" rejection
+// line, e.g. `! [rejected]        branch -> branch (stale info)`. Any other
+// push failure (auth, authorization, DNS, network, unrelated non-fast-forward,
+// etc.) must NOT be reported as a stale lease without this evidence.
+function isStaleLeaseRejection(stderr: string): boolean {
+  return /!\s*\[rejected\][^\n]*\(stale info\)/.test(stderr);
+}
+
 export function toBranchRef(branch: string): string {
   return branch.startsWith("refs/heads/") ? branch : `refs/heads/${branch}`;
 }
@@ -251,11 +274,15 @@ function parseToolParams(input: unknown): GithubBotPushBranchParams | null {
   if (candidate.dryRun !== undefined && typeof candidate.dryRun !== "boolean") {
     return null;
   }
+  if (candidate.expectedCurrentSha !== undefined && typeof candidate.expectedCurrentSha !== "string") {
+    return null;
+  }
   return {
     branch: candidate.branch,
     remote: candidate.remote,
     expectedRepository: candidate.expectedRepository,
-    dryRun: candidate.dryRun
+    dryRun: candidate.dryRun,
+    expectedCurrentSha: candidate.expectedCurrentSha
   };
 }
 
@@ -281,6 +308,9 @@ async function logPushBranchOutcome(
   if (input.dryRun !== undefined) {
     metadata.dryRun = input.dryRun;
   }
+  if (input.forceWithLease !== undefined) {
+    metadata.forceWithLease = input.forceWithLease;
+  }
 
   await ctx.activity.log({
     companyId: runCtx.companyId,
@@ -296,7 +326,10 @@ async function logPushBranchOutcome(
 function validateParams(raw: unknown): ParamsValidation {
   const parsed = parseToolParams(raw);
   if (!parsed) {
-    return { ok: false, error: "Invalid parameters. Expected { branch, remote?, expectedRepository?, dryRun? }." };
+    return {
+      ok: false,
+      error: "Invalid parameters. Expected { branch, remote?, expectedRepository?, dryRun?, expectedCurrentSha? }."
+    };
   }
   return { ok: true, params: parsed };
 }
@@ -335,6 +368,37 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
 
     const expectedRepository = params.expectedRepository?.trim();
     const dryRun = params.dryRun === true;
+
+    let expectedCurrentSha: string | null = null;
+    if (params.expectedCurrentSha !== undefined) {
+      const rawSha = params.expectedCurrentSha.trim();
+      if (!rawSha) {
+        await logPushBranchOutcome(ctx, runCtx, {
+          message: "github_bot_push_branch failed: invalid expectedCurrentSha",
+          outcome: "invalid_expected_current_sha",
+          branch,
+          remote
+        });
+        return {
+          ok: false,
+          error: "Invalid expectedCurrentSha. Provide a full 40-character hex commit SHA to force-with-lease, or omit for a normal push."
+        };
+      }
+      const validatedSha = validateExpectedCurrentSha(rawSha);
+      if (!validatedSha) {
+        await logPushBranchOutcome(ctx, runCtx, {
+          message: "github_bot_push_branch failed: invalid expectedCurrentSha",
+          outcome: "invalid_expected_current_sha",
+          branch,
+          remote
+        });
+        return {
+          ok: false,
+          error: "Invalid expectedCurrentSha. Provide a full 40-character hex commit SHA to force-with-lease, or omit for a normal push."
+        };
+      }
+      expectedCurrentSha = validatedSha;
+    }
 
     const workspacePath = await resolveWorkspacePath(ctx, runCtx);
     if (!workspacePath) {
@@ -411,7 +475,8 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
         workspacePath,
         remoteName: remote,
         branch,
-        dryRun
+        dryRun,
+        expectedCurrentSha
       }
     };
   },
@@ -428,7 +493,7 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
       return { error: "Internal error: missing resolved credential." };
     }
     const token = execution.token;
-    const { fullName, workspacePath, remoteName, branch, dryRun } = target;
+    const { fullName, workspacePath, remoteName, branch, dryRun, expectedCurrentSha } = target;
 
     let authEnv: Awaited<ReturnType<typeof buildGitAuthEnvironment>>;
 
@@ -447,12 +512,19 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
     }
 
     try {
+      const branchRef = toBranchRef(branch);
       const pushArgs = ["-c", "credential.helper=", "push"];
       if (dryRun) {
         pushArgs.push("--dry-run");
       }
+      if (expectedCurrentSha !== null) {
+        // Ref-scoped lease only: never pass an unguarded --force. This
+        // rejects the push (rather than clobbering) if the remote's actual
+        // current tip for this ref differs from the caller-supplied SHA.
+        pushArgs.push(`--force-with-lease=${branchRef}:${expectedCurrentSha}`);
+      }
       pushArgs.push(`https://github.com/${fullName}.git`);
-      pushArgs.push(`HEAD:${toBranchRef(branch)}`);
+      pushArgs.push(`HEAD:${branchRef}`);
 
       const pushResult = await runGitCommand({
         args: pushArgs,
@@ -464,12 +536,19 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
       const redactedStderr = redactSecretText(pushResult.stderr, [token]);
 
       if (pushResult.exitCode !== 0) {
+        const outcome =
+          expectedCurrentSha !== null
+            ? isStaleLeaseRejection(pushResult.stderr)
+              ? "push_failed_stale_lease"
+              : "push_failed_force_with_lease"
+            : "push_failed";
         await logPushBranchOutcome(ctx, runCtx, {
           message: "github_bot_push_branch failed: git push",
-          outcome: "push_failed",
+          outcome,
           repository: fullName,
           branch,
-          remote: remoteName
+          remote: remoteName,
+          forceWithLease: expectedCurrentSha !== null
         });
         return {
           error: `git push failed for '${fullName}' branch '${branch}'.`,
@@ -486,7 +565,8 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
         repository: fullName,
         branch,
         remote: remoteName,
-        dryRun
+        dryRun,
+        forceWithLease: expectedCurrentSha !== null
       });
 
       return {
@@ -497,6 +577,7 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
           repository: fullName,
           branch,
           dryRun,
+          forceWithLease: expectedCurrentSha !== null,
           stdout: redactedStdout,
           stderr: redactedStderr
         }

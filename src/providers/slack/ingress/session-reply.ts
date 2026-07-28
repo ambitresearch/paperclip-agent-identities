@@ -48,8 +48,7 @@ interface StructuredReply {
     | "codex"
     | "assistant"
     | "claude-delta"
-    | "gemini-delta"
-    | "acpx-delta";
+    | "gemini-delta";
 }
 
 /**
@@ -143,8 +142,19 @@ export class SlackSessionReplyAccumulator {
       record.tag === "agent_message_chunk" &&
       typeof record.text === "string"
     ) {
-      const previous = this.structured?.source === "acpx-delta" ? this.structured.text : "";
-      this.setStructured(`${previous}${record.text}`, 2, "acpx-delta", true);
+      // ACPX `acpx.text_delta`/`agent_message_chunk` records currently carry
+      // no provenance discriminator: a transport/adapter diagnostic (e.g. a
+      // "Model metadata not found, defaulting to fallback metadata" warning)
+      // and genuine assistant prose are structurally identical at this layer
+      // (same type/channel/tag). Upstream tracking: paperclipai/paperclip#1465
+      // covers the terminal surface only, not this downstream classification;
+      // a core fix needs a provenance/kind field on this event shape (or the
+      // diagnostic emitted as `acpx.status`/`acpx.error` instead of
+      // `agent_message_chunk`).
+      //
+      // Until that provenance exists, fail safely by dropping the ambiguous
+      // source entirely. Confirmed final records below still preserve genuine
+      // assistant prose, including answers that quote or explain diagnostics.
       return;
     }
 

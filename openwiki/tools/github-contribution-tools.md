@@ -96,22 +96,23 @@ Parameters:
 - `remote` (optional): git remote name, default `origin`.
 - `expectedRepository` (optional): `owner/repo` or GitHub URL that must match the resolved remote before pushing.
 - `dryRun` (optional): when true, adds `--dry-run` to `git push`.
+- `expectedCurrentSha` (optional): full 40-character hex commit SHA the caller believes is the branch's current remote tip. When set, the push runs as a ref-scoped `git push --force-with-lease=refs/heads/<branch>:<expectedCurrentSha>` instead of a plain push: this lets a reviewed, diverged branch be updated without raw git credentials, while still rejecting (not clobbering) the push if the remote's actual tip differs from what the caller expects. Rejected up front (before workspace resolution or credential resolution) unless it is exactly 40 hex characters — abbreviated SHAs and revision expressions (`HEAD~1`, `branch^`, etc.) are rejected so the lease target is always an unambiguous literal commit id. Omit this parameter for a normal, non-force push (the tool's default and recommended mode).
 
 Runtime behavior:
 
-1. validates params and rejects empty, whitespace-containing, NUL-containing, or dash-prefixed branch/remote values;
-2. lists the invoking agent's in-progress issues, omitting a blank runtime project filter, matches `runCtx.runId` against `executionRunId` or `checkoutRunId`, and uses that issue's execution workspace `cwd` (or `path`); when no usable execution workspace is available, falls back to the matched issue's project ID and then to the runtime project ID before resolving that project's primary workspace;
+1. validates params and rejects empty, whitespace-containing, NUL-containing, or dash-prefixed branch/remote values, and rejects an `expectedCurrentSha` that isn't exactly 40 hex characters — all before any workspace or credential resolution;
+2. lists the invoking agent's issues without filtering by workflow status, omitting a blank runtime project filter, matches `runCtx.runId` against `executionRunId` or `checkoutRunId`, and uses that issue's execution workspace `cwd` (or `path`); this keeps isolated-worktree retries resolvable when an issue entered `blocked` before the new run, while still requiring the unique run ID match; when no usable execution workspace is available, it falls back to the matched issue's project ID and then to the runtime project ID before resolving that project's primary workspace;
 3. runs `git remote get-url <remote>` in the workspace;
 4. normalizes the remote URL to a GitHub owner/repo;
 5. resolves the agent identity;
 6. if `expectedRepository` is provided, normalizes it and requires exact match with the resolved remote;
 7. resolves credentials just in time;
 8. creates a temporary `GIT_ASKPASS` script and sets `GIT_TERMINAL_PROMPT=0` plus `GITHUB_TOKEN` in the child environment;
-9. runs `git -c credential.helper= push [--dry-run] https://github.com/{owner}/{repo}.git HEAD:refs/heads/{branch}`;
+9. runs `git -c credential.helper= push [--dry-run] [--force-with-lease=refs/heads/{branch}:{expectedCurrentSha}] https://github.com/{owner}/{repo}.git HEAD:refs/heads/{branch}` — the `--force-with-lease` flag is only ever added, ref-scoped to the exact branch and SHA the caller supplied, when `expectedCurrentSha` was provided; there is no unguarded `--force`/`-f` code path;
 10. redacts raw token, URL-encoded token, and basic-auth token forms from stdout/stderr and thrown errors;
 11. cleans the temporary askpass directory in `finally`.
 
-Activity logging captures outcomes such as invalid branch, missing workspace, remote resolution failure, unsupported remote, expected-repository mismatch, credential failure, push failure, exception, and success.
+Activity logging captures outcomes such as invalid branch, missing workspace, remote resolution failure, unsupported remote, expected-repository mismatch, invalid `expectedCurrentSha`, credential failure, push failure, exception, and success — each carrying a `forceWithLease` flag when the push used the guarded lease. A push failure while `expectedCurrentSha` was set is tagged based on git's own output: it is reported as `push_failed_stale_lease` only when git's stderr contains its own `(stale info)` rejection line (the evidence of an actual diverged-tip rejection), and as the neutral `push_failed_force_with_lease` for any other leased-push failure (authentication, authorization, DNS, network, or another git error) — a leased push failure is never assumed to be a stale lease without that evidence. A non-leased push failure is reported as plain `push_failed`.
 
 Failure behavior intentionally stops before credential resolution for unsupported remotes, malformed expected repositories, and expected-repository mismatches. GitHub App installation permissions decide whether a normalized GitHub repository is accessible. `/tests/plugin.spec.ts` covers these cases.
 

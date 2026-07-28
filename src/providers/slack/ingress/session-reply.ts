@@ -48,8 +48,7 @@ interface StructuredReply {
     | "codex"
     | "assistant"
     | "claude-delta"
-    | "gemini-delta"
-    | "acpx-delta";
+    | "gemini-delta";
 }
 
 /**
@@ -153,15 +152,9 @@ export class SlackSessionReplyAccumulator {
       // diagnostic emitted as `acpx.status`/`acpx.error` instead of
       // `agent_message_chunk`).
       //
-      // Until that provenance exists, fail safely: never live-stream this
-      // source's text to Slack as it arrives (a diagnostic chunk emitted
-      // before the real answer must not appear as a partial reply). Only a
-      // later, structurally-confirmed higher-priority record (e.g. `result`,
-      // `item.completed`) can promote accumulated acpx-delta text to a
-      // deliverable reply; bare acpx-delta content is retained as a fallback
-      // (see `finish()`), not streamed live.
-      const previous = this.structured?.source === "acpx-delta" ? this.structured.text : "";
-      this.setStructured(`${previous}${record.text}`, 2, "acpx-delta", false);
+      // Until that provenance exists, fail safely by dropping the ambiguous
+      // source entirely. Confirmed final records below still preserve genuine
+      // assistant prose, including answers that quote or explain diagnostics.
       return;
     }
 

@@ -10,7 +10,7 @@ const TRANSPORT_WARNING =
   "this can degrade performance and cause issues.";
 
 describe("SlackSessionReplyAccumulator", () => {
-  it("does not live-stream ACPX agent_message_chunk deltas, but assembles them on finish", () => {
+  it("drops ambiguous ACPX agent_message_chunk deltas", () => {
     // `acpx.text_delta` + channel=output + tag=agent_message_chunk is the same
     // structural shape ACPX uses for transport diagnostics (see
     // paperclipai/paperclip#1465) and for genuine assistant prose — there is
@@ -38,7 +38,7 @@ describe("SlackSessionReplyAccumulator", () => {
         '{"type":"acpx.text_delta","text":" there","channel":"output","tag":"agent_message_chunk"}\n',
       ),
     ).toBe("");
-    expect(response.finish()).toBe("Hey there");
+    expect(response.finish()).toBe("");
   });
 
   it("extracts structured final output and truncates oversized plain output", () => {
@@ -76,10 +76,7 @@ describe("SlackSessionReplyAccumulator", () => {
     expect(response.finish()).toBe("The actual answer.");
   });
 
-  it("falls back to accumulated acpx-delta text only when no higher-priority record ever arrives", () => {
-    // Diagnostic-only / fallback-output run: nothing else ever confirms the
-    // content, so the bounded fallback text is still delivered once (via
-    // finish()), never streamed incrementally.
+  it("returns no reply for a diagnostic-only structured run", () => {
     const response = new SlackSessionReplyAccumulator();
     expect(
       response.append(
@@ -91,7 +88,20 @@ describe("SlackSessionReplyAccumulator", () => {
         })}\n`,
       ),
     ).toBe("");
-    expect(response.finish()).toBe(TRANSPORT_WARNING);
+    expect(response.finish()).toBe("");
+  });
+
+  it("preserves plain-text fallback output and confirmed prose that quotes a diagnostic", () => {
+    const fallback = new SlackSessionReplyAccumulator();
+    expect(fallback.append("plain adapter output\n")).toBe("");
+    expect(fallback.finish()).toBe("plain adapter output");
+
+    const confirmed = new SlackSessionReplyAccumulator();
+    const answer = `The adapter reported: ${TRANSPORT_WARNING}`;
+    expect(
+      confirmed.append(`${JSON.stringify({ type: "result", result: answer })}\n`),
+    ).toBe(answer);
+    expect(confirmed.finish()).toBe(answer);
   });
 
   it("handles split chunks and interleaving without leaking diagnostic text as a live stream", () => {

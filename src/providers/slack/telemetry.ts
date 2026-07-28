@@ -1,4 +1,5 @@
 import type { PluginContext, PluginStateClient } from "@paperclipai/plugin-sdk";
+import { requireHumanSettingsActor } from "../../core/settings-action-authorization.js";
 
 /**
  * DRO-1187: bounded, secret-free "Ingress" and "Delivery" health telemetry,
@@ -355,6 +356,7 @@ const SLACK_TELEMETRY_ACTION = "get-slack-telemetry";
  */
 export function contributeSlackTelemetryAction(ctx: PluginContext): void {
   ctx.actions.register(SLACK_TELEMETRY_ACTION, async (params, context) => {
+    requireHumanSettingsActor(context);
     const agentId = typeof params.agentId === "string" ? params.agentId.trim() : "";
     if (!agentId) {
       throw new Error("agentId is required to read Slack telemetry.");

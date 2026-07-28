@@ -177,10 +177,10 @@ describe("contributeSlackConnectionStatusAction", () => {
     resolve: () => Promise<string>;
     fetchImpl: () => Promise<Response>;
   }>) {
-    const registered = new Map<string, (params: Record<string, unknown>, context: { companyId: string | null }) => Promise<unknown>>();
+    const registered = new Map<string, (params: Record<string, unknown>, context: { companyId: string | null; actor: { type: string } }) => Promise<unknown>>();
     const ctx = {
       actions: {
-        register: (key: string, handler: (params: Record<string, unknown>, context: { companyId: string | null }) => Promise<unknown>) => {
+        register: (key: string, handler: (params: Record<string, unknown>, context: { companyId: string | null; actor: { type: string } }) => Promise<unknown>) => {
           registered.set(key, handler);
         },
       },
@@ -206,7 +206,7 @@ describe("contributeSlackConnectionStatusAction", () => {
     const handler = registered.get("check-slack-connection");
     expect(handler).toBeTruthy();
 
-    const result = (await handler!({ agentId: "agent-1" }, { companyId: COMPANY_ID })) as Record<string, unknown>;
+    const result = (await handler!({ agentId: "agent-1" }, { companyId: COMPANY_ID, actor: { type: "user" } })) as Record<string, unknown>;
     expect(result.outcome).toEqual({ ok: true });
     expect(JSON.stringify(result)).not.toMatch(/token|xoxb/i);
   });
@@ -215,21 +215,30 @@ describe("contributeSlackConnectionStatusAction", () => {
     const { ctx, registered } = fakeCtx();
     contributeSlackConnectionStatusAction(ctx as never);
     const handler = registered.get("check-slack-connection")!;
-    await expect(handler({}, { companyId: COMPANY_ID })).rejects.toThrow(/agentId/);
+    await expect(handler({}, { companyId: COMPANY_ID, actor: { type: "user" } })).rejects.toThrow(/agentId/);
   });
 
   it("rejects a request without a host-authorized companyId", async () => {
     const { ctx, registered } = fakeCtx();
     contributeSlackConnectionStatusAction(ctx as never);
     const handler = registered.get("check-slack-connection")!;
-    await expect(handler({ agentId: "agent-1" }, { companyId: null })).rejects.toThrow(/companyId/);
+    await expect(handler({ agentId: "agent-1" }, { companyId: null, actor: { type: "user" } })).rejects.toThrow(/companyId/);
+  });
+
+  it("rejects a non-human actor before touching config/secrets/http (DRO-1161 auth gap)", async () => {
+    const { ctx, registered } = fakeCtx();
+    contributeSlackConnectionStatusAction(ctx as never);
+    const handler = registered.get("check-slack-connection")!;
+    await expect(handler({ agentId: "agent-1" }, { companyId: COMPANY_ID, actor: { type: "agent" } })).rejects.toThrow(
+      "This settings action requires a human user actor.",
+    );
   });
 
   it("reports credential_missing when the agent has no Slack identity configured", async () => {
     const { ctx, registered } = fakeCtx({ configGet: async () => ({ identities: {} }) });
     contributeSlackConnectionStatusAction(ctx as never);
     const handler = registered.get("check-slack-connection")!;
-    const result = (await handler({ agentId: "agent-1" }, { companyId: COMPANY_ID })) as { outcome: { ok: boolean; category?: string } };
+    const result = (await handler({ agentId: "agent-1" }, { companyId: COMPANY_ID, actor: { type: "user" } })) as { outcome: { ok: boolean; category?: string } };
     expect(result.outcome.ok).toBe(false);
     expect(result.outcome.category).toBe("credential_missing");
   });

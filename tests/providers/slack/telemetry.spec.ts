@@ -222,11 +222,11 @@ describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOut
 
 describe("contributeSlackTelemetryAction", () => {
   function fakeCtx(state = makeState()) {
-    const registered = new Map<string, (params: Record<string, unknown>, context: { companyId: string | null }) => Promise<unknown>>();
+    const registered = new Map<string, (params: Record<string, unknown>, context: { companyId: string | null; actor: { type: string } }) => Promise<unknown>>();
     const ctx = {
       state,
       actions: {
-        register: (key: string, handler: (params: Record<string, unknown>, context: { companyId: string | null }) => Promise<unknown>) => {
+        register: (key: string, handler: (params: Record<string, unknown>, context: { companyId: string | null; actor: { type: string } }) => Promise<unknown>) => {
           registered.set(key, handler);
         },
       },
@@ -239,7 +239,7 @@ describe("contributeSlackTelemetryAction", () => {
     contributeSlackTelemetryAction(ctx as never);
     const handler = registered.get("get-slack-telemetry");
     expect(handler).toBeTruthy();
-    const result = await handler!({ agentId: "agent-1" }, { companyId: COMPANY_ID });
+    const result = await handler!({ agentId: "agent-1" }, { companyId: COMPANY_ID, actor: { type: "user" } });
     expect(result).toEqual({ ingress: null, delivery: null });
   });
 
@@ -252,7 +252,7 @@ describe("contributeSlackTelemetryAction", () => {
     );
     contributeSlackTelemetryAction(ctx as never);
     const handler = registered.get("get-slack-telemetry")!;
-    const result = (await handler({ agentId: "agent-1" }, { companyId: COMPANY_ID })) as Record<string, unknown>;
+    const result = (await handler({ agentId: "agent-1" }, { companyId: COMPANY_ID, actor: { type: "user" } })) as Record<string, unknown>;
     expect((result.ingress as Record<string, unknown>).lastRoutingResult).toBe("routed");
   });
 
@@ -260,14 +260,23 @@ describe("contributeSlackTelemetryAction", () => {
     const { ctx, registered } = fakeCtx();
     contributeSlackTelemetryAction(ctx as never);
     const handler = registered.get("get-slack-telemetry")!;
-    await expect(handler({}, { companyId: COMPANY_ID })).rejects.toThrow(/agentId/);
+    await expect(handler({}, { companyId: COMPANY_ID, actor: { type: "user" } })).rejects.toThrow(/agentId/);
   });
 
   it("rejects a request without a host-authorized companyId", async () => {
     const { ctx, registered } = fakeCtx();
     contributeSlackTelemetryAction(ctx as never);
     const handler = registered.get("get-slack-telemetry")!;
-    await expect(handler({ agentId: "agent-1" }, { companyId: null })).rejects.toThrow(/companyId/);
+    await expect(handler({ agentId: "agent-1" }, { companyId: null, actor: { type: "user" } })).rejects.toThrow(/companyId/);
+  });
+
+  it("rejects a non-human actor before touching state (DRO-1161 auth gap)", async () => {
+    const { ctx, registered } = fakeCtx();
+    contributeSlackTelemetryAction(ctx as never);
+    const handler = registered.get("get-slack-telemetry")!;
+    await expect(handler({ agentId: "agent-1" }, { companyId: COMPANY_ID, actor: { type: "agent" } })).rejects.toThrow(
+      "This settings action requires a human user actor.",
+    );
   });
 
   it("never returns another company's telemetry through the registered action for a shared agentId", async () => {
@@ -279,7 +288,7 @@ describe("contributeSlackTelemetryAction", () => {
     );
     contributeSlackTelemetryAction(ctx as never);
     const handler = registered.get("get-slack-telemetry")!;
-    const result = await handler({ agentId: "shared-agent" }, { companyId: OTHER_COMPANY_ID });
+    const result = await handler({ agentId: "shared-agent" }, { companyId: OTHER_COMPANY_ID, actor: { type: "user" } });
     expect(result).toEqual({ ingress: null, delivery: null });
   });
 });

@@ -2,6 +2,7 @@ import type { PluginContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import type { ResolvedAgentIdentity } from "../../core/agent-identity.js";
 import { resolveSlackBotToken, verifySlackToken, type ResolveSlackSecret } from "./credentials.js";
 import { readSlackIdentityConfigEntry, validateSlackConfig, type SlackAgentIdentity } from "./config.js";
+import { requireHumanSettingsActor } from "../../core/settings-action-authorization.js";
 
 /**
  * DRO-1161: a bounded, secret-free "Connection" health check, distinct from
@@ -145,6 +146,7 @@ const SLACK_CONNECTION_CHECK_ACTION = "check-slack-connection";
  */
 export function contributeSlackConnectionStatusAction(ctx: PluginContext): void {
   ctx.actions.register(SLACK_CONNECTION_CHECK_ACTION, async (params, context) => {
+    requireHumanSettingsActor(context);
     const agentId = typeof params.agentId === "string" ? params.agentId.trim() : "";
     if (!agentId) {
       throw new Error("agentId is required to check the Slack connection.");

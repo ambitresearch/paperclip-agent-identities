@@ -18,6 +18,7 @@ describe("createGitHubAppManifestFlow", () => {
     expect(result.postUrl).toContain("github.com/settings/apps/new?state=");
     const manifest = JSON.parse(result.manifest);
     expect(manifest.default_permissions.contents).toBe("write");
+    expect(manifest.default_permissions.organization_projects).toBe("write");
   });
 
   it("rejects an agentId that is not a single path segment", () => {

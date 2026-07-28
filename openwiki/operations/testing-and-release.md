@@ -77,8 +77,12 @@ Current test files:
   - bounded persisted turns, pending/active/completed dedup, 24-hour completion retention, v1 ledger/run migration beyond minute 10, and unowned-thread fail-closed behavior
 - `/tests/providers/slack/ingress-provider-webhook.spec.ts`
   - persist-before-ack and no session send in webhook scope
+  - first-mention existing-thread hydration, root-mention and existing-session no-fetch behavior, prompt section ordering, current-message deduplication, and secret-free unavailable-history fallback
   - deferred self-event draining, duplicate-drain coalescing, cross-conversation concurrency, FIFO successor kicks, accepted-run callback binding, stale callback rejection, host terminal sequence resets, and terminal reply-finalization ordering
   - kick failure retention, ambiguous-send uncertain retirement/no replay, expired-lease retirement only under fresh scope, and restart plus webhook recovery
+- `/tests/providers/slack/ingress-thread-history.spec.ts`
+  - canonical channel/thread request parameters, deterministic pagination bounds, chronological timestamp deduplication, and recent-message count/byte selection
+  - prompt-injection-shaped text projection, oversized UTF-8 text, deletion tombstones, unsupported attachment/transport-field exclusion, timeout, missing-scope/rate-limit failures, and cross-channel/thread fail-closed behavior
 - `/tests/providers/slack/ingress-session-reply.spec.ts`
   - structured adapter-output reduction and bounded Slack reply truncation
 - `/tests/providers/slack/ingress-worker-integration.spec.ts`

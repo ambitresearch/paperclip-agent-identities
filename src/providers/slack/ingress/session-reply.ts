@@ -143,8 +143,25 @@ export class SlackSessionReplyAccumulator {
       record.tag === "agent_message_chunk" &&
       typeof record.text === "string"
     ) {
+      // ACPX `acpx.text_delta`/`agent_message_chunk` records currently carry
+      // no provenance discriminator: a transport/adapter diagnostic (e.g. a
+      // "Model metadata not found, defaulting to fallback metadata" warning)
+      // and genuine assistant prose are structurally identical at this layer
+      // (same type/channel/tag). Upstream tracking: paperclipai/paperclip#1465
+      // covers the terminal surface only, not this downstream classification;
+      // a core fix needs a provenance/kind field on this event shape (or the
+      // diagnostic emitted as `acpx.status`/`acpx.error` instead of
+      // `agent_message_chunk`).
+      //
+      // Until that provenance exists, fail safely: never live-stream this
+      // source's text to Slack as it arrives (a diagnostic chunk emitted
+      // before the real answer must not appear as a partial reply). Only a
+      // later, structurally-confirmed higher-priority record (e.g. `result`,
+      // `item.completed`) can promote accumulated acpx-delta text to a
+      // deliverable reply; bare acpx-delta content is retained as a fallback
+      // (see `finish()`), not streamed live.
       const previous = this.structured?.source === "acpx-delta" ? this.structured.text : "";
-      this.setStructured(`${previous}${record.text}`, 2, "acpx-delta", true);
+      this.setStructured(`${previous}${record.text}`, 2, "acpx-delta", false);
       return;
     }
 

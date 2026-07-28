@@ -161,8 +161,25 @@ run ID, buffers callbacks received before `sendMessage` returns, and ignores sta
 run/session callbacks. Terminal handling awaits stream/post finalization, then marks
 the event completed, clears active state, and emits the successor kick. No detached
 timer calls host APIs. Structured adapter output is reduced to user-facing reply text;
-ACPX `acpx.text_delta` records stream only when their channel is `output` and their
-tag is `agent_message_chunk`. The persisted `retireAfter` is a 30-minute durable accepted
+ACPX `acpx.text_delta` records are only considered for their channel `output` and their
+tag `agent_message_chunk` (DRO-1162: as of today this type/channel/tag shape carries no
+provenance discriminator, so a transport/adapter diagnostic emitted in this exact shape
+before the real answer — e.g. a "Model metadata not found, defaulting to fallback
+metadata" warning, see upstream `paperclipai/paperclip#1465` — is structurally
+indistinguishable from genuine assistant prose at this layer). Because of that gap, this
+source's text is accumulated but never live-streamed to Slack as it arrives; it is only
+delivered, as a bounded fallback, once the turn finishes with no higher-priority
+confirmed record (`result`, `item.completed`, a Claude `content_block_delta`, or a
+Gemini/assistant message). Any of those higher-priority records that arrive later
+supersede accumulated ACPX-delta text entirely. This is deliberately narrower than the
+ideal fix: the real fix is an upstream ACPX/core event-contract change adding a
+provenance/kind field (or moving diagnostics onto `acpx.status`/`acpx.error`) so
+diagnostics can be classified and dropped outright instead of merely deferred. Until
+that lands, both the old pre-DRO-1162 shape (live streaming) and this shape (accumulate,
+never live-stream, single fallback delivery on finish) are supported by the same code
+path — there is no wire-format branch to maintain, only a behavior change gated on the
+same fields — so no bounded-transition flag is needed. The persisted `retireAfter` is a
+30-minute durable accepted
 lease and is retired only when a
 later webhook/self-event supplies host scope; a fresh terminal session callback
 can finalize its own accepted run.

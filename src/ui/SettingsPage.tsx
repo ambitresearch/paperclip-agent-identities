@@ -174,12 +174,23 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   }, []);
 
   useEffect(() => {
+    // Company boundary: bump the fetch generation so any outstanding
+    // fetch/refresh for the previous company resolves as a no-op (both in
+    // fetchSecrets' generation check and in refreshSecrets' in-flight
+    // guard, which we also clear here), and reset the tracking state.
+    // Unlike a manual same-company refresh -- which deliberately preserves
+    // the last successful secretOptions on a failed fetch -- a company
+    // *change* always clears secretOptions/missingSecretIds up front:
+    // otherwise a failed load for the new company would leave the previous
+    // company's secret names/UUIDs on screen and selectable.
+    secretsFetchGenerationRef.current += 1;
+    secretsFetchInFlightRef.current = false;
     knownSecretIdsRef.current = new Set();
     setMissingSecretIds(new Set());
+    setSecretOptions([]);
+    setSecretsError(null);
+    setSecretsLoading(false);
     if (!companyId) {
-      setSecretOptions([]);
-      setSecretsError(null);
-      setSecretsLoading(false);
       return;
     }
     return fetchSecrets(companyId);
@@ -295,7 +306,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   );
   const duplicateIdentity = config ? identities.find((entry) => entry.agentId === config.agentId && entry.provider === config.provider && !(config.previousAgentId === entry.agentId && config.provider === entry.provider)) : undefined;
   const formValidation = config
-    ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy)
+    ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy, missingSecretIds)
     : null;
   const activeFormSteps = getFormSteps(config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
   const activeFormStepIndex = getFormStepIndex(activeFormSection, config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
@@ -391,7 +402,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   async function handleSave() {
     if (!config) return;
-    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy);
+    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy, missingSecretIds);
     if (!validation.isComplete) {
       setSaveSuccess(false);
       setSaveError(validation.saveMessage);
@@ -919,9 +930,10 @@ export function getIdentityFormValidation(
   hasDuplicate = false,
   slackSaveResult: SaveSlackInstallMetadataResult | null = null,
   slackSaveBusy = false,
+  missingSecretIds: ReadonlySet<string> = new Set(),
 ): IdentityFormValidation {
   const adapter = providerSettingsRegistry.get(config.provider);
-  return adapter.getValidation(config, hasDuplicate, { slackSaveResult, slackSaveBusy });
+  return adapter.getValidation(config, hasDuplicate, { slackSaveResult, slackSaveBusy, missingSecretIds });
 }
 
 function getFormStepIndex(step: IdentityFormSection, provider: string): number {

@@ -1277,7 +1277,13 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
             !config.slackAppId.trim() ||
             !config.slackBotUserId.trim() ||
             !config.slackBotTokenSecretId.trim() ||
-            !config.slackSigningSecretId.trim()
+            !config.slackSigningSecretId.trim() ||
+            // DRO-1155: a selected bot-token/signing-secret ref that no
+            // longer resolves to a real secret must block the save action,
+            // matching getValidation's credentialComplete rule -- not just
+            // display an error alongside a still-clickable button.
+            missingSecretIds.has(config.slackBotTokenSecretId.trim()) ||
+            missingSecretIds.has(config.slackSigningSecretId.trim())
           }
           style={secondaryButtonStyle}
         >

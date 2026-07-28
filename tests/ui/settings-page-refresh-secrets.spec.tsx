@@ -182,6 +182,125 @@ async function openSlackCredentialStep() {
   });
 }
 
+async function openGithubCredentialStep() {
+  renderSettingsPage();
+  // Let the initial (companyId-driven) secrets fetch resolve before the
+  // dialog is opened, so field state below isn't racing that first load.
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  const newButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Add identity");
+  click(newButton ?? null);
+
+  const agentSelect = Array.from(container.querySelectorAll("select")).find((s) =>
+    Array.from(s.options).some((o) => o.value === "agent-1"),
+  );
+  setValue(agentSelect ?? null, "agent-1");
+  const labelInput = Array.from(container.querySelectorAll("input")).find((i) => i.placeholder?.includes("Cade Riven"));
+  setValue(labelInput ?? null, "Release Bot");
+  const usernameInput = Array.from(container.querySelectorAll("input")).find((i) =>
+    i.placeholder?.includes("ouroboros-paperclip-agent"),
+  );
+  setValue(usernameInput ?? null, "release-bot[bot]");
+
+  const nextButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Next");
+  await act(async () => {
+    click(nextButton ?? null);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+function privateKeySelect() {
+  return Array.from(container.querySelectorAll("label")).find((l) => l.textContent?.includes("Private key Paperclip secret UUID"))
+    ?.querySelector("select");
+}
+
+function fallbackTokenSelect() {
+  return Array.from(container.querySelectorAll("label")).find((l) => l.textContent?.includes("Fallback token secret UUID"))
+    ?.querySelector("select");
+}
+
+describe("SettingsPage: refresh secrets inside the open GitHub credential step (DRO-1155)", () => {
+  it("re-queries the active company's secrets and shows the newly created private-key/fallback-token refs without closing the dialog", async () => {
+    stubSecrets([]);
+    await openGithubCredentialStep();
+
+    fetchMock.mockClear();
+    stubSecrets([
+      { id: BOT_TOKEN_SECRET_ID, name: "private-key-secret" },
+      { id: SIGNING_SECRET_ID, name: "fallback-token-secret" },
+    ]);
+
+    await act(async () => {
+      click(refreshButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(text()).toContain("private-key-secret");
+    expect(text()).toContain("fallback-token-secret");
+
+    setValue(privateKeySelect() ?? null, BOT_TOKEN_SECRET_ID);
+    setValue(fallbackTokenSelect() ?? null, SIGNING_SECRET_ID);
+
+    expect((privateKeySelect() as HTMLSelectElement).value).toBe(BOT_TOKEN_SECRET_ID);
+    expect((fallbackTokenSelect() as HTMLSelectElement).value).toBe(SIGNING_SECRET_ID);
+  });
+
+  it("preserves the selected private-key/fallback-token refs across a refresh", async () => {
+    stubSecrets([
+      { id: BOT_TOKEN_SECRET_ID, name: "private-key-secret" },
+      { id: SIGNING_SECRET_ID, name: "fallback-token-secret" },
+    ]);
+    await openGithubCredentialStep();
+    setValue(privateKeySelect() ?? null, BOT_TOKEN_SECRET_ID);
+    setValue(fallbackTokenSelect() ?? null, SIGNING_SECRET_ID);
+
+    await act(async () => {
+      click(refreshButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect((privateKeySelect() as HTMLSelectElement).value).toBe(BOT_TOKEN_SECRET_ID);
+    expect((fallbackTokenSelect() as HTMLSelectElement).value).toBe(SIGNING_SECRET_ID);
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("shows an explicit missing-secret error for a deleted private key ref and does not treat the credential as complete", async () => {
+    stubSecrets([{ id: BOT_TOKEN_SECRET_ID, name: "private-key-secret" }]);
+    await openGithubCredentialStep();
+    setValue(privateKeySelect() ?? null, BOT_TOKEN_SECRET_ID);
+
+    const appIdInput = Array.from(container.querySelectorAll("input")).find((i) => i.placeholder === "GitHub App ID");
+    setValue(appIdInput ?? null, "123456");
+    const installIdInput = Array.from(container.querySelectorAll("input")).find((i) =>
+      i.placeholder === "GitHub App installation ID",
+    );
+    setValue(installIdInput ?? null, "789");
+
+    // The private-key secret is deleted server-side.
+    stubSecrets([]);
+    await act(async () => {
+      click(refreshButton() ?? null);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).toContain("no longer exists");
+    // Selection itself is preserved (not silently switched away). Once
+    // secretOptions is empty, the field falls back to a plain text input
+    // (see hasSecretOptions in settings-adapter-ui.tsx) rather than a select.
+    const privateKeyInput = Array.from(container.querySelectorAll("label")).find((l) =>
+      l.textContent?.includes("Private key Paperclip secret UUID"),
+    )?.querySelector("input");
+    expect((privateKeyInput as HTMLInputElement).value).toBe(BOT_TOKEN_SECRET_ID);
+  });
+});
+
 describe("SettingsPage: refresh secrets inside the open identity dialog (DRO-1155)", () => {
   it("re-queries the active company's secrets and shows the newly created bot/signing refs without closing the dialog", async () => {
     stubSecrets([]);

@@ -64,6 +64,15 @@ import {
 const CHANNEL_ID_PATTERN = /^[CDG][A-Z0-9]{8,}$/;
 const TEAM_ID_PATTERN = /^T[A-Z0-9]{8,}$/;
 
+// Slack's own channel-name grammar: lowercase letters, digits, hyphens,
+// underscores, and periods, max 80 characters (Slack's documented limit),
+// optionally prefixed with a single "#". Deliberately rejects URLs
+// (`isUrlLike`-equivalent — no "/", no scheme, no whitespace), uppercase,
+// and free text. This is the "narrowly defined name/reference schema"
+// acceptance criterion: arbitrary strings are never treated as trusted
+// channel references, only this grammar or an already-resolved ID.
+const CHANNEL_NAME_PATTERN = /^#?[a-z0-9][a-z0-9._-]{0,79}$/;
+
 // Bounds on `conversations.list` pagination so a huge workspace cannot
 // trigger unbounded API calls. 1000 is Slack's documented max per-page
 // limit for this method.
@@ -71,6 +80,10 @@ const PAGE_LIMIT = 1000;
 const MAX_PAGES = 10;
 const MAX_RATE_LIMIT_RETRIES = 3;
 const RATE_LIMIT_BACKOFF_MS = 500;
+// Bounds the ambiguity-error payload: at most this many conflicting IDs are
+// ever named in a response, so a name shared by thousands of channels can't
+// blow up response size.
+const MAX_REPORTED_MATCHES = 20;
 
 export interface SlackLookupChannelParams {
   readonly channel: string;
@@ -105,10 +118,27 @@ function validateLookupChannelParams(raw: unknown): ParamsValidation {
     return { ok: false, error: `Unknown parameter(s): ${Object.keys(rest).join(", ")}` };
   }
 
-  if (typeof channel !== "string" || channel.trim().length === 0 || channel.trim().length > 100) {
+  if (typeof channel !== "string") {
     return {
       ok: false,
-      error: "Invalid channel. Expected a non-empty channel name (e.g. 'general' or '#general') or a resolved Slack conversation ID, up to 100 characters."
+      error: "Invalid channel. Expected a channel name (e.g. 'general' or '#general') or a resolved Slack conversation ID."
+    };
+  }
+
+  const trimmedChannel = channel.trim();
+  const isValidId = CHANNEL_ID_PATTERN.test(trimmedChannel);
+  const isValidName = CHANNEL_NAME_PATTERN.test(trimmedChannel);
+  if (!isValidId && !isValidName) {
+    // Fails closed on URLs, whitespace-heavy free text, uppercase, and any
+    // other input outside Slack's own channel-name grammar or the
+    // conversation-ID pattern — never treated as a trusted reference.
+    return {
+      ok: false,
+      error:
+        "Invalid channel. Expected a Slack channel name matching Slack's own grammar " +
+        "(lowercase letters, digits, '.', '_', '-', optionally prefixed with '#', max 80 " +
+        "characters — e.g. 'general' or '#general') or a resolved Slack conversation ID " +
+        "(e.g. 'C0123456789'). URLs and free text are rejected."
     };
   }
 
@@ -326,6 +356,33 @@ async function performLookupChannel(
     if (!cursor) break;
   }
 
+  // Fail-closed truncation guard: if the accessible result set was NOT
+  // fully scanned (a cursor remains after MAX_PAGES), an unseen later page
+  // could contain another channel with the same name — turning a
+  // currently-unique match into an undetected duplicate. Only a fully
+  // scanned result set may report success; a truncated scan is always an
+  // actionable error, regardless of how many matches were seen so far.
+  if (cursor !== undefined) {
+    await ctx.activity.log({
+      companyId: runCtx.companyId,
+      entityType: "run",
+      entityId: runCtx.runId,
+      message: "slack_bot_lookup_channel truncated before uniqueness could be established",
+      metadata: {
+        agentId: runCtx.agentId,
+        runId: runCtx.runId,
+        outcome: "truncated",
+        pagesScanned: pages,
+        matchesSoFar: matches.length
+      }
+    });
+    return {
+      error:
+        `Could not conclusively resolve '${trimmed}': the workspace has more channels than could be ` +
+        `scanned (${pages} pages). Disambiguate by passing the resolved conversation ID directly.`
+    };
+  }
+
   if (matches.length === 0) {
     await ctx.activity.log({
       companyId: runCtx.companyId,
@@ -345,7 +402,9 @@ async function performLookupChannel(
   }
 
   if (matches.length > 1) {
-    const ids = matches.map((m) => m.id);
+    const allIds = matches.map((m) => m.id);
+    const reportedIds = allIds.slice(0, MAX_REPORTED_MATCHES);
+    const omittedCount = allIds.length - reportedIds.length;
     await ctx.activity.log({
       companyId: runCtx.companyId,
       entityType: "run",
@@ -355,12 +414,16 @@ async function performLookupChannel(
         agentId: runCtx.agentId,
         runId: runCtx.runId,
         outcome: "ambiguous",
-        matchCount: ids.length,
-        matchingIds: ids
+        matchCount: allIds.length,
+        // Bounded: only the first MAX_REPORTED_MATCHES IDs are logged/returned,
+        // so a name shared by an unbounded number of channels can't inflate
+        // response size.
+        matchingIds: reportedIds
       }
     });
+    const suffix = omittedCount > 0 ? ` (and ${omittedCount} more, not shown)` : "";
     return {
-      error: `Multiple accessible Slack channels are named '${trimmed}': ${ids.join(", ")}. Disambiguate by passing the resolved conversation ID directly.`
+      error: `Multiple accessible Slack channels are named '${trimmed}': ${reportedIds.join(", ")}${suffix}. Disambiguate by passing the resolved conversation ID directly.`
     };
   }
 

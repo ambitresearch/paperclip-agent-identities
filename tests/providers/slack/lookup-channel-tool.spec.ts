@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
 import { slackLookupChannelToolSpec } from "../../../src/providers/slack/tools/lookup-channel.js";
+import { createProviderTool } from "../../../src/core/tool-pipeline.js";
+import type { IdentityProvider } from "../../../src/core/provider-contract.js";
 import type { SlackAgentIdentity } from "../../../src/providers/slack/config.js";
+import type { ResourceReference } from "../../../src/core/resource-reference.js";
 
 const identity: SlackAgentIdentity = {
   label: "Bot",
@@ -8,6 +11,14 @@ const identity: SlackAgentIdentity = {
   appId: "A0123456789",
   botUserId: "U0123456789",
   defaultChannel: "C0123456789"
+};
+
+const otherCompanyIdentity: SlackAgentIdentity = {
+  label: "Other Co Bot",
+  teamId: "T9999999999",
+  appId: "A9999999999",
+  botUserId: "U9999999999",
+  defaultChannel: "C9999999999"
 };
 
 const runCtx = { agentId: "agent-1", companyId: "co-1", projectId: "p-1", runId: "r-1" } as never;
@@ -82,6 +93,24 @@ describe("slackLookupChannelToolSpec.validateParams", () => {
   it("rejects a channel over 100 characters", () => {
     const result = slackLookupChannelToolSpec.validateParams({ channel: "a".repeat(101) });
     expect(result.ok).toBe(false);
+  });
+
+  it("rejects a URL disguised as a channel reference", () => {
+    for (const url of [
+      "https://acme.slack.com/archives/C0123456789",
+      "https://slack.com/app_redirect?channel=C0123456789",
+      "slack://channel?id=C0123456789"
+    ]) {
+      const result = slackLookupChannelToolSpec.validateParams({ channel: url });
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it("rejects arbitrary free text / wildcard-like input", () => {
+    for (const text of ["please give me #general", "*", "general OR random", "a b c", "UPPERCASE"]) {
+      const result = slackLookupChannelToolSpec.validateParams({ channel: text });
+      expect(result.ok).toBe(false);
+    }
   });
 
   it("rejects unknown fields", () => {
@@ -208,6 +237,20 @@ describe("slackLookupChannelToolSpec.perform — name resolution", () => {
     expect(result.error.toLowerCase()).toContain("multiple");
   });
 
+  it("bounds the number of conflicting IDs reported for a name shared by many channels", async () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({
+      id: `C0${String(i + 1).padStart(9, "0")}`,
+      name: "eng",
+      is_archived: false
+    }));
+    const fetchImpl = vi.fn(async () => conversationsListResponse(many));
+    const execution = buildExecution(fetchImpl, { channel: "eng" });
+    const result = (await slackLookupChannelToolSpec.perform(execution)) as { error: string };
+    const idMatches = result.error.match(/C0\d{9}/g) ?? [];
+    expect(idMatches.length).toBeLessThanOrEqual(20);
+    expect(result.error).toMatch(/more, not shown/i);
+  });
+
   it("excludes archived channels from matches and does not auto-join", async () => {
     const fetchImpl = vi.fn(async (_url: string) =>
       conversationsListResponse([{ id: "C0000000006", name: "old-project", is_archived: true }])
@@ -221,7 +264,7 @@ describe("slackLookupChannelToolSpec.perform — name resolution", () => {
     }
   });
 
-  it("bounds pagination and does not loop forever on an endless cursor chain", async () => {
+  it("bounds pagination and does not loop forever on an endless cursor chain, failing closed on truncation", async () => {
     let calls = 0;
     const fetchImpl = vi.fn(async () => {
       calls += 1;
@@ -232,9 +275,33 @@ describe("slackLookupChannelToolSpec.perform — name resolution", () => {
     });
     const execution = buildExecution(fetchImpl, { channel: "general" });
     const result = (await slackLookupChannelToolSpec.perform(execution)) as { error: string };
-    expect(result.error).toMatch(/no accessible slack channel/i);
+    // The result set was truncated (a cursor still remained) before a full
+    // scan could establish uniqueness — this must fail closed with an
+    // actionable error, not silently report "no match" or an unverified
+    // single match.
+    expect(result.error).toMatch(/could not conclusively resolve/i);
     // Bounded: does not call fetch an unbounded number of times.
     expect(calls).toBeLessThanOrEqual(25);
+  });
+
+  it("fails closed on truncation even when exactly one match was seen so far (unseen later page could duplicate it)", async () => {
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return conversationsListResponse(
+          [{ id: "C0000000009", name: "general", is_archived: false }],
+          "cursor-1"
+        );
+      }
+      return conversationsListResponse(
+        [{ id: `C0${String(calls).padStart(9, "0")}`, name: "no-match", is_archived: false }],
+        `cursor-${calls}`
+      );
+    });
+    const execution = buildExecution(fetchImpl, { channel: "general" });
+    const result = (await slackLookupChannelToolSpec.perform(execution)) as { error: string };
+    expect(result.error).toMatch(/could not conclusively resolve/i);
   });
 });
 
@@ -345,5 +412,129 @@ describe("slackLookupChannelToolSpec — credential/redaction posture", () => {
     for (const call of [...activityLogCalls, ...loggerErrorCalls]) {
       expect(JSON.stringify(call)).not.toContain("test-bot-token");
     }
+  });
+});
+
+describe("slackLookupChannelToolSpec — end-to-end through the shared pipeline (company/agent/workspace isolation)", () => {
+  function buildProvider(
+    resolveCredential: () => Promise<{ token: string; secrets: string[] }>
+  ) {
+    return {
+      id: "slack",
+      definition: { id: "slack", name: "Slack", status: "coming-soon", description: "" },
+      validateConfig: () => ({}),
+      projectPluginConfig: () => ({}),
+      resolveCredential,
+      tools: [],
+      manifestTools: []
+    } as unknown as IdentityProvider<SlackAgentIdentity, ResourceReference>;
+  }
+
+  it("full pipeline resolves a name to a canonical ID scoped to the calling agent's own installation", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(true, {
+        ok: true,
+        channels: [{ id: "C0000000010", name: "general", is_archived: false }],
+        response_metadata: { next_cursor: "" }
+      })
+    );
+    const ctx = buildCtx(fetchImpl);
+    const resolveCredential = vi.fn(async () => ({ token: "test-bot-token", secrets: ["test-bot-token"] }));
+    const provider = buildProvider(resolveCredential);
+
+    const registered = createProviderTool(provider, slackLookupChannelToolSpec, ctx, {
+      resolveIdentity: async () => ({ agentId: "agent-1", identity }),
+      redactSecrets: (value, secrets) => {
+        let serialized = JSON.stringify(value);
+        for (const secret of secrets) {
+          serialized = serialized.split(secret).join("[REDACTED]");
+        }
+        return JSON.parse(serialized);
+      }
+    });
+
+    const result = (await registered.handler({ channel: "general" }, runCtx)) as {
+      data: { channelId: string };
+    };
+    expect(result.data.channelId).toBe("C0000000010");
+    expect(JSON.stringify(result)).not.toContain("test-bot-token");
+  });
+
+  it("full pipeline denies a cross-installation teamId before any credential resolution (no cross-company/agent lookup)", async () => {
+    const fetchImpl = vi.fn();
+    const ctx = buildCtx(fetchImpl);
+    const resolveCredential = vi.fn(async () => ({ token: "test-bot-token", secrets: ["test-bot-token"] }));
+    const provider = buildProvider(resolveCredential);
+
+    const registered = createProviderTool(provider, slackLookupChannelToolSpec, ctx, {
+      // This agent's identity is bound to team T0123456789 only.
+      resolveIdentity: async () => ({ agentId: "agent-1", identity }),
+      redactSecrets: (value) => value
+    });
+
+    // Caller attempts to reach into a different installation's workspace
+    // (otherCompanyIdentity's teamId) via the optional teamId param.
+    const result = (await registered.handler(
+      { channel: "general", teamId: otherCompanyIdentity.teamId },
+      runCtx
+    )) as { error: string };
+
+    expect(result.error).toMatch(/workspace mismatch/i);
+    // Credential resolution (and therefore any Slack API visibility) never
+    // happens for a denied cross-installation reference.
+    expect(resolveCredential).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("full pipeline scopes conversations.list visibility to the resolved identity's own credential — a second agent's identity/credential never leaks into the first agent's lookup", async () => {
+    const fetchImplAgentOne = vi.fn(async () =>
+      jsonResponse(true, {
+        ok: true,
+        channels: [{ id: "C0000000011", name: "general", is_archived: false }],
+        response_metadata: { next_cursor: "" }
+      })
+    );
+    const ctxAgentOne = buildCtx(fetchImplAgentOne);
+    const providerAgentOne = buildProvider(async () => ({ token: "agent-one-token", secrets: ["agent-one-token"] }));
+    const registeredAgentOne = createProviderTool(providerAgentOne, slackLookupChannelToolSpec, ctxAgentOne, {
+      resolveIdentity: async () => ({ agentId: "agent-1", identity }),
+      redactSecrets: (value, secrets) => {
+        let serialized = JSON.stringify(value);
+        for (const secret of secrets) serialized = serialized.split(secret).join("[REDACTED]");
+        return JSON.parse(serialized);
+      }
+    });
+
+    const fetchImplAgentTwo = vi.fn(async () =>
+      jsonResponse(true, {
+        ok: true,
+        channels: [{ id: "C0000000099", name: "general", is_archived: false }],
+        response_metadata: { next_cursor: "" }
+      })
+    );
+    const ctxAgentTwo = buildCtx(fetchImplAgentTwo);
+    const providerAgentTwo = buildProvider(async () => ({ token: "agent-two-token", secrets: ["agent-two-token"] }));
+    const registeredAgentTwo = createProviderTool(providerAgentTwo, slackLookupChannelToolSpec, ctxAgentTwo, {
+      resolveIdentity: async () => ({ agentId: "agent-2", identity: otherCompanyIdentity }),
+      redactSecrets: (value, secrets) => {
+        let serialized = JSON.stringify(value);
+        for (const secret of secrets) serialized = serialized.split(secret).join("[REDACTED]");
+        return JSON.parse(serialized);
+      }
+    });
+
+    const resultOne = (await registeredAgentOne.handler({ channel: "general" }, runCtx)) as {
+      data: { channelId: string };
+    };
+    const resultTwo = (await registeredAgentTwo.handler(
+      { channel: "general" },
+      { agentId: "agent-2", companyId: "co-2", projectId: "p-1", runId: "r-1" } as never
+    )) as { data: { channelId: string } };
+
+    // Each agent's lookup only ever sees its own installation's conversations.list.
+    expect(resultOne.data.channelId).toBe("C0000000011");
+    expect(resultTwo.data.channelId).toBe("C0000000099");
+    expect(fetchImplAgentOne).toHaveBeenCalledTimes(1);
+    expect(fetchImplAgentTwo).toHaveBeenCalledTimes(1);
   });
 });

@@ -154,29 +154,41 @@ Security properties, mirroring the other Slack tools' pipeline discipline:
   (`^[CDG][A-Z0-9]{8,}$`), it is validated and returned as-is — no `conversations.list` call is
   made. This keeps "already-resolved ID in, same ID out" cheap and satisfies the "ID input remains
   supported" criterion without weakening the fail-closed ID/prefix validation used elsewhere.
+- **Narrow input grammar.** `channel` must match either the conversation-ID pattern above or
+  Slack's own channel-name grammar (`^#?[a-z0-9][a-z0-9._-]{0,79}$` — lowercase letters, digits,
+  `.`/`_`/`-`, optional leading `#`, max 80 characters, matching Slack's documented channel-name
+  rules). URLs (`https://…`, `slack://…`, anything containing `/`), whitespace-heavy free text, and
+  wildcard-like input are rejected by `validateParams` before any identity/credential work — never
+  treated as a trusted reference.
 - **Never auto-joins.** Only conversations already visible to the bot via `conversations.list`
   (`types=public_channel,private_channel`, `exclude_archived=true`) are considered. Archived
   channels are excluded from matches, and the tool never calls `conversations.join`.
-- **Bounded pagination.** At most 10 pages of up to 1000 results each are fetched
-  (`conversations.list`'s documented per-page max), so a huge workspace cannot trigger unbounded API
-  calls; if the channel still isn't found after that bound, the tool fails closed with an actionable
-  "no accessible channel" error rather than looping on `next_cursor` forever.
+- **Bounded pagination, fails closed on truncation.** At most 10 pages of up to 1000 results each
+  are fetched (`conversations.list`'s documented per-page max). If the scan is truncated — a
+  `next_cursor` remains after the 10th page — the tool does NOT report success even if exactly one
+  match was seen so far: an unseen later page could contain another channel with the same name,
+  turning an apparent unique match into an undetected duplicate. A truncated scan always returns an
+  actionable "could not conclusively resolve" error asking the caller to disambiguate by ID, rather
+  than guessing at uniqueness from a partial view.
 - **Bounded rate-limit retries.** A `429` response or a `{ ok: false, error: "rate_limited" }` body
   is retried up to 3 times with linear backoff, then fails closed with an actionable
   "rate limit exceeded" error — never an unbounded retry loop.
-- **Ambiguity fails closed.** Multiple accessible channels sharing the queried name return an
-  explicit error naming every conflicting ID, instructing the caller to disambiguate by passing a
-  resolved ID directly, rather than silently picking one match.
+- **Ambiguity fails closed, and the response is bounded.** Multiple accessible channels sharing the
+  queried name return an explicit error naming conflicting IDs (capped at 20 IDs, with a count of any
+  further omitted matches), instructing the caller to disambiguate by passing a resolved ID
+  directly, rather than silently picking one match or returning an unbounded ID list.
 - **Secret-free errors.** Network failures are logged with a bare classification only (mirrors
   `performReaction`'s catch block in `react.ts`) — the raw thrown error, which could embed request
   details, is never logged or returned, since the bot token is already in the outgoing
   `Authorization` header by the time any error could occur.
 
-Test coverage: `tests/providers/slack/lookup-channel-tool.spec.ts` — local param validation,
-cross-workspace denial before any credential/API call, ID passthrough with zero API calls, exact
-single-match resolution, pagination across `cursor`, bounded pagination on an endless cursor chain,
-zero-match and ambiguous-match errors, archived-channel exclusion (and no `conversations.join`
-call), 429/`rate_limited` retry-then-recover and retry-then-fail-closed, network/API failure
+Test coverage: `tests/providers/slack/lookup-channel-tool.spec.ts` — local param validation
+including rejection of URLs/free text, cross-workspace denial before any credential/API call, ID
+passthrough with zero API calls, exact single-match resolution, pagination across `cursor`, fail-
+closed truncation handling on an endless cursor chain (including when exactly one match was seen so
+far), a bounded/capped ambiguity-error payload, zero-match and ambiguous-match errors, archived-
+channel exclusion (and no `conversations.join` call), 429/`rate_limited` retry-then-recover and
+retry-then-fail-closed, network/API failure
 handling without leaking the token, and full-pipeline redaction.
 
 ## 5. Manifest fragments
@@ -657,9 +669,10 @@ This slice implements the fifth and final MVP Slack tool described in §4:
 `src/shared/slack-bot-lookup-channel-tool.ts`, mirroring the other Slack tools' shared-definition
 modules.
 
-- `validateParams` accepts a required `channel` string (1-100 chars — either a human-readable name
-  like `"general"`/`"#general"` or an already-resolved conversation ID) and an optional `teamId`,
-  rejecting unknown fields, entirely locally.
+- `validateParams` accepts a required `channel` string (max 80 chars, matching either Slack's own
+  channel-name grammar `^#?[a-z0-9][a-z0-9._-]{0,79}$` — a human-readable name like
+  `"general"`/`"#general"` — or an already-resolved conversation ID) and an optional `teamId`,
+  rejecting unknown fields, URLs, and free text, entirely locally.
 - `resolveResourceRef` performs only the credential-free cross-workspace `teamId` guard (mirrors
   `resolveSlackChannelRef`'s check in `channel-ref.ts`) and always resolves to a `null` ref — the
   actual name-to-ID lookup needs a credential and happens in `perform`.
@@ -667,9 +680,12 @@ modules.
   (`normalizeSlackChannelId` from `channel-ref.ts`) and, if so, returns it unchanged with zero API
   calls. Otherwise it calls `conversations.list` (`types=public_channel,private_channel`,
   `exclude_archived=true`), paginating via `cursor` up to 10 pages of 1000 results each, matching
-  channel names case-insensitively. Zero matches and multiple (ambiguous) matches both return an
-  explicit, actionable `{ error }` rather than guessing — the ambiguous case names every
-  conflicting ID. A `429`/`rate_limited` response is retried up to 3 times with linear backoff
+  channel names case-insensitively. If the scan is truncated (a `next_cursor` remains after the
+  10th page), the tool fails closed with a "could not conclusively resolve" error regardless of how
+  many matches were seen — a full scan is required before uniqueness can be asserted. Zero matches
+  and multiple (ambiguous) matches both return an explicit, actionable `{ error }` rather than
+  guessing — the ambiguous case names conflicting IDs, capped at 20 with a count of any further
+  omitted matches. A `429`/`rate_limited` response is retried up to 3 times with linear backoff
   before failing closed. Network failures and non-ok API responses are logged with a bare
   classification only, never the raw thrown error or response body, matching `performReaction`'s
   posture in `react.ts`. The result and every `ctx.activity.log` call are free of the resolved
@@ -683,11 +699,12 @@ modules.
   flip does not newly permit creating Slack agent identities — that remains a separate, still-gated
   capability, unaffected by `status`.
 - Test coverage: `tests/providers/slack/lookup-channel-tool.spec.ts` — local param validation
-  (valid name, `#`-prefixed name, already-resolved ID, empty/oversized channel, unknown fields,
-  malformed/valid teamId); cross-workspace denial in `resolveResourceRef` before any credential/API
-  call, and the matching-teamId success path; ID passthrough with zero API calls; exact single-match
-  resolution; pagination across `cursor` pages; bounded pagination on an endless cursor chain (never
-  loops unbounded); zero-match and ambiguous-match (naming every conflicting ID) errors; archived-
+  (valid name, `#`-prefixed name, already-resolved ID, empty/oversized channel, URL/free-text
+  rejection, unknown fields, malformed/valid teamId); cross-workspace denial in `resolveResourceRef`
+  before any credential/API call, and the matching-teamId success path; ID passthrough with zero API
+  calls; exact single-match resolution; pagination across `cursor` pages; fail-closed truncation
+  handling on an endless cursor chain, including when exactly one match was seen before truncation;
+  zero-match and ambiguous-match (naming conflicting IDs, capped at 20) errors; archived-
   channel exclusion with no `conversations.join` call ever made; 429 retry-then-recover,
   retry-then-fail-closed, and Slack's `{ok:false, error:"rate_limited"}` shape; network/API failure
   handling that never leaks the token; and credential/redaction posture (missing-token internal

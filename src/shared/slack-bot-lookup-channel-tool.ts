@@ -25,7 +25,13 @@ export const slackLookupChannelParametersSchema = {
     channel: {
       type: "string",
       minLength: 1,
-      maxLength: 100
+      maxLength: 80,
+      // Slack's own channel-name grammar (lowercase, digits, '.', '_', '-',
+      // optional leading '#') OR an already-resolved conversation ID.
+      // URLs and arbitrary free text are rejected — see
+      // `../providers/slack/tools/lookup-channel.ts`'s
+      // `CHANNEL_NAME_PATTERN`/`CHANNEL_ID_PATTERN`.
+      pattern: "^(#?[a-z0-9][a-z0-9._-]{0,79}|[CDG][A-Z0-9]{8,})$"
     },
     // Optional cross-workspace-ambiguity guard, not a way to select a
     // different workspace — mirrors SlackChannelRefParams.teamId
@@ -49,8 +55,12 @@ export const slackBotLookupChannelToolMetadata = {
     "can already see via conversations.list are considered — this tool never joins a " +
     "channel on the caller's behalf. An already-resolved conversation ID may be passed " +
     "as `channel` instead of a name; it is validated and returned without an extra API " +
-    "call. Ambiguous (duplicate) names and channels with zero accessible matches both " +
-    "return an explicit, actionable error rather than guessing.",
+    "call. `channel` must match Slack's own channel-name grammar (lowercase letters, " +
+    "digits, '.', '_', '-', optional leading '#', max 80 characters) or a resolved " +
+    "conversation ID — URLs and free text are rejected. Ambiguous (duplicate) names " +
+    "and channels with zero accessible matches both return an explicit, actionable " +
+    "error rather than guessing; a workspace too large to fully scan also fails " +
+    "closed instead of guessing at uniqueness.",
   parametersSchema: slackLookupChannelParametersSchema
 } as const;
 

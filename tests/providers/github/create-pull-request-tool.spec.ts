@@ -1,5 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
-import { githubCreatePullRequestToolSpec } from "../../../src/providers/github/tools/create-pull-request.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import {
+  githubCreatePullRequestToolSpec
+} from "../../../src/providers/github/tools/create-pull-request.js";
+import {
+  __setGitCommandRunnerForTests,
+  __resetGitCommandRunnerForTests
+} from "../../../src/providers/github/tools/push-branch.js";
 import type { GitHubRepoRef } from "../../../src/providers/github/repo-ref.js";
 import type {
   ProviderToolExecution
@@ -12,13 +18,18 @@ function repoRef(): GitHubRepoRef {
   return { kind: "github-repo", owner: "acme", repo: "widgets", fullName: "acme/widgets" };
 }
 
-function buildCtx(fetchImpl: typeof fetch, activityLog = vi.fn()) {
+function buildCtx(fetchImpl: typeof fetch, activityLog = vi.fn(), workspacePath = "/work/repo") {
   return {
     http: { fetch: fetchImpl },
     logger: { info: vi.fn(), error: vi.fn() },
-    activity: { log: activityLog }
+    activity: { log: activityLog },
+    projects: { getPrimaryWorkspace: vi.fn(async () => ({ path: workspacePath })) }
   } as never;
 }
+
+afterEach(() => {
+  __resetGitCommandRunnerForTests();
+});
 
 describe("githubCreatePullRequestToolSpec.validateParams", () => {
   it("rejects a missing repository", () => {

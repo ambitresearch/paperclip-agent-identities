@@ -29,6 +29,10 @@ import { githubReplyToReviewThreadToolSpec } from "./tools/reply-to-review-threa
 import { githubResolveReviewThreadToolSpec } from "./tools/resolve-review-thread.js";
 import { githubUnresolveReviewThreadToolSpec } from "./tools/unresolve-review-thread.js";
 import { githubListPullRequestReviewThreadsToolSpec } from "./tools/list-pull-request-review-threads.js";
+import { githubSearchRepositoryItemsToolSpec } from "./tools/search-repository-items.js";
+import { githubUploadPullRequestAssetToolSpec } from "./tools/upload-pull-request-asset.js";
+import { githubGetIssueInteractionSummaryToolSpec } from "./tools/get-issue-interaction-summary.js";
+import { githubLinkGithubItemToolSpec } from "./tools/link-github-item.js";
 import { githubManifestTools } from "./manifest-tools.js";
 import { contributeGitHubAppManifestActions } from "./app-manifest.js";
 
@@ -96,7 +100,11 @@ export const githubProvider: IdentityProvider<GitHubAgentIdentity, ResourceRefer
     githubReplyToReviewThreadToolSpec,
     githubResolveReviewThreadToolSpec,
     githubUnresolveReviewThreadToolSpec,
-    githubListPullRequestReviewThreadsToolSpec
+    githubListPullRequestReviewThreadsToolSpec,
+    githubSearchRepositoryItemsToolSpec,
+    githubUploadPullRequestAssetToolSpec,
+    githubGetIssueInteractionSummaryToolSpec,
+    githubLinkGithubItemToolSpec
   ],
   contributeActions: contributeGitHubAppManifestActions,
   manifestTools: githubManifestTools

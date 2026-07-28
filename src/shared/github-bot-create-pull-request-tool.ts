@@ -36,6 +36,22 @@ export const githubBotCreatePullRequestToolMetadata = {
         type: "string",
         description: "Optional Paperclip issue ID to associate with this PR",
       },
+      remote: {
+        type: "string",
+        description:
+          "Optional local git remote name to publish `head` from (default \"origin\"). Only used when `commit` is provided.",
+      },
+      commit: {
+        type: "string",
+        description:
+          "Optional exact local commit SHA to publish as `head` before creating the PR. When provided, the local " +
+          "workspace HEAD must already be at this commit; the branch is pushed at this exact commit, verified on " +
+          "the remote, and rolled back if PR creation subsequently fails.",
+      },
+      dryRun: {
+        type: "boolean",
+        description: "When true and `commit` is provided, performs a dry-run push and returns without creating a PR.",
+      },
     },
     required: ["repository", "head", "base", "title"],
   },

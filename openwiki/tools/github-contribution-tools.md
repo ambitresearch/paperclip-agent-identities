@@ -163,6 +163,91 @@ Failure behavior:
 includes `agentId`, never the token), validation, repository-format fail-closed behavior, and GitHub API
 success/failure paths.
 
+## `github_bot_get_pull_request_checks`
+
+Source:
+
+- metadata: `/src/shared/github-bot-get-pull-request-checks-tool.ts`
+- implementation: `/src/providers/github/tools/get-pull-request-checks.ts`
+
+Purpose: read-only visibility into a pull request's CI/CD status -- check runs (Actions and other Checks-API
+integrations), legacy commit status contexts, and Actions workflow runs for the PR's head commit.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `pullNumber`: the pull request number to inspect.
+
+Runtime behavior:
+
+1. validates parameter types;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. calls `GET .../pulls/{pullNumber}` to resolve the head SHA;
+5. calls, in parallel, `GET .../commits/{sha}/check-runs`, `GET .../commits/{sha}/status`, and
+   `GET .../actions/runs?head_sha={sha}`;
+6. returns the head SHA, the legacy overall commit status state, and normalized arrays of check runs,
+   status contexts, and workflow runs.
+
+Failure behavior mirrors the other GitHub tools: malformed params and repositories fail before credential
+resolution; network failures return a generic connectivity error without leaking the token; non-OK GitHub
+responses (including a 404 on the PR lookup itself) surface GitHub's message when parseable.
+
+This tool is read-only -- it never mutates the pull request, a check, or a status.
+
+`/tests/providers/github/get-pull-request-checks-tool.spec.ts` covers validation, repository-format
+fail-closed behavior, the three-call fan-out keyed off the resolved head SHA, and GitHub API error surfacing.
+
+## `github_bot_request_pull_request_reviewers`
+
+Source:
+
+- metadata: `/src/shared/github-bot-request-pull-request-reviewers-tool.ts`
+- implementation: `/src/providers/github/tools/request-pull-request-reviewers.ts`
+
+Purpose: request reviewers (users and/or teams) on a pull request using the agent's configured identity. This
+is the sanctioned path for the agent-chain review routing described in company policy -- it must not be used
+to request review from a human board user for routine PR gates.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `pullNumber`: the pull request number to request reviewers on.
+
+Optional parameters (at least one of `reviewers`/`teamReviewers` is required):
+
+- `reviewers`: array of GitHub usernames.
+- `teamReviewers`: array of team slugs (within the repository's organization).
+- `paperclipIssueId` for activity metadata.
+
+Runtime behavior:
+
+1. validates parameter types, including that each array entry is a non-empty string and at least one of
+   `reviewers`/`teamReviewers` is present;
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. calls `POST .../pulls/{pullNumber}/requested_reviewers` with `reviewers` and/or `team_reviewers`;
+5. logs a `pull_request` activity containing repository, PR number, URL, requested reviewers/teams, agent
+   ID, and optional Paperclip issue ID;
+6. returns the PR number, URL, and the resulting requested reviewers/teams.
+
+Failure behavior mirrors the other GitHub tools: malformed params and repositories fail before credential
+resolution; network failures return a generic connectivity error without leaking the token; non-OK GitHub
+responses (e.g. requesting a review from the PR author) surface GitHub's message when parseable.
+
+**Manifest permissions**: `github_bot_get_pull_request_checks` reads Checks-API and commit-status data that
+requires the App to hold `checks: read` and `statuses: read` repository permissions in addition to the
+existing `pull_requests`/`contents`/`issues`/`workflows` grants. `/src/providers/github/app-manifest.ts`'s
+`createGitHubAppManifestFlow` now requests both by default for *newly created* App manifests. As documented
+in that file, this has no effect on an already-installed App -- existing installations must add `checks:read`
+and `statuses:read` themselves (GitHub App settings -> Permissions & events) before
+`github_bot_get_pull_request_checks` will succeed against them. `github_bot_request_pull_request_reviewers`
+uses the existing `pull_requests: write` permission and requires no manifest change.
+
+`/tests/providers/github/request-pull-request-reviewers-tool.spec.ts` covers validation, repository-format
+fail-closed behavior, reviewers/team_reviewers request body construction, activity logging with agent
+attribution and no token leakage, and GitHub API success/failure paths.
+
 ## Shared redaction and helper utilities
 
 `/src/lib/redaction.ts` provides recursive redaction for strings, arrays, and objects, plus safe error conversion.

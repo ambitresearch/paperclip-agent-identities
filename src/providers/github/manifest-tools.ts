@@ -18,6 +18,10 @@ import { githubBotReplyToReviewThreadManifestTool } from "../../shared/github-bo
 import { githubBotResolveReviewThreadManifestTool } from "../../shared/github-bot-resolve-review-thread-tool.js";
 import { githubBotUnresolveReviewThreadManifestTool } from "../../shared/github-bot-unresolve-review-thread-tool.js";
 import { githubBotListPullRequestReviewThreadsManifestTool } from "../../shared/github-bot-list-pull-request-review-threads-tool.js";
+import { githubBotSearchRepositoryItemsManifestTool } from "../../shared/github-bot-search-repository-items-tool.js";
+import { githubBotUploadPullRequestAssetManifestTool } from "../../shared/github-bot-upload-pull-request-asset-tool.js";
+import { githubBotGetIssueInteractionSummaryManifestTool } from "../../shared/github-bot-get-issue-interaction-summary-tool.js";
+import { githubBotLinkGithubItemManifestTool } from "../../shared/github-bot-link-github-item-tool.js";
 
 /**
  * The manifest-tool fragments the GitHub provider contributes to the plugin
@@ -45,4 +49,8 @@ export const githubManifestTools = [
   githubBotResolveReviewThreadManifestTool,
   githubBotUnresolveReviewThreadManifestTool,
   githubBotListPullRequestReviewThreadsManifestTool,
+  githubBotSearchRepositoryItemsManifestTool,
+  githubBotUploadPullRequestAssetManifestTool,
+  githubBotGetIssueInteractionSummaryManifestTool,
+  githubBotLinkGithubItemManifestTool,
 ] as const;

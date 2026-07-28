@@ -14,12 +14,14 @@ import {
   fieldStyle,
   fieldsetStyle,
   formActionsStyle,
+  getMissingSecretIdError,
   hintStyle,
   inlineNoticeStyle,
   inputStyle,
   legendStyle,
   linkStyle,
   manifestPanelStyle,
+  RefreshSecretsButton,
   requiredStyle,
   secondaryButtonStyle,
   successStyle,
@@ -102,6 +104,8 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
   secretsLoading: boolean;
   secretsError: string | null;
   companyId: string;
+  refreshSecrets: () => void;
+  missingSecretIds: ReadonlySet<string>;
   // The Events Request URL this deployment serves for `companyId`, derived from
   // the host's company-scoped webhook route, or null when it cannot be derived
   // (non-HTTPS dev origin). Offered as the default so operators do not have to
@@ -834,6 +838,8 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     secretsLoading: input.secretsLoading,
     secretsError: input.secretsError,
     companyId: input.companyId,
+    refreshSecrets: input.refreshSecrets,
+    missingSecretIds: input.missingSecretIds,
     hostEventsRequestUrl,
     effectiveEventsRequestUrl,
   };
@@ -946,6 +952,8 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     secretsLoading,
     secretsError,
     companyId,
+    refreshSecrets,
+    missingSecretIds,
     hostEventsRequestUrl,
     effectiveEventsRequestUrl,
   } = state;
@@ -1154,6 +1162,10 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         />
       </label>
 
+      {!hasLegacyCredentialRecovery && (
+        <RefreshSecretsButton onRefresh={refreshSecrets} secretsLoading={secretsLoading} disabled={!companyId} />
+      )}
+
       {!hasLegacyCredentialRecovery && <label style={fieldStyle}>
         <span>Bot token Paperclip secret UUID <span style={requiredStyle}>*</span></span>
         {hasSecretOptions ? (
@@ -1182,7 +1194,11 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           />
         )}
         <span style={hintStyle}>{getSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })} The bot token itself is never stored in this config; only the secret reference is.</span>
+        {getMissingSecretIdError(config.slackBotTokenSecretId, missingSecretIds, "bot token") && (
+          <span style={errorStyle}>{getMissingSecretIdError(config.slackBotTokenSecretId, missingSecretIds, "bot token")}</span>
+        )}
       </label>}
+
 
       {!hasLegacyCredentialRecovery && <div style={formActionsStyle}>
         <button
@@ -1230,6 +1246,9 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           {getSigningSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })} The signing secret
           itself is never stored in this config; only the secret reference is.
         </span>
+        {getMissingSecretIdError(config.slackSigningSecretId, missingSecretIds, "signing secret") && (
+          <span style={errorStyle}>{getMissingSecretIdError(config.slackSigningSecretId, missingSecretIds, "signing secret")}</span>
+        )}
       </label>}
 
       <label style={fieldStyle}>

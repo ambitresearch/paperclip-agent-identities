@@ -132,7 +132,7 @@ const manifest: PaperclipPluginManifestV1 = {
   // every derived Slack Events URL if the id ever changed.
   id: AGENT_IDENTITIES_PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.4",
+  version: "0.2.5",
   displayName: "Agent Identities",
   description: "Per-agent identity providers and contribution tools for Paperclip",
   author: "Roshan Gautam",
@@ -185,6 +185,8 @@ const manifest: PaperclipPluginManifestV1 = {
     "ui.dashboardWidget.register",
     "instance.settings.register",
     "project.workspaces.read",
+    "execution.workspaces.read",
+    "issues.read",
     "agent.tools.register",
     "agents.read",
     "agent.sessions.create",

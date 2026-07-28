@@ -156,6 +156,37 @@ function toBranchRef(branch: string): string {
   return branch.startsWith("refs/heads/") ? branch : `refs/heads/${branch}`;
 }
 
+function usableWorkspacePath(path: string | null | undefined): string | null {
+  return path && path.trim().length > 0 ? path : null;
+}
+
+async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext): Promise<string | null> {
+  const issues = await ctx.issues.list({
+    companyId: runCtx.companyId,
+    projectId: runCtx.projectId,
+    assigneeAgentId: runCtx.agentId,
+    status: "in_progress"
+  });
+  const activeIssue = issues.find(
+    (issue) => issue.executionRunId === runCtx.runId || issue.checkoutRunId === runCtx.runId
+  );
+
+  if (activeIssue?.executionWorkspaceId) {
+    const executionWorkspace = await ctx.executionWorkspaces.get(
+      activeIssue.executionWorkspaceId,
+      runCtx.companyId
+    );
+    const executionPath = usableWorkspacePath(executionWorkspace?.cwd)
+      ?? usableWorkspacePath(executionWorkspace?.path);
+    if (executionPath) {
+      return executionPath;
+    }
+  }
+
+  const primaryWorkspace = await ctx.projects.getPrimaryWorkspace(runCtx.projectId, runCtx.companyId);
+  return usableWorkspacePath(primaryWorkspace?.path);
+}
+
 async function buildGitAuthEnvironment(token: string): Promise<{ env: NodeJS.ProcessEnv; cleanup: () => Promise<void> }> {
   const tempDir = await mkdtemp(join(tmpdir(), "paperclip-github-bot-push-"));
   const askPassPath = join(tempDir, "askpass.sh");
@@ -288,8 +319,8 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
     const expectedRepository = params.expectedRepository?.trim();
     const dryRun = params.dryRun === true;
 
-    const workspace = await ctx.projects.getPrimaryWorkspace(runCtx.projectId, runCtx.companyId);
-    if (!workspace?.path) {
+    const workspacePath = await resolveWorkspacePath(ctx, runCtx);
+    if (!workspacePath) {
       await logPushBranchOutcome(ctx, runCtx, {
         message: "github_bot_push_branch failed: missing project workspace",
         outcome: "missing_workspace",
@@ -301,7 +332,7 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
 
     const remoteResolution = await runGitCommand({
       args: ["remote", "get-url", remote],
-      cwd: workspace.path
+      cwd: workspacePath
     });
 
     if (remoteResolution.exitCode !== 0) {
@@ -360,7 +391,7 @@ export const githubPushBranchToolSpec: ProviderToolSpec<GitHubAgentIdentity, Git
         owner: repository.owner,
         repo: repository.repo,
         fullName: repository.fullName,
-        workspacePath: workspace.path,
+        workspacePath,
         remoteName: remote,
         branch,
         dryRun

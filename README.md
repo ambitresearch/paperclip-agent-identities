@@ -231,7 +231,7 @@ Slack is a fully `enabled` provider with five agent-callable tools, each requiri
 
 Failure modes every credentialed Slack tool shares:
 
-- **Rate limiting**: a Slack `429`/`rate_limited` response is retried a bounded number of times, honoring the Slack `Retry-After` response header when present and falling back to a fixed backoff schedule otherwise, then fails closed with an actionable error rather than retrying forever.
+- **Rate limiting**: a Slack `429`/`rate_limited` response is retried a bounded number of times, honoring the Slack `Retry-After` response header when present (clamped to a 30s ceiling so an extreme value cannot stall the call) and falling back to a fixed backoff schedule otherwise, then fails closed with an actionable error rather than retrying forever.
 - **Network failures**: a request that fails before a response is received returns a generic "request failed" error; the raw thrown error is never logged or returned, since the bot token is already attached to the request by that point.
 - **Non-ok Slack responses**: an `ok: false` Slack API response surfaces the Slack error code and a human-readable message, never the raw response body.
 - **Ambiguous name lookups**: `slack_bot_lookup_channel` fails closed with an explicit error listing the conflicting conversation IDs (bounded to at most 20) when more than one accessible channel shares the requested name, rather than silently picking one.

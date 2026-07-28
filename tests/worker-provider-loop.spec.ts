@@ -23,17 +23,18 @@ describe("worker provider registration", () => {
     const register = vi.spyOn(harness.ctx.tools, "register");
     await plugin.definition.setup(harness.ctx);
 
-    // github (enabled) contributes all of its tools. slack is still
-    // "coming-soon" as a PROVIDER, but its whoami tool spec sets `live: true`
-    // (DRO-972), so it registers too -- through the generic `liveTools()`
-    // seam, not a provider-id branch. example is coming-soon with no `live`
-    // tools, so it stays fully dormant.
+    // github (enabled) contributes all of its tools. slack is now also
+    // "enabled" as a provider (slack_bot_lookup_channel, DRO-975/DRO-1160,
+    // was the last backlog item), so its full tool surface registers too --
+    // through the generic registration seam, not a provider-id branch.
+    // example is coming-soon with no `live` tools, so it stays fully dormant.
     const registeredNames = register.mock.calls.map(([name]) => name);
     const slackNames = [
       "slack_bot_whoami",
       "slack_bot_post_message",
       "slack_bot_add_reaction",
       "slack_bot_remove_reaction",
+      "slack_bot_lookup_channel",
     ];
     expect(registeredNames[0]).toBe("github_bot_whoami");
     expect(registeredNames.slice(-slackNames.length)).toEqual(slackNames);

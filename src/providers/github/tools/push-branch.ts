@@ -165,8 +165,7 @@ async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext):
   const issues = await ctx.issues.list({
     companyId: runCtx.companyId,
     ...(projectId ? { projectId } : {}),
-    assigneeAgentId: runCtx.agentId,
-    status: "in_progress"
+    assigneeAgentId: runCtx.agentId
   });
   const activeIssue = issues.find(
     (issue) => issue.executionRunId === runCtx.runId || issue.checkoutRunId === runCtx.runId

@@ -42,10 +42,12 @@ that case Settings marks the field required, because there is nothing to derive.
    enter an override, then select **Create Slack App manifest**.
 3. Copy the formatted manifest JSON. Open Slack's app creation page, choose **From an app manifest**, select the workspace, and paste the manifest.
 4. Create and install the Slack App. The manifest prefills the bot features, required OAuth scopes, Events API Request URL, and event subscriptions.
-5. Copy the bot token and signing secret into separate Paperclip company secrets.
+5. Copy the bot token and signing secret into separate Paperclip company secrets. If you create these secrets while the identity dialog is already open, select **Refresh secrets** next to the bot-token/signing-secret dropdowns to re-query this company's secrets without closing the dialog or losing anything you've already entered.
 6. Select the bot token secret in the wizard, then use **Detect Slack installation IDs** to fill the Team ID, App ID, and Bot User ID.
 7. Select the signing secret and optionally enter a default channel ID. Channel names such as `#daily-news` are not accepted. Use a Slack channel ID beginning with `C`, `D`, or `G`.
 8. Save the Slack install metadata, check the connection status, and save the identity.
+
+**Refresh secrets** is available on both the GitHub and Slack credential steps. It re-fetches only the current company's secrets — every other field (agent, provider, label, manifest-flow state, detected IDs, and any values you've typed but not saved) stays exactly as it was. If a secret you had selected is deleted or renamed before you refresh, the field shows an explicit error asking you to pick a valid secret instead of silently keeping or switching the reference. A failed refresh leaves the previously loaded options in place with a retryable error, and the button disables itself (with a "Refreshing..." status) while a request is in flight so repeated clicks can't fire duplicate requests.
 
 The Events Request URL is embedded verbatim into the generated manifest, so it is
 locked once the manifest exists. To change it, start a new manifest flow.

@@ -66,6 +66,13 @@ Current test files:
 - `/tests/settings-action-authorization.spec.ts`
   - table-driven agent/system denial for every protected settings/setup action before state, config, secret, agent-list, or HTTP access
   - malformed actor rejection and local implicit-user (`userId: null`) success
+- `/tests/ui/settings-page-refresh-secrets.spec.tsx`
+  - manual "Refresh secrets" re-fetches only the active company's secret options without closing the identity dialog
+  - loading disables duplicate refresh clicks and shows progress without disabling unrelated fields
+  - a failed refresh keeps the last successful options and any unsaved fields intact, with a retryable error
+  - a selected secret id that disappears from a refreshed fetch shows an explicit validation error instead of silently switching
+  - agent/provider/unsaved fields/active step survive a refresh
+  - initial page load still fetches secrets exactly once (no polling)
 - `/tests/providers/slack/app-manifest.integration.spec.ts`
   - strict `config.patchSecretRefs` coverage proving Slack setup writes only typed credential refs while public metadata remains in plugin state
   - released `v0.1.7`/`v0.1.8` Slack credential rebind, conflict, and cleanup-pending recovery

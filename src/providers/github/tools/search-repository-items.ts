@@ -13,11 +13,15 @@ import {
   githubBotSearchRepositoryItemsToolName
 } from "../../../shared/github-bot-search-repository-items-tool.js";
 
+const MAX_QUERY_LENGTH = 256;
+const MAX_PAGE = 34; // GitHub Search API caps results at 1000 total (34 pages of 30)
+
 export interface SearchRepositoryItemsParams {
   repository: string;
   query: string;
   type: "issue" | "pr";
   maxResults: number;
+  page: number;
 }
 
 function validateParams(params: unknown): ParamsValidation {
@@ -31,6 +35,9 @@ function validateParams(params: unknown): ParamsValidation {
   if (!p.query || typeof p.query !== "string") {
     return { ok: false, error: "query is required" };
   }
+  if (p.query.length > MAX_QUERY_LENGTH) {
+    return { ok: false, error: `query must be ${MAX_QUERY_LENGTH} characters or fewer` };
+  }
   const type = p.type ?? "issue";
   if (type !== "issue" && type !== "pr") {
     return { ok: false, error: 'type must be "issue" or "pr"' };
@@ -39,11 +46,16 @@ function validateParams(params: unknown): ParamsValidation {
   if (typeof maxResults !== "number" || !Number.isInteger(maxResults) || maxResults < 1 || maxResults > 30) {
     return { ok: false, error: "maxResults must be an integer between 1 and 30" };
   }
+  const page = p.page ?? 1;
+  if (typeof page !== "number" || !Number.isInteger(page) || page < 1 || page > MAX_PAGE) {
+    return { ok: false, error: `page must be an integer between 1 and ${MAX_PAGE}` };
+  }
   const validated: SearchRepositoryItemsParams = {
     repository: p.repository,
     query: p.query,
     type: type as "issue" | "pr",
-    maxResults: maxResults as number
+    maxResults: maxResults as number,
+    page: page as number
   };
   return { ok: true, params: validated };
 }
@@ -77,7 +89,9 @@ export const githubSearchRepositoryItemsToolSpec: ProviderToolSpec<GitHubAgentId
 
     const itemType = validated.type === "pr" ? "pr" : "issue";
     const q = encodeURIComponent(`${validated.query} repo:${owner}/${repo} type:${itemType}`);
-    const apiUrl = `https://api.github.com/search/issues?q=${q}&per_page=${validated.maxResults}`;
+    const apiUrl =
+      `https://api.github.com/search/issues?q=${q}` +
+      `&per_page=${validated.maxResults}&page=${validated.page}`;
 
     let response: Response;
     try {
@@ -132,6 +146,7 @@ export const githubSearchRepositoryItemsToolSpec: ProviderToolSpec<GitHubAgentId
       labels: item.labels.map((l) => (typeof l === "string" ? l : l.name)),
       assignees: item.assignees.map((a) => a.login)
     }));
+    const hasMore = validated.page * validated.maxResults < result.total_count;
 
     await ctx.activity.log({
       companyId: runCtx.companyId,
@@ -152,6 +167,9 @@ export const githubSearchRepositoryItemsToolSpec: ProviderToolSpec<GitHubAgentId
       content: `Found ${result.total_count} matching ${validated.type === "pr" ? "pull requests" : "issues"} (showing ${items.length})`,
       data: {
         totalCount: result.total_count,
+        page: validated.page,
+        perPage: validated.maxResults,
+        hasMore,
         items
       }
     };

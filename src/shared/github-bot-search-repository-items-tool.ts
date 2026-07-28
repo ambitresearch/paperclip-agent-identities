@@ -3,8 +3,9 @@ export const githubBotSearchRepositoryItemsToolName = "github_bot_search_reposit
 export const githubBotSearchRepositoryItemsToolMetadata = {
   displayName: "Search Repository Items (Agent Identity)",
   description:
-    "Searches issues or pull requests in a GitHub repository using the GitHub search API. " +
-    "Returns a ranked list of matching items with their number, title, state, URL, labels, and assignees.",
+    "Searches issues or pull requests in a GitHub repository using the GitHub search API (for triage " +
+    "and dedup workflows). Returns a bounded, sanitized list of matching items with their number, " +
+    "title, state, URL, labels, and assignees. Supports pagination via `page`.",
   parametersSchema: {
     type: "object",
     properties: {
@@ -14,7 +15,7 @@ export const githubBotSearchRepositoryItemsToolMetadata = {
       },
       query: {
         type: "string",
-        description: "Search query string (e.g. \"bug label:critical\")",
+        description: "Search query string (e.g. \"bug label:critical\"), up to 256 characters",
       },
       type: {
         type: "string",
@@ -23,7 +24,11 @@ export const githubBotSearchRepositoryItemsToolMetadata = {
       },
       maxResults: {
         type: "number",
-        description: "Maximum number of results to return, between 1 and 30 (default: 10)",
+        description: "Maximum number of results to return per page, between 1 and 30 (default: 10)",
+      },
+      page: {
+        type: "number",
+        description: "Page number to fetch (1-indexed). Defaults to 1.",
       },
     },
     required: ["repository", "query"],

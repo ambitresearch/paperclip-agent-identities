@@ -3,8 +3,12 @@ export const githubBotLinkGithubItemToolName = "github_bot_link_github_item";
 export const githubBotLinkGithubItemToolMetadata = {
   displayName: "Link GitHub Item (Agent Identity)",
   description:
-    "Creates a link between a Paperclip issue and a GitHub item (issue or pull request URL). " +
-    "Note: full implementation requires DRO-1166 (Paperclip API client in PluginContext).",
+    "Links a Paperclip issue to a GitHub issue or pull request URL, even when the target repository " +
+    "is not mapped to a Paperclip project. The link is stored in Paperclip plugin state, scoped to the " +
+    "Paperclip issue, independent of any project-repo mapping. Links are additive: linking the same " +
+    "githubUrl again updates its recorded note/timestamp rather than creating a duplicate entry. " +
+    "Use github_bot_get_issue or github_bot_get_pull_request separately to verify the target still " +
+    "exists on GitHub.",
   parametersSchema: {
     type: "object",
     properties: {
@@ -15,6 +19,10 @@ export const githubBotLinkGithubItemToolMetadata = {
       githubUrl: {
         type: "string",
         description: "Full GitHub URL of the issue or pull request to link to",
+      },
+      note: {
+        type: "string",
+        description: "Optional free-text note describing why this link exists",
       },
       llmModel: {
         type: "string",

@@ -116,3 +116,239 @@ describe("githubCreatePullRequestToolSpec.perform", () => {
     expect(result.content).toContain("#42");
   });
 });
+
+const SHA = "a".repeat(40);
+
+function execWithCommit(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    token: "tok",
+    identity: { agentId: "agent-1", identity: { label: "Bot", githubUsername: "bot-user" } },
+    resourceRef: repoRef(),
+    params: {
+      repository: "acme/widgets",
+      head: "feature",
+      base: "main",
+      title: "My PR",
+      commit: SHA,
+      ...overrides
+    },
+    ctx: buildCtx(vi.fn() as never),
+    runCtx: { agentId: "agent-1", companyId: "co-1", projectId: "p", runId: "r" }
+  } as unknown as ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef>;
+}
+
+describe("githubCreatePullRequestToolSpec.perform - exact-commit publish (DRO-1173)", () => {
+  it("publishes the branch at the exact local HEAD commit, verifies, then creates the PR", async () => {
+    __setGitCommandRunnerForTests(async ({ args }) => {
+      if (args[0] === "rev-parse") {
+        return { exitCode: 0, stdout: `${SHA}\n`, stderr: "" };
+      }
+      if (args.includes("push")) {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "unexpected git args" };
+    });
+
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/git/ref/heads%2Ffeature") && (!init || init.method === "GET" || init.method === undefined)) {
+        // First call: pre-existing check -> not found. Second call: verify -> matches.
+        const call = fetchImpl.mock.calls.filter((c) => String(c[0]).includes("/git/ref/heads%2Ffeature")).length;
+        if (call <= 1) {
+          return new Response(null, { status: 404 });
+        }
+        return new Response(JSON.stringify({ object: { sha: SHA } }), { status: 200 });
+      }
+      if (String(url).endsWith("/pulls")) {
+        return new Response(
+          JSON.stringify({
+            number: 7,
+            html_url: "https://github.com/acme/widgets/pull/7",
+            state: "open",
+            draft: false,
+            head: { ref: "feature" },
+            base: { ref: "main" }
+          }),
+          { status: 201 }
+        );
+      }
+      return new Response(null, { status: 500 });
+    });
+
+    const exec = execWithCommit();
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+
+    const result = (await githubCreatePullRequestToolSpec.perform(exec)) as {
+      content: string;
+      data: { number: number; commit: string };
+    };
+
+    expect(result.data.number).toBe(7);
+    expect(result.data.commit).toBe(SHA);
+    expect(result.content).toContain("#7");
+
+    const prCall = fetchImpl.mock.calls.find(([url]) => String(url).endsWith("/pulls"));
+    expect(prCall).toBeTruthy();
+  });
+
+  it("fails closed when local HEAD does not match the requested commit", async () => {
+    __setGitCommandRunnerForTests(async ({ args }) => {
+      if (args[0] === "rev-parse") {
+        return { exitCode: 0, stdout: `${"b".repeat(40)}\n`, stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 500 }));
+    const exec = execWithCommit();
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+
+    const result = (await githubCreatePullRequestToolSpec.perform(exec)) as { error: string };
+    expect(result.error).toContain("does not match the requested exact commit");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("fails when the remote branch verification does not match the requested commit", async () => {
+    __setGitCommandRunnerForTests(async ({ args }) => {
+      if (args[0] === "rev-parse") {
+        return { exitCode: 0, stdout: `${SHA}\n`, stderr: "" };
+      }
+      if (args.includes("push")) {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+
+    let refCalls = 0;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes("/git/ref/heads%2Ffeature")) {
+        refCalls += 1;
+        if (refCalls === 1) {
+          return new Response(null, { status: 404 });
+        }
+        // verification returns a different sha than requested
+        return new Response(JSON.stringify({ object: { sha: "c".repeat(40) } }), { status: 200 });
+      }
+      return new Response(null, { status: 500 });
+    });
+
+    const exec = execWithCommit();
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+
+    const result = (await githubCreatePullRequestToolSpec.perform(exec)) as { error: string };
+    expect(result.error).toContain("landed at");
+  });
+
+  it("rolls back the newly-created remote branch when PR creation fails after push", async () => {
+    __setGitCommandRunnerForTests(async ({ args }) => {
+      if (args[0] === "rev-parse") {
+        return { exitCode: 0, stdout: `${SHA}\n`, stderr: "" };
+      }
+      if (args.includes("push")) {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+
+    let refCalls = 0;
+    let deleteCalled = false;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/git/refs/heads%2Ffeature") && init?.method === "DELETE") {
+        deleteCalled = true;
+        return new Response(null, { status: 204 });
+      }
+      if (String(url).includes("/git/ref/heads%2Ffeature")) {
+        refCalls += 1;
+        if (refCalls === 1) {
+          return new Response(null, { status: 404 }); // did not pre-exist
+        }
+        return new Response(JSON.stringify({ object: { sha: SHA } }), { status: 200 }); // verified ok
+      }
+      if (String(url).endsWith("/pulls")) {
+        return new Response(JSON.stringify({ message: "Validation Failed" }), { status: 422 });
+      }
+      return new Response(null, { status: 500 });
+    });
+
+    const exec = execWithCommit();
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+
+    const result = (await githubCreatePullRequestToolSpec.perform(exec)) as {
+      error: string;
+      data: { rollback: { attempted: boolean; ok?: boolean } };
+    };
+
+    expect(result.error).toContain("GitHub API returned 422");
+    expect(result.data.rollback.attempted).toBe(true);
+    expect(result.data.rollback.ok).toBe(true);
+    expect(deleteCalled).toBe(true);
+  });
+
+  it("does not roll back a branch that already existed remotely before the push", async () => {
+    __setGitCommandRunnerForTests(async ({ args }) => {
+      if (args[0] === "rev-parse") {
+        return { exitCode: 0, stdout: `${SHA}\n`, stderr: "" };
+      }
+      if (args.includes("push")) {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+
+    let refCalls = 0;
+    let deleteCalled = false;
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("/git/refs/heads%2Ffeature") && init?.method === "DELETE") {
+        deleteCalled = true;
+        return new Response(null, { status: 204 });
+      }
+      if (String(url).includes("/git/ref/heads%2Ffeature")) {
+        refCalls += 1;
+        // pre-existing check finds the branch already there (some other sha),
+        // verification after push confirms the new sha landed.
+        return new Response(
+          JSON.stringify({ object: { sha: refCalls === 1 ? "d".repeat(40) : SHA } }),
+          { status: 200 }
+        );
+      }
+      if (String(url).endsWith("/pulls")) {
+        return new Response(JSON.stringify({ message: "Validation Failed" }), { status: 422 });
+      }
+      return new Response(null, { status: 500 });
+    });
+
+    const exec = execWithCommit();
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+
+    const result = (await githubCreatePullRequestToolSpec.perform(exec)) as {
+      data: { rollback: { attempted: boolean } };
+    };
+
+    expect(result.data.rollback.attempted).toBe(false);
+    expect(deleteCalled).toBe(false);
+  });
+
+  it("supports dryRun: pushes without creating a PR", async () => {
+    __setGitCommandRunnerForTests(async ({ args }) => {
+      if (args[0] === "rev-parse") {
+        return { exitCode: 0, stdout: `${SHA}\n`, stderr: "" };
+      }
+      if (args.includes("push")) {
+        expect(args).toContain("--dry-run");
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: "" };
+    });
+
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).includes("/git/ref/heads%2Ffeature")) {
+        return new Response(null, { status: 404 });
+      }
+      return new Response(null, { status: 500 });
+    });
+    const exec = execWithCommit({ dryRun: true });
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+
+    const result = (await githubCreatePullRequestToolSpec.perform(exec)) as { content: string };
+    expect(result.content).toContain("Dry-run publish succeeded");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

@@ -38,6 +38,18 @@ export interface VerifiedSlackTokenIdentity {
 export type VerifySlackToken = (token: string) => Promise<VerifiedSlackTokenIdentity>;
 type SlackApiFetch = (url: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * Upper bound (ms) for the `auth.test` credential-verification call in
+ * `verifySlackToken`. Matches the bounded-hydration budget enforced by
+ * `SLACK_THREAD_HISTORY_TIMEOUT_MS` (src/providers/slack/ingress/thread-history.ts)
+ * so a hung Slack response during credential resolution cannot itself stall
+ * the first-mention thread-hydration path past its documented budget. Kept
+ * as an independent constant (rather than importing the ingress module's
+ * constant) to avoid a credentials -> ingress dependency; call sites that
+ * want the two bounds to move together should update both.
+ */
+export const SLACK_AUTH_TEST_TIMEOUT_MS = 2_000;
+
 export async function discoverSlackAppId(
   token: string,
   botId: string,
@@ -86,12 +98,25 @@ export async function discoverSlackAppId(
  */
 export async function verifySlackToken(
   token: string,
-  fetchImpl: SlackApiFetch = fetch
+  fetchImpl: SlackApiFetch = fetch,
+  timeoutMs: number = SLACK_AUTH_TEST_TIMEOUT_MS
 ): Promise<VerifiedSlackTokenIdentity> {
-  const response = await fetchImpl("https://slack.com/api/auth.test", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > SLACK_AUTH_TEST_TIMEOUT_MS) {
+    throw new Error("Slack token verification timeout is invalid.");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  try {
+    response = await fetchImpl("https://slack.com/api/auth.test", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const body = await response.json().catch(() => ({})) as {
     ok?: unknown;

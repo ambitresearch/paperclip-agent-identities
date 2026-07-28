@@ -4,6 +4,8 @@ import {
   resolveSlackBotToken,
   resolveSlackSigningSecret,
   assertSlackWorkspaceMatch,
+  verifySlackToken,
+  SLACK_AUTH_TEST_TIMEOUT_MS,
 } from "../src/providers/slack/credentials.js";
 import type { ResolvedAgentIdentity } from "../src/core/agent-identity.js";
 import type { SlackAgentIdentity, SlackSecretRef } from "../src/providers/slack/config.js";
@@ -61,6 +63,35 @@ describe("discoverSlackAppId", () => {
     await expect(discoverSlackAppId("xoxb-test", "B123", fetchImpl as never)).rejects.toThrow(
       /latest generated manifest.*reinstall.*users:read/i,
     );
+  });
+});
+
+describe("verifySlackToken", () => {
+  it("aborts a hung auth.test call at the configured timeout instead of hanging indefinitely", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    }));
+
+    await expect(verifySlackToken("xoxb-test", fetchImpl as never, 10)).rejects.toThrow(/abort/i);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a timeout override greater than the documented bound (fails closed, no secret leak)", async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      verifySlackToken("xoxb-test", fetchImpl as never, SLACK_AUTH_TEST_TIMEOUT_MS + 1),
+    ).rejects.toThrow(/timeout is invalid/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("still verifies successfully within the timeout budget", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ ok: true, team_id: "T123", user_id: "U123", bot_id: "B123" }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+
+    const identity = await verifySlackToken("xoxb-test", fetchImpl as never);
+    expect(identity).toEqual({ teamId: "T123", userId: "U123", botId: "B123" });
   });
 });
 

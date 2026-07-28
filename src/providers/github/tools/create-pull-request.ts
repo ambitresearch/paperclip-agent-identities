@@ -315,7 +315,12 @@ export const githubCreatePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdenti
         })
       });
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "Unknown network error";
+      // Fetch exceptions can embed the outgoing request (including the Authorization
+      // header), so redact the installation token before this reaches the log sink.
+      const reason = redactSecretText(
+        error instanceof Error ? error.message : "Unknown network error",
+        [token]
+      );
       ctx.logger.error(`github_bot_create_pull_request network failure: ${reason}`);
       if (pushedNewBranch) {
         await deleteRemoteRef({ fetchImpl, token, owner, repo, branch: validated.head });

@@ -60,6 +60,55 @@ const GITHUB_API_HEADERS = (token: string) => ({
   "X-GitHub-Api-Version": "2022-11-28"
 });
 
+/** Conclusions that mean "this finished and it did not pass". */
+const FAILING_CONCLUSIONS = new Set([
+  "failure",
+  "timed_out",
+  "cancelled",
+  "action_required",
+  "startup_failure",
+  "stale"
+]);
+
+/**
+ * Roll the legacy combined commit-status state together with check runs and workflow
+ * runs into one state. Precedence is failure > pending > success, so a red Actions job
+ * can never be masked by green legacy statuses. `success` requires that at least one
+ * signal actually reported; with no signals at all the result is `pending`.
+ */
+export function computeAggregateState(
+  combinedState: string,
+  statusContextCount: number,
+  checkRuns: Array<{ status: string; conclusion: string | null }>,
+  workflowRuns: Array<{ status: string; conclusion: string | null }>
+): "success" | "failure" | "pending" {
+  let sawSignal = statusContextCount > 0;
+  let sawPending = false;
+
+  if (statusContextCount > 0) {
+    if (combinedState === "failure" || combinedState === "error") return "failure";
+    if (combinedState !== "success") sawPending = true;
+  }
+
+  for (const run of [...checkRuns, ...workflowRuns]) {
+    sawSignal = true;
+    if (run.status !== "completed") {
+      sawPending = true;
+      continue;
+    }
+    // A completed run with no conclusion is indeterminate, not a pass.
+    if (run.conclusion === null) {
+      sawPending = true;
+      continue;
+    }
+    if (FAILING_CONCLUSIONS.has(run.conclusion)) return "failure";
+    // `success`, `neutral`, and `skipped` are all non-blocking passes.
+  }
+
+  if (sawPending) return "pending";
+  return sawSignal ? "success" : "pending";
+}
+
 export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIdentity, GitHubRepoRef> = {
   name: githubBotGetPullRequestChecksToolName,
   metadata: githubBotGetPullRequestChecksToolMetadata,
@@ -196,6 +245,18 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
       startedAt: run.run_started_at
     }));
 
+    // `statusBody.state` is only the legacy combined *commit status* state. It ignores
+    // check runs and workflow runs entirely, so a PR with a failing GitHub Actions job
+    // reports `success` whenever its legacy contexts pass (and `pending` when there are
+    // none at all). Roll all three signals into a single aggregate the caller can trust,
+    // and keep the legacy value under its own explicit name.
+    const aggregateState = computeAggregateState(
+      statusBody.state,
+      statusBody.statuses.length,
+      checkRuns,
+      workflowRuns
+    );
+
     ctx.logger.info(
       `Fetched checks for pull request #${validated.pullNumber} in ${repository.fullName}: ` +
       `${checkRuns.length} check run(s), ${statusContexts.length} status context(s), ${workflowRuns.length} workflow run(s)`
@@ -203,11 +264,12 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
 
     return {
       content:
-        `Pull request #${validated.pullNumber} (${sha.slice(0, 7)}): overall status ${statusBody.state}, ` +
+        `Pull request #${validated.pullNumber} (${sha.slice(0, 7)}): overall status ${aggregateState}, ` +
         `${checkRuns.length} check run(s), ${workflowRuns.length} workflow run(s)`,
       data: {
         sha,
-        overallState: statusBody.state,
+        overallState: aggregateState,
+        combinedStatusState: statusBody.state,
         checkRuns,
         statusContexts,
         workflowRuns

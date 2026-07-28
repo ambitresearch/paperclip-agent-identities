@@ -98,6 +98,43 @@ legacy sidecar entry failed; retry the same action. **Conflict** means an
 existing host Slack binding differs and must be reviewed rather than
 overwritten. None of these recovery states requires reinstalling the Slack App.
 
+## Tool availability in agent sessions
+
+This plugin registers its tools (`github_bot_whoami` and the other GitHub bot
+tools, plus the Slack tools) globally, once, when it is installed. That
+registration is necessary but not sufficient for an agent to actually see or
+call a tool inside a given run: the agent's adapter must also attach the
+per-run tool-gateway MCP server (built from a non-empty `ctx.runtimeMcp`) and
+authenticate with the short-lived, run-scoped gateway credential Paperclip
+issues for that run. Global registration and per-session availability are
+different properties, and only the first is under this plugin's control.
+
+If an agent session reports a tool as "not available" even though the plugin
+is installed and the identity is configured, check first whether a
+tool-gateway session was ever created for that run
+(`/api/tool-gateway/sessions`) and whether the per-run credential was used.
+If no gateway session was created, the gap is in the adapter/runtime-MCP
+attachment path in Paperclip core, not in this plugin. Known adapter-side
+gaps as of this writing:
+
+- `codex_local`: a per-run gateway credential can be issued and never
+  attached/used by the session, so the agent's tool list never includes any
+  plugin tool. Tracked upstream at
+  [paperclipai/paperclip#10346](https://github.com/paperclipai/paperclip/issues/10346).
+- `hermes_local`: does not wire `ctx.runtimeMcp` into the Hermes process at
+  all. Tracked upstream at
+  [paperclipai/paperclip#10144](https://github.com/paperclipai/paperclip/issues/10144).
+- Cursor / Claude Code adapters: plugin tools are not yet bridged as native
+  MCP tools for these adapters. Tracked upstream at
+  [paperclipai/paperclip#6707](https://github.com/paperclipai/paperclip/issues/6707).
+
+Do not work around a missing gateway attachment with direct `curl`/shell
+calls to provider APIs, or with the raw tool-gateway HTTP API in place of the
+managed MCP surface, in an agent's own instructions -- that bypasses the
+managed tool gateway, identity policy, and audit path this plugin depends on.
+If an agent hits this gap, escalate it as an adapter bug rather than adding a
+workaround.
+
 ## Edit or remove an identity
 
 Use **Edit** on a configured identity to update its provider metadata or credential references. Use **Delete** to remove only that provider's mapping from Paperclip; deleting Slack also removes that identity's exact released legacy Slack sidecar entry after host/state deletion succeeds, while preserving all GitHub entries. Deleting an identity does not delete the GitHub App or Slack App from the provider, so remove the provider app separately if it is no longer needed.

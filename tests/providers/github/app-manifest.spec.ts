@@ -18,6 +18,13 @@ describe("createGitHubAppManifestFlow", () => {
     expect(result.postUrl).toContain("github.com/settings/apps/new?state=");
     const manifest = JSON.parse(result.manifest);
     expect(manifest.default_permissions.contents).toBe("write");
+    expect(manifest.default_permissions.organization_projects).toBe("write");
+    // Required for github_bot_get_pull_request_checks (workflow runs, check
+    // runs, and commit status contexts). Existing installations must be
+    // prompted to accept these additions before the checks tool can work,
+    // so the manifest must declare them.
+    expect(manifest.default_permissions.checks).toBe("read");
+    expect(manifest.default_permissions.statuses).toBe("read");
   });
 
   it("rejects an agentId that is not a single path segment", () => {

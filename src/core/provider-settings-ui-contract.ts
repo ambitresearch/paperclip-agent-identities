@@ -41,6 +41,23 @@ export interface ProviderSettingsUIHookInput<TConfig extends ProviderSettingsUIF
   readonly secretsLoading: boolean;
   readonly secretsError: string | null;
   readonly companyId: string;
+  /**
+   * Manually re-fetch the active company's secret options (DRO-1155) without
+   * closing the identity dialog or resetting any form state. No-ops while a
+   * fetch (initial or refresh) is already in flight -- see SettingsPage's
+   * `refreshSecrets`.
+   */
+  readonly refreshSecrets: () => void;
+  /**
+   * Secret ids that were selected in a select-backed field (bot token,
+   * signing secret, private key, fallback token) and previously appeared in
+   * a successful secretOptions fetch, but are absent from the most recent
+   * successful fetch -- i.e. the secret was deleted/renamed server-side.
+   * Providers use this to render an explicit validation/error state instead
+   * of silently keeping (or switching away from) a reference that no longer
+   * resolves to anything.
+   */
+  readonly missingSecretIds: ReadonlySet<string>;
 }
 
 // Whatever a provider's hook returns must include enough for the shared page

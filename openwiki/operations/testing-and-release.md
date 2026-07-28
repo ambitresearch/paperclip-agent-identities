@@ -99,6 +99,13 @@ Current test files:
 - `/tests/settings-action-authorization.spec.ts`
   - table-driven agent/system denial for every protected settings/setup action before state, config, secret, agent-list, or HTTP access
   - malformed actor rejection and local implicit-user (`userId: null`) success
+- `/tests/ui/settings-page-refresh-secrets.spec.tsx`
+  - manual "Refresh secrets" re-fetches only the active company's secret options without closing the identity dialog
+  - loading disables duplicate refresh clicks and shows progress without disabling unrelated fields
+  - a failed refresh keeps the last successful options and any unsaved fields intact, with a retryable error
+  - a selected secret id that disappears from a refreshed fetch shows an explicit validation error instead of silently switching
+  - agent/provider/unsaved fields/active step survive a refresh
+  - initial page load still fetches secrets exactly once (no polling)
 - `/tests/providers/slack/app-manifest.integration.spec.ts`
   - strict `config.patchSecretRefs` coverage proving Slack setup writes only typed credential refs while public metadata remains in plugin state
   - released `v0.1.7`/`v0.1.8` Slack credential rebind, conflict, and cleanup-pending recovery
@@ -123,6 +130,14 @@ Current test files:
   - manifest `events.emit` and `jobs.schedule` capabilities plus provider-owned self-event and scheduled recovery-job registration through the real worker composition seam
 - `/tests/providers/slack/ingress-response-stream.spec.ts`, `ingress-webhook-handler.spec.ts`, `ingress-routing.spec.ts`, `ingress-signature.spec.ts`, and `ingress-rate-limit.spec.ts`
   - native Slack stream behavior plus the unchanged authentication, filtering, routing, and ingress-rate boundaries around durable enqueue
+- `/tests/providers/slack/connection-status.spec.ts` (DRO-1161)
+  - `runSlackConnectionCheck`/`check-slack-connection` action: healthy, auth-rejected, workspace-mismatch, user-token, missing-secret, resolution-failure, and timeout outcomes, plus token/response-body redaction and the registered action's own validation and error paths
+- `/tests/ui/settings-page-slack-status.spec.tsx` (DRO-1161)
+  - Connection panel lifecycle: never-tested, successful check, refresh-failure preserving and immediately marking the last known result stale (not just after the 5-minute freshness window), and a result aging past that window without a refresh
+  - identity-switch regression: closing/reopening the edit dialog on a different Slack identity clears the previous identity's Connection result instead of leaking it under the new identity's label
+- `/tests/providers/slack/telemetry.spec.ts` (DRO-1187)
+  - `recordSlackIngressOutcome`/`recordSlackDeliveryOutcome`/`getSlackTelemetry`/`get-slack-telemetry` action: never-observed projection, healthy verified ingress event, routing-failed and signature-failed ingress categories with their guidance strings, queue/session/reply-failed delivery categories with their guidance strings, the full enqueue-drain-completed delivery lifecycle, per-agent scoping (no cross-agent leak), a cross-company scoping case (a shared agentId recorded under one company never projects for a different caller companyId), and the registered action's validation, plus a secret-shape assertion on the persisted record and its projection
+  - focused wiring regressions live alongside the modules they touch rather than duplicating fixtures: `ingress-webhook-handler.spec.ts` covers a healthy verified event, a post-signature routing failure, and a pre-auth signature failure (asserting no ingress outcome is recorded at all, since routing hints are unauthenticated before signature verification) via `handleSlackWebhook`'s optional `recordIngressOutcome` dep; `ingress-provider-webhook.spec.ts` covers a routed ingress event, a queue-full delivery failure under an enqueue burst, delivery completion through a full webhook-enqueue-drain-completion round trip, and a regression proving `lastDrainStartedAt` only appears once the drain worker actually claims/starts the turn (not merely when a queue kick was scheduled), reusing that file's existing `makeCtx`/`delivery`/`runtime` fixtures
 - `/tests/identity-policy.spec.ts`
   - config parsing and missing-agent fail-closed behavior
   - GitHub repo normalization from HTTPS/SSH/git URL forms

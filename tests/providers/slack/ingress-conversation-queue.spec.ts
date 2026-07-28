@@ -17,10 +17,13 @@ import {
 } from "../../../src/providers/slack/ingress/conversation-session.js";
 
 type StateKey = { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string };
+import { makeEntities } from "./entities-fake.js";
 
 function mapKey(key: StateKey): string {
   return `${key.scopeKind}:${key.scopeId ?? ""}:${key.namespace ?? ""}:${key.stateKey}`;
 }
+
+const sharedEntities = makeEntities();
 
 function makeState(store = new Map<string, unknown>()) {
   return {
@@ -48,6 +51,7 @@ function enqueue(
 ) {
   return enqueueSlackConversationTurn({
     state: state as never,
+    entities: sharedEntities as never,
     agentId: "agent-1",
     companyId: "co-1",
     conversation,
@@ -93,9 +97,8 @@ describe("Slack durable conversation queue", () => {
 
   it("fails retryably when a competing write replaces the just-enqueued claim before confirmation", async () => {
     const state = makeState();
-    state.set.mockImplementationOnce(async (key: StateKey, value: unknown) => {
-      state.store.set(mapKey(key), structuredClone(value));
-    });
+    // The first `state.set` is now the conversation-state write itself: the
+    // recovery registration moved off plugin state onto `ctx.entities`.
     state.set.mockImplementationOnce(async (key: StateKey, value: unknown) => {
       const written = structuredClone(value) as {
         pending: Array<{ claimId: string; eventId: string; eventHash: string }>;
@@ -418,6 +421,7 @@ describe("Slack durable conversation queue", () => {
     const threadConversation = { ...conversation, channel: "C111", threadTs: "1719000000.123456" };
     const result = await enqueueSlackConversationTurn({
       state: state as never,
+      entities: sharedEntities as never,
       agentId: "agent-1",
       companyId: "co-1",
       conversation: threadConversation,
@@ -451,6 +455,7 @@ describe("Slack durable conversation queue", () => {
     const state = makeState();
     await expect(enqueueSlackConversationTurn({
       state: state as never,
+      entities: sharedEntities as never,
       agentId: "agent-1",
       companyId: "co-1",
       conversation,

@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { PluginStateClient } from "@paperclipai/plugin-sdk";
+import type { PluginEntitiesClient, PluginStateClient } from "@paperclipai/plugin-sdk";
+import { registerSlackConversationKey } from "./conversation-registry.js";
 
 const SLACK_CONVERSATION_STATE_NAMESPACE = "slack-conversations" as const;
 const SLACK_CONVERSATION_STATE_KEY_PREFIX = "session:" as const;
-const SLACK_CONVERSATION_INDEX_STATE_KEY = "conversation-index" as const;
 export const SLACK_CONVERSATION_STATE_VERSION = 2 as const;
 const LEGACY_SESSION_STATE_VERSION = 1 as const;
 const LEGACY_DEDUP_NAMESPACE = "slack-ingress";
@@ -17,7 +17,6 @@ export const SLACK_COMPLETED_EVENT_RETENTION_MS = 24 * 60 * 60 * 1_000;
 export const SLACK_TURN_FIELD_MAX_LENGTH = 256;
 export const SLACK_TURN_TEXT_MAX_LENGTH = 4_096;
 export const SLACK_EVENT_ID_MAX_LENGTH = 128;
-export const SLACK_CONVERSATION_INDEX_LIMIT = 1_024;
 export const SLACK_TURN_MAX_ATTEMPTS = 5;
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SLACK_MESSAGE_TS_PATTERN = /^[0-9]{10,}\.[0-9]{6}$/;
@@ -128,12 +127,6 @@ interface SlackConversationStateKey {
   readonly stateKey: string;
 }
 
-interface SlackConversationIndex {
-  readonly version: 1;
-  readonly companyId: string;
-  readonly conversationKeys: string[];
-}
-
 /** Secret-free status projection; it never exposes event, session, or run IDs. */
 export interface SlackConversationQueueSummary {
   readonly version: typeof SLACK_CONVERSATION_STATE_VERSION;
@@ -158,6 +151,8 @@ export interface SlackConversationReference {
 /** Safe, already-routed Slack fields accepted by the durable enqueue boundary. */
 export interface EnqueueSlackConversationTurnInput {
   readonly state: PluginStateClient;
+  /** Durable recovery registry; see `conversation-registry.ts`. */
+  readonly entities: PluginEntitiesClient;
   readonly agentId: string;
   readonly companyId: string;
   readonly conversation: SlackConversationTarget;
@@ -812,41 +807,6 @@ function slackConversationStateKey(
   };
 }
 
-function slackConversationIndexStateKey(agentId: string) {
-  return {
-    scopeKind: "agent" as const,
-    scopeId: agentId,
-    namespace: SLACK_CONVERSATION_STATE_NAMESPACE,
-    stateKey: SLACK_CONVERSATION_INDEX_STATE_KEY,
-  };
-}
-
-function parseConversationIndex(value: unknown, companyId: string): SlackConversationIndex | null {
-  if (!isRecord(value) || value.version !== 1 || value.companyId !== companyId) return null;
-  if (Object.keys(value).some((key) => !["version", "companyId", "conversationKeys"].includes(key))) return null;
-  if (!Array.isArray(value.conversationKeys) || value.conversationKeys.length > SLACK_CONVERSATION_INDEX_LIMIT) return null;
-  if (!value.conversationKeys.every(isSlackConversationKey)) return null;
-  if (new Set(value.conversationKeys).size !== value.conversationKeys.length) return null;
-  return { version: 1, companyId, conversationKeys: [...value.conversationKeys] };
-}
-
-export async function listSlackConversationKeys(state: PluginStateClient, agentId: string, companyId: string): Promise<string[]> {
-  return parseConversationIndex(await state.get(slackConversationIndexStateKey(agentId)), companyId)?.conversationKeys ?? [];
-}
-
-async function registerSlackConversationKey(state: PluginStateClient, agentId: string, companyId: string, conversationKey: string): Promise<void> {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const current = parseConversationIndex(await state.get(slackConversationIndexStateKey(agentId)), companyId) ?? {
-      version: 1 as const, companyId, conversationKeys: [],
-    };
-    if (current.conversationKeys.includes(conversationKey)) return;
-    if (current.conversationKeys.length >= SLACK_CONVERSATION_INDEX_LIMIT) throw new SlackConversationQueueFullError("Slack conversation recovery index is full.");
-    await state.set(slackConversationIndexStateKey(agentId), { ...current, conversationKeys: [...current.conversationKeys, conversationKey] });
-    if ((await listSlackConversationKeys(state, agentId, companyId)).includes(conversationKey)) return;
-  }
-  throw new SlackConversationStateConflictError("Slack conversation recovery index changed before confirmation.");
-}
-
 function legacyDedupStateKey(agentId: string) {
   if (!isBoundedString(agentId) || agentId !== agentId.trim()) {
     throw new Error("Slack legacy event-ledger agent ID is invalid.");
@@ -1288,7 +1248,7 @@ export async function enqueueSlackConversationTurn(
     conversationKey,
     conversation,
   };
-  await registerSlackConversationKey(input.state, normalizedAgentId, normalizedCompanyId, conversationKey);
+  await registerSlackConversationKey(input.entities, normalizedAgentId, normalizedCompanyId, conversationKey);
   const rawConversationState = await input.state.get(slackConversationStateKey(normalizedAgentId, conversationKey));
   const legacyConversation = rawConversationState !== null &&
     rawConversationState !== undefined &&

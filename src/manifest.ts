@@ -132,7 +132,7 @@ const manifest: PaperclipPluginManifestV1 = {
   // every derived Slack Events URL if the id ever changed.
   id: AGENT_IDENTITIES_PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.5",
+  version: "0.2.8",
   displayName: "Agent Identities",
   description: "Per-agent identity providers and contribution tools for Paperclip",
   author: "Roshan Gautam",
@@ -195,6 +195,10 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.sessions.send",
     "agent.sessions.close",
     "companies.read",
+    // Required by github_bot_get_issue_interaction_summary, which reads a
+    // Paperclip issue and its comments only -- it never calls GitHub.
+    "issues.read",
+    "issue.comments.read",
     "http.outbound",
     // The local host supports this capability ahead of the published SDK type union.
     "secrets.bind-ref" as PaperclipPluginManifestV1["capabilities"][number],

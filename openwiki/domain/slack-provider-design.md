@@ -161,8 +161,24 @@ run ID, buffers callbacks received before `sendMessage` returns, and ignores sta
 run/session callbacks. Terminal handling awaits stream/post finalization, then marks
 the event completed, clears active state, and emits the successor kick. No detached
 timer calls host APIs. Structured adapter output is reduced to user-facing reply text;
-ACPX `acpx.text_delta` records stream only when their channel is `output` and their
-tag is `agent_message_chunk`. The persisted `retireAfter` is a 30-minute durable accepted
+ACPX `acpx.text_delta` records with channel `output` and tag `agent_message_chunk` are
+not accepted as Slack reply content (DRO-1162: as of today this type/channel/tag shape
+carries no provenance discriminator, so a transport/adapter diagnostic emitted in this
+exact shape before the real answer — e.g. a "Model metadata not found, defaulting to
+fallback metadata" warning, see core-contract follow-up `DRO-1183` and terminal-surface report `paperclipai/paperclip#1465` — is structurally
+indistinguishable from genuine assistant prose at this layer). Because of that gap, this
+ambiguous source is dropped rather than accumulated, streamed, or delivered at turn
+completion. Confirmed records (`result`, `item.completed`, a Claude
+`content_block_delta`, or a Gemini/assistant message) still preserve genuine assistant
+prose, including text that quotes or explains the same warning, while non-JSON adapter
+stdout remains available as the bounded compatibility fallback. The real fix is an
+upstream ACPX/core event-contract change adding a provenance/kind field (or moving
+diagnostics onto `acpx.status`/`acpx.error`) so diagnostics and assistant deltas can be
+classified independently. Until that lands, the plugin fails closed for this old
+ambiguous shape; a future provenance-bearing shape can be added as a separate accepted
+branch during a bounded transition without weakening the old-shape guard. The persisted
+`retireAfter` is a
+30-minute durable accepted
 lease and is retired only when a
 later webhook/self-event supplies host scope; a fresh terminal session callback
 can finalize its own accepted run.
@@ -775,6 +791,73 @@ both add and remove paths. Tests should assert no test
 fixture ever contains a real-shaped Slack token pattern (`xoxb-`, `xoxp-`)
 being written to a comment, log, or committed file — same discipline as
 existing credential tests for GitHub App keys.
+
+### T7 — Live connection-check triggers as a new caller path to the credential (DRO-1161)
+**Risk:** `check-slack-connection` (`src/providers/slack/connection-status.ts`)
+introduces a new, human-operator-triggered live call to Slack's `auth.test`
+using the resolved bot token — a second code path (alongside
+`resolveSlackCredential`/the tool pipeline) that touches the credential. A
+bug here could either leak the token to the Settings UI, or become an
+unbounded/uncapped way to hammer Slack's `auth.test` endpoint from a
+company's own settings page.
+**Mitigation:** `runSlackConnectionCheck` reuses `resolveSlackBotToken`
+itself (not a parallel re-implementation) so it inherits the exact same
+fail-closed checks as tool credential resolution (workspace match, bot- vs
+user-token rejection, `botUserId` match) — "Connection: ok" cannot mean
+anything looser than what a real tool call would also accept. The action's
+return value is a closed, bounded shape
+(`{ outcome: { ok, category?, reason? }, checkedAt, nextStep? }`) built by
+`categorizeConnectionError`, which maps thrown errors to one of seven fixed
+category strings — the resolved token, the raw Slack response body, and the
+original thrown `Error.message` are never included. The check is also
+capped at a fixed 8s timeout (`SLACK_CONNECTION_CHECK_TIMEOUT_MS`) via
+`withTimeout`, and the action itself is gated the same way every other
+settings action is (`context.companyId` is host-authorized, never a
+caller-supplied `params.companyId`); the operator UI additionally only
+allows one check at a time per identity (loading-gated button), so this
+does not add a new unbounded-retry surface against Slack's API. Test
+coverage (`tests/providers/slack/connection-status.spec.ts`) explicitly
+asserts the token never appears in the serialized result, including on a
+Slack error body engineered to echo the token back.
+
+### T8 — Ingress/Delivery telemetry storage and exposure (DRO-1187)
+
+**Risk:** unlike Connection (an on-demand call), Ingress/Delivery telemetry
+(`src/providers/slack/telemetry.ts`) is *recorded* continuously as real
+webhook/queue/session activity happens, and its read path
+(`get-slack-telemetry`) is a new, always-available settings action. Two
+distinct risks follow: (1) an unbounded or unredacted record could
+accumulate message content, tokens, or other sensitive operational detail
+over time in plugin state, turning a health signal into a secondary secret
+store; (2) a bug in the read action could leak one company/agent's telemetry
+to another's Settings view.
+**Mitigation:** the persisted `SlackTelemetryRecord` shape is a small, fixed,
+`structuredClone`-serializable record — only ISO/epoch-ms timestamps, closed
+enum categories (`SlackIngressEventTypeCategory`, `SlackIngressFailureCategory`,
+`SlackDeliveryFailureCategory`), and the same correlation-safe `teamId`/
+`appId`/`companyId` identifiers already treated as safe throughout this
+provider (never message text, prompts, model output, tokens, signing
+secrets, HTTP headers, or stack traces). There is no caller-supplied
+free-text `reason` field at all: every failure carries only its closed-enum
+`category` and that category's fixed, static `nextStep` guidance string, so
+there is no per-call text that could ever carry a raw thrown `Error.message`
+or Slack response body into storage. There is no historical log — each write
+replaces the single bounded record for that (companyId, agentId) scope, so
+there is no unbounded growth path. The read action
+(`contributeSlackTelemetryAction`/`get-slack-telemetry`) validates
+`agentId`/`companyId` from `params`/`context` exactly like
+`check-slack-connection` (`context.companyId` is host-authorized, never a
+caller-supplied `params.companyId`), and — because the underlying state key
+is scoped by `agentId` alone, not `companyId` — `getSlackTelemetry` also
+checks the stored record's own `companyId` against the caller's authorized
+`companyId` before returning it, so a known/guessed `agentId` alone can
+never disclose another company's telemetry for that agent. Test coverage
+(`tests/providers/slack/telemetry.spec.ts`) explicitly asserts per-agent
+scoping (one agent's record never leaks into another's projection), a
+dedicated cross-company case (a shared `agentId` recorded under one company
+never projects for a different caller `companyId`, at both the module and
+registered-action layers), and that
+the persisted record and its projection never contain secret-shaped content.
 
 ## 10. Implementation notes and deferred questions
 

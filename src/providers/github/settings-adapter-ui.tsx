@@ -16,6 +16,7 @@ import {
   formActionsStyle,
   formatSecretOption,
   getFallbackTokenSecretFieldHint,
+  getMissingSecretIdError,
   getSecretFieldHint,
   hintStyle,
   inlineNoticeStyle,
@@ -23,6 +24,7 @@ import {
   legendStyle,
   linkStyle,
   manifestPanelStyle,
+  RefreshSecretsButton,
   secondaryButtonStyle,
   successStyle,
 } from "../../ui/SettingsPage.js";
@@ -76,6 +78,8 @@ export interface GitHubSettingsUIHookResult extends ProviderSettingsUIHookResult
   secretsLoading: boolean;
   secretsError: string | null;
   companyId: string;
+  refreshSecrets: () => void;
+  missingSecretIds: ReadonlySet<string>;
 }
 
 const MANIFEST_DRAFT_STORAGE_PREFIX = "paperclip-agent-identities:github-app-manifest-draft:";
@@ -402,6 +406,8 @@ function useGitHubCredentialStep(input: GitHubCredentialStepInput): GitHubSettin
     secretsLoading: input.secretsLoading,
     secretsError: input.secretsError,
     companyId: input.companyId,
+    refreshSecrets: input.refreshSecrets,
+    missingSecretIds: input.missingSecretIds,
   };
 }
 
@@ -557,6 +563,8 @@ function GitHubCredentialStep(props: { state: GitHubSettingsUIHookResult; config
         />
       </label>
 
+      <RefreshSecretsButton onRefresh={state.refreshSecrets} secretsLoading={state.secretsLoading} disabled={!state.companyId} />
+
       <label style={fieldStyle}>
         <span>Private key Paperclip secret UUID</span>
         {hasSecretOptions ? (
@@ -581,7 +589,11 @@ function GitHubCredentialStep(props: { state: GitHubSettingsUIHookResult; config
           />
         )}
         <span style={hintStyle}>{getSecretFieldHint({ companyId: state.companyId, secretsLoading: state.secretsLoading, secretsError: state.secretsError, hasSecretOptions })}</span>
+        {getMissingSecretIdError(config.privateKeySecretId, state.missingSecretIds, "private key") && (
+          <span style={errorStyle}>{getMissingSecretIdError(config.privateKeySecretId, state.missingSecretIds, "private key")}</span>
+        )}
       </label>
+
 
       <label style={fieldStyle}>
         <span>Private key file fallback</span>
@@ -622,6 +634,9 @@ function GitHubCredentialStep(props: { state: GitHubSettingsUIHookResult; config
               />
             )}
             <span style={hintStyle}>{getFallbackTokenSecretFieldHint({ companyId: state.companyId, secretsLoading: state.secretsLoading, secretsError: state.secretsError, hasSecretOptions })}</span>
+            {getMissingSecretIdError(config.fallbackTokenSecretId, state.missingSecretIds, "fallback token") && (
+              <span style={errorStyle}>{getMissingSecretIdError(config.fallbackTokenSecretId, state.missingSecretIds, "fallback token")}</span>
+            )}
           </label>
           <label style={fieldStyle}>
             <span>Fallback token file</span>

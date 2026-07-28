@@ -14,12 +14,14 @@ import {
   fieldStyle,
   fieldsetStyle,
   formActionsStyle,
+  getMissingSecretIdError,
   hintStyle,
   inlineNoticeStyle,
   inputStyle,
   legendStyle,
   linkStyle,
   manifestPanelStyle,
+  RefreshSecretsButton,
   requiredStyle,
   secondaryButtonStyle,
   successStyle,
@@ -88,6 +90,26 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
   slackStatusLoading: boolean;
   slackStatusError: string | null;
   handleCheckSlackStatus: () => Promise<void>;
+  // DRO-1161: bounded live Slack "Connection" check (auth.test against the
+  // resolved bot credential) -- distinct from slackStatus above, which only
+  // reflects saved/configured metadata. Never surfaces the bot token; see
+  // src/providers/slack/connection-status.ts.
+  slackConnectionStatus: SlackConnectionCheckResult | null;
+  slackConnectionStatusLoading: boolean;
+  slackConnectionStatusError: string | null;
+  // When the last successful check happened, so the UI can mark a
+  // previously-good result as stale rather than implying continuous health.
+  slackConnectionStatusCheckedAtMs: number | null;
+  handleCheckSlackConnection: () => Promise<void>;
+  // DRO-1187: read-only bounded Ingress/Delivery telemetry projection --
+  // fetched automatically (no manual "check" button, unlike Connection
+  // above) since there is no live check to trigger, only a projection of
+  // whatever ingress/delivery activity has already been recorded.
+  slackTelemetry: SlackTelemetryProjection | null;
+  slackTelemetryLoading: boolean;
+  slackTelemetryError: string | null;
+  slackTelemetryFetchedAtMs: number | null;
+  handleRefreshSlackTelemetry: () => Promise<void>;
   hasPersistedIdentity: boolean;
   // Reinstall: re-runs the manifest-assisted setup flow against an existing
   // identity row, confirmation-gated. Reuses handleCreateSlackAppManifest;
@@ -102,6 +124,8 @@ export interface SlackSettingsUIHookResult extends ProviderSettingsUIHookResult 
   secretsLoading: boolean;
   secretsError: string | null;
   companyId: string;
+  refreshSecrets: () => void;
+  missingSecretIds: ReadonlySet<string>;
   // The Events Request URL this deployment serves for `companyId`, derived from
   // the host's company-scoped webhook route, or null when it cannot be derived
   // (non-HTTPS dev origin). Offered as the default so operators do not have to
@@ -121,6 +145,65 @@ export interface SlackBotWhoamiData {
   appId?: string;
   botUserId?: string;
   hasDefaultChannel?: boolean;
+}
+
+// Mirrors `SlackConnectionCheckResult`/`SlackConnectionFailureCategory` in
+// connection-status.ts, kept as a separate UI-local type (rather than a
+// direct import) for the same reason settings-adapter.ts avoids importing
+// index.ts -- connection-status.ts pulls in credentials.ts, which is fine
+// (fetch-only, no node builtins), but keeping the UI's response shape
+// declared locally makes the client/server contract explicit at this
+// boundary and matches the existing SlackBotWhoamiData pattern above.
+export type SlackConnectionFailureCategory =
+  | "credential_missing"
+  | "credential_resolution_failed"
+  | "auth_test_failed"
+  | "workspace_mismatch"
+  | "identity_mismatch"
+  | "timeout"
+  | "unknown";
+
+export interface SlackConnectionCheckResult {
+  outcome:
+    | { ok: true }
+    | { ok: false; category: SlackConnectionFailureCategory; reason: string };
+  checkedAt: string;
+  nextStep?: string;
+}
+
+// Mirrors telemetry.ts's exported types (DRO-1187) -- same reason as above
+// for keeping the UI-local declaration rather than importing telemetry.ts
+// directly (it is server-only code pulling in @paperclipai/plugin-sdk types
+// used only for typing, but keeping the client/server contract explicit and
+// consistent with the existing SlackBotWhoamiData/SlackConnectionCheckResult
+// pattern above).
+export type SlackIngressFailureCategory = "signature_failed" | "routing_failed";
+export type SlackDeliveryFailureCategory = "queue_failed" | "session_failed" | "reply_failed";
+
+export interface SlackTelemetryFailure {
+  category: SlackIngressFailureCategory | SlackDeliveryFailureCategory;
+  nextStep: string;
+  at: number;
+}
+
+export interface SlackIngressTelemetry {
+  lastVerifiedEventAt?: number;
+  lastEventType?: "message" | "app_mention" | "other";
+  lastRoutingResult?: "routed" | "routing_failed";
+  lastFailure?: SlackTelemetryFailure;
+}
+
+export interface SlackDeliveryTelemetry {
+  lastEnqueuedAt?: number;
+  lastDrainStartedAt?: number;
+  lastCompletedAt?: number;
+  lastFailedAt?: number;
+  lastFailure?: SlackTelemetryFailure;
+}
+
+export interface SlackTelemetryProjection {
+  ingress: SlackIngressTelemetry | null;
+  delivery: SlackDeliveryTelemetry | null;
 }
 
 const SLACK_MANIFEST_STATE_STORAGE_PREFIX = "paperclip-agent-identities:slack-app-manifest-state:";
@@ -216,7 +299,7 @@ async function copyTextToClipboard(value: string): Promise<void> {
 type SlackCredentialStepInput = ProviderSettingsUIHookInput<SlackSettingsUIFormConfig> & SlackSettingsUIActionsInput;
 
 function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsUIHookResult {
-  const { config, hasPersistedIdentity, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, discoverSlackInstallMetadata, saveSlackInstallMetadata, rebindLegacySlackCredentials, slackBotWhoami, companyId } = input;
+  const { config, hasPersistedIdentity, updateField, refresh, deleteConfig, patchFormState, createSlackAppManifest, getSlackAppManifestFlow, discoverSlackInstallMetadata, saveSlackInstallMetadata, rebindLegacySlackCredentials, slackBotWhoami, checkSlackConnection, getSlackTelemetry, companyId } = input;
 
   // Slack posts events straight at the host's company-scoped webhook route, so
   // in a deployed Paperclip the Request URL is fully derivable and the operator
@@ -243,6 +326,23 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
   const [slackStatus, setSlackStatus] = useState<SlackBotWhoamiData | null>(null);
   const [slackStatusLoading, setSlackStatusLoading] = useState(false);
   const [slackStatusError, setSlackStatusError] = useState<string | null>(null);
+  // DRO-1161: bounded live Slack "Connection" check state, kept fully
+  // separate from slackStatus/slackStatusLoading/slackStatusError above so
+  // Configured and Connection never collapse into one loading/error state.
+  const [slackConnectionStatus, setSlackConnectionStatus] = useState<SlackConnectionCheckResult | null>(null);
+  const [slackConnectionStatusLoading, setSlackConnectionStatusLoading] = useState(false);
+  const [slackConnectionStatusError, setSlackConnectionStatusError] = useState<string | null>(null);
+  const [slackConnectionStatusCheckedAtMs, setSlackConnectionStatusCheckedAtMs] = useState<number | null>(null);
+  const slackConnectionStatusGenerationRef = useRef(0);
+  // DRO-1187: read-only, bounded Ingress/Delivery telemetry projection --
+  // fetched (not user-triggered) via get-slack-telemetry alongside the
+  // Configured whoami check below. Never contains secrets/bodies; see
+  // src/providers/slack/telemetry.ts.
+  const [slackTelemetry, setSlackTelemetry] = useState<SlackTelemetryProjection | null>(null);
+  const [slackTelemetryLoading, setSlackTelemetryLoading] = useState(false);
+  const [slackTelemetryError, setSlackTelemetryError] = useState<string | null>(null);
+  const [slackTelemetryFetchedAtMs, setSlackTelemetryFetchedAtMs] = useState<number | null>(null);
+  const slackTelemetryGenerationRef = useRef(0);
   const [legacySlackRebindBusy, setLegacySlackRebindBusy] = useState(false);
   const [legacySlackRebindError, setLegacySlackRebindError] = useState<string | null>(null);
   const [legacySlackRebindResult, setLegacySlackRebindResult] = useState<LegacySlackCredentialRebindResult | null>(null);
@@ -317,6 +417,26 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     setLegacySlackRebindBusy(false);
     setLegacySlackRebindError(null);
     setLegacySlackRebindResult(null);
+    // Cross-identity leak fix (DRO-1161 review): the live Connection check
+    // result/error/loading/timestamp are keyed to whichever identity was
+    // being viewed when the check ran. Closing/switching identities without
+    // clearing this state let a stale "Connected" result from agent A render
+    // under agent B's label. Bump the generation so any in-flight check
+    // response is discarded, and clear all connection state so a new
+    // identity always starts from "never checked".
+    slackConnectionStatusGenerationRef.current += 1;
+    setSlackConnectionStatus(null);
+    setSlackConnectionStatusLoading(false);
+    setSlackConnectionStatusError(null);
+    setSlackConnectionStatusCheckedAtMs(null);
+    // Same cross-identity leak concern applies to the DRO-1187 telemetry
+    // projection -- clear it on reset so it never renders under a
+    // different identity's label either.
+    slackTelemetryGenerationRef.current += 1;
+    setSlackTelemetry(null);
+    setSlackTelemetryLoading(false);
+    setSlackTelemetryError(null);
+    setSlackTelemetryFetchedAtMs(null);
   }
 
   // Any edit to the Slack install fields invalidates a prior successful
@@ -370,6 +490,25 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     // switching to a different persisted agent, or after a label edit resets
     // the provider-owned state. Form-field presence is not evidence that a
     // new wizard row has been saved yet.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config?.agentId, config?.label, config?.provider, hasPersistedIdentity]);
+
+  // DRO-1187: fetch the read-only Ingress/Delivery telemetry projection
+  // alongside the Configured whoami check above -- there is no live check to
+  // trigger (unlike Connection), it's just a projection of what's already
+  // been recorded, so it loads whenever the identity changes rather than
+  // needing a manual button.
+  useEffect(() => {
+    if (!config || config.provider !== SLACK_IDENTITY_PROVIDER_ID) return;
+    if (!hasPersistedIdentity || !config.agentId.trim()) {
+      slackTelemetryGenerationRef.current += 1;
+      setSlackTelemetry(null);
+      setSlackTelemetryError(null);
+      setSlackTelemetryLoading(false);
+      setSlackTelemetryFetchedAtMs(null);
+      return;
+    }
+    void handleRefreshSlackTelemetry();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config?.agentId, config?.label, config?.provider, hasPersistedIdentity]);
 
@@ -754,6 +893,67 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     }
   }
 
+  // DRO-1161: bounded live Slack "Connection" check -- calls
+  // `check-slack-connection` (a bounded server-side Slack `auth.test`
+  // against the resolved bot credential). This is distinct from
+  // handleCheckSlackStatus above: that reflects only saved/configured
+  // metadata and never verifies the token is still valid, while this
+  // actually authenticates. Never receives the token itself; the worker
+  // resolves and discards it entirely within the action handler.
+  async function handleCheckSlackConnection() {
+    const agentId = config?.agentId?.trim();
+    if (!agentId) return;
+    const generation = ++slackConnectionStatusGenerationRef.current;
+    setSlackConnectionStatusLoading(true);
+    setSlackConnectionStatusError(null);
+    try {
+      const result = (await checkSlackConnection({ agentId, companyId })) as SlackConnectionCheckResult;
+      if (slackConnectionStatusGenerationRef.current !== generation) return;
+      setSlackConnectionStatus(result);
+      if (result?.outcome?.ok) {
+        setSlackConnectionStatusCheckedAtMs(Date.now());
+      }
+    } catch (err) {
+      if (slackConnectionStatusGenerationRef.current !== generation) return;
+      // Preserve the last known result on a refresh failure (per DRO-1161's
+      // "UI preserves the last known state on refresh failure and marks it
+      // stale" requirement) -- do not clear slackConnectionStatus here.
+      setSlackConnectionStatusError(
+        err instanceof Error ? err.message : "Slack connection check failed to run.",
+      );
+    } finally {
+      if (slackConnectionStatusGenerationRef.current === generation) {
+        setSlackConnectionStatusLoading(false);
+      }
+    }
+  }
+
+  // DRO-1187: read-only Ingress/Delivery telemetry projection. On a refresh
+  // failure, preserves the last-known telemetry (does not clear it) so the
+  // panels can mark it stale, mirroring handleCheckSlackConnection above.
+  async function handleRefreshSlackTelemetry() {
+    const agentId = config?.agentId?.trim();
+    if (!agentId) return;
+    const generation = ++slackTelemetryGenerationRef.current;
+    setSlackTelemetryLoading(true);
+    setSlackTelemetryError(null);
+    try {
+      const result = (await getSlackTelemetry({ agentId, companyId })) as SlackTelemetryProjection;
+      if (slackTelemetryGenerationRef.current !== generation) return;
+      setSlackTelemetry(result);
+      setSlackTelemetryFetchedAtMs(Date.now());
+    } catch (err) {
+      if (slackTelemetryGenerationRef.current !== generation) return;
+      setSlackTelemetryError(
+        err instanceof Error ? err.message : "Slack ingress/delivery telemetry could not be refreshed.",
+      );
+    } finally {
+      if (slackTelemetryGenerationRef.current === generation) {
+        setSlackTelemetryLoading(false);
+      }
+    }
+  }
+
   // Confirmation-gated reinstall: re-runs the same manifest-assisted setup
   // flow as "Create Slack App manifest" (handleCreateSlackAppManifest),
   // against an already-configured identity row. Mirrors GitHub's "Replace
@@ -823,6 +1023,16 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     slackStatusLoading,
     slackStatusError,
     handleCheckSlackStatus,
+    slackConnectionStatus,
+    slackConnectionStatusLoading,
+    slackConnectionStatusError,
+    slackConnectionStatusCheckedAtMs,
+    handleCheckSlackConnection,
+    slackTelemetry,
+    slackTelemetryLoading,
+    slackTelemetryError,
+    slackTelemetryFetchedAtMs,
+    handleRefreshSlackTelemetry,
     hasPersistedIdentity,
     handleReinstallSlackApp,
     legacySlackRebindBusy,
@@ -834,6 +1044,8 @@ function useSlackCredentialStep(input: SlackCredentialStepInput): SlackSettingsU
     secretsLoading: input.secretsLoading,
     secretsError: input.secretsError,
     companyId: input.companyId,
+    refreshSecrets: input.refreshSecrets,
+    missingSecretIds: input.missingSecretIds,
     hostEventsRequestUrl,
     effectiveEventsRequestUrl,
   };
@@ -854,6 +1066,11 @@ export interface SlackSettingsUIActionsInput {
   // The credential-free `slack_bot_whoami` tool (DRO-972), invoked identically
   // to the actions above via `usePluginAction` in SettingsPage.
   slackBotWhoami: (input: Record<string, unknown>) => Promise<unknown>;
+  // DRO-1161: bounded live Slack "Connection" check (auth.test against the
+  // resolved bot credential), distinct from slackBotWhoami above.
+  checkSlackConnection: (input: Record<string, unknown>) => Promise<unknown>;
+  // DRO-1187: read-only bounded Ingress/Delivery telemetry projection.
+  getSlackTelemetry: (input: Record<string, unknown>) => Promise<unknown>;
 }
 
 function getSecretFieldHint(input: {
@@ -934,6 +1151,16 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     slackStatus,
     slackStatusLoading,
     slackStatusError,
+    slackConnectionStatus,
+    slackConnectionStatusLoading,
+    slackConnectionStatusError,
+    slackConnectionStatusCheckedAtMs,
+    handleCheckSlackConnection,
+    slackTelemetry,
+    slackTelemetryLoading,
+    slackTelemetryError,
+    slackTelemetryFetchedAtMs,
+    handleRefreshSlackTelemetry,
     handleReinstallSlackApp,
     legacySlackRebindBusy,
     legacySlackRebindError,
@@ -946,6 +1173,8 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
     secretsLoading,
     secretsError,
     companyId,
+    refreshSecrets,
+    missingSecretIds,
     hostEventsRequestUrl,
     effectiveEventsRequestUrl,
   } = state;
@@ -973,6 +1202,37 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           loading={slackStatusLoading}
           status={slackStatus}
           error={slackStatusError}
+        />
+      )}
+      {hasPersistedIdentity && (
+        <SlackConnectionStatusPanel
+          agentId={config.agentId}
+          label={config.label}
+          loading={slackConnectionStatusLoading}
+          result={slackConnectionStatus}
+          error={slackConnectionStatusError}
+          lastSuccessAtMs={slackConnectionStatusCheckedAtMs}
+          onCheck={handleCheckSlackConnection}
+        />
+      )}
+      {hasPersistedIdentity && (
+        <SlackIngressStatusPanel
+          agentId={config.agentId}
+          label={config.label}
+          loading={slackTelemetryLoading}
+          telemetry={slackTelemetry?.ingress ?? null}
+          error={slackTelemetryError}
+          lastFetchedAtMs={slackTelemetryFetchedAtMs}
+        />
+      )}
+      {hasPersistedIdentity && (
+        <SlackDeliveryStatusPanel
+          agentId={config.agentId}
+          label={config.label}
+          loading={slackTelemetryLoading}
+          telemetry={slackTelemetry?.delivery ?? null}
+          error={slackTelemetryError}
+          lastFetchedAtMs={slackTelemetryFetchedAtMs}
         />
       )}
       {hasPersistedIdentity && config.slackLegacyCredentialStatus && (
@@ -1154,6 +1414,10 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
         />
       </label>
 
+      {!hasLegacyCredentialRecovery && (
+        <RefreshSecretsButton onRefresh={refreshSecrets} secretsLoading={secretsLoading} disabled={!companyId} />
+      )}
+
       {!hasLegacyCredentialRecovery && <label style={fieldStyle}>
         <span>Bot token Paperclip secret UUID <span style={requiredStyle}>*</span></span>
         {hasSecretOptions ? (
@@ -1182,7 +1446,11 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           />
         )}
         <span style={hintStyle}>{getSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })} The bot token itself is never stored in this config; only the secret reference is.</span>
+        {getMissingSecretIdError(config.slackBotTokenSecretId, missingSecretIds, "bot token") && (
+          <span style={errorStyle}>{getMissingSecretIdError(config.slackBotTokenSecretId, missingSecretIds, "bot token")}</span>
+        )}
       </label>}
+
 
       {!hasLegacyCredentialRecovery && <div style={formActionsStyle}>
         <button
@@ -1230,6 +1498,9 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
           {getSigningSecretFieldHint({ companyId, secretsLoading, secretsError, hasSecretOptions })} The signing secret
           itself is never stored in this config; only the secret reference is.
         </span>
+        {getMissingSecretIdError(config.slackSigningSecretId, missingSecretIds, "signing secret") && (
+          <span style={errorStyle}>{getMissingSecretIdError(config.slackSigningSecretId, missingSecretIds, "signing secret")}</span>
+        )}
       </label>}
 
       <label style={fieldStyle}>
@@ -1258,7 +1529,13 @@ function SlackCredentialStep(props: { state: SlackSettingsUIHookResult; config: 
             !config.slackAppId.trim() ||
             !config.slackBotUserId.trim() ||
             !config.slackBotTokenSecretId.trim() ||
-            !config.slackSigningSecretId.trim()
+            !config.slackSigningSecretId.trim() ||
+            // DRO-1155: a selected bot-token/signing-secret ref that no
+            // longer resolves to a real secret must block the save action,
+            // matching getValidation's credentialComplete rule -- not just
+            // display an error alongside a still-clickable button.
+            missingSecretIds.has(config.slackBotTokenSecretId.trim()) ||
+            missingSecretIds.has(config.slackSigningSecretId.trim())
           }
           style={secondaryButtonStyle}
         >
@@ -1406,7 +1683,210 @@ function SlackStatusPanel(props: {
       bot user {status.botUserId ?? "unknown"}
       {status.hasDefaultChannel ? ", default channel configured" : ", no default channel configured"}.
       {" "}This reflects saved install metadata only - it does not verify the bot token is still valid; a revoked or
-      stale token is not detected here.
+      stale token is not detected here. See "Connection" below for a live credential check.
+    </div>
+  );
+}
+
+// DRO-1161: how long a successful live connection check is considered fresh
+// before the UI marks it stale. A stale "last known good" result must never
+// be presented as current health -- see the module doc on
+// runSlackConnectionCheck in connection-status.ts.
+const SLACK_CONNECTION_STATUS_STALE_AFTER_MS = 5 * 60 * 1000;
+
+function formatRelativeAge(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h ago`;
+}
+
+/**
+ * Review finding (DRO-1161): `Date.now()` sampled during render alone means
+ * an *open* dialog keeps showing "Connected" forever once it has rendered,
+ * because nothing re-renders it at the freshness boundary. This schedules a
+ * single one-shot timer for the exact moment the observation goes stale and
+ * re-renders then. It arms no timer when there is nothing to age out
+ * (`atMs === null`) or when the boundary has already passed, so there is no
+ * interval churn, and it clears on unmount / whenever `atMs` changes (a new
+ * check or an identity switch), so no timer leaks.
+ */
+function useStaleAfter(atMs: number | null, staleAfterMs: number): void {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (atMs === null) return;
+    const remainingMs = atMs + staleAfterMs - Date.now();
+    if (remainingMs <= 0) return;
+    const timer = setTimeout(() => setTick((value) => value + 1), remainingMs + 1);
+    return () => clearTimeout(timer);
+  }, [atMs, staleAfterMs]);
+}
+
+function SlackConnectionStatusPanel(props: {
+  agentId: string;
+  label: string;
+  loading: boolean;
+  result: SlackConnectionCheckResult | null;
+  error: string | null;
+  lastSuccessAtMs: number | null;
+  onCheck: () => Promise<void>;
+}) {
+  const { agentId, label, loading, result, error, lastSuccessAtMs, onCheck } = props;
+  useStaleAfter(lastSuccessAtMs, SLACK_CONNECTION_STATUS_STALE_AFTER_MS);
+  const now = Date.now();
+  const ageMs = lastSuccessAtMs !== null ? now - lastSuccessAtMs : null;
+  // A refresh failure over a preserved last-known-good result must mark it
+  // stale immediately, not just after SLACK_CONNECTION_STATUS_STALE_AFTER_MS
+  // elapses -- otherwise a check that failed seconds after a healthy check
+  // still renders as plain "Connected" while the surrounding text claims
+  // "marked stale" (review finding: refresh failure not actually marked
+  // stale until 5 minutes pass).
+  const isStale = Boolean(error) || (ageMs !== null && ageMs > SLACK_CONNECTION_STATUS_STALE_AFTER_MS);
+
+  return (
+    <div style={inlineNoticeStyle}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
+        <strong>Connection.</strong>
+        <button type="button" style={secondaryButtonStyle} onClick={() => void onCheck()} disabled={loading}>
+          {loading ? "Checking..." : "Check Slack connection"}
+        </button>
+      </div>
+      {!result && !error && !loading && (
+        <div>
+          Never tested. Run a live check to verify the bot credential for <strong>{label || agentId}</strong> still
+          authenticates with Slack -- this never exposes the bot token.
+        </div>
+      )}
+      {loading && <div>Running a bounded live Slack `auth.test` check for {label || agentId}...</div>}
+      {error && (
+        <div style={errorStyle}>
+          Could not refresh the connection check ({error}).
+          {result ? " Showing the last known result below, marked stale." : ""}
+        </div>
+      )}
+      {result && result.outcome.ok && (
+        <div style={successStyle}>
+          Connected. Slack accepted the resolved bot credential at {new Date(result.checkedAt).toLocaleString()}
+          {isStale ? ` (stale -- ${formatRelativeAge(ageMs as number)}, re-check to confirm it still holds)` : ""}.
+        </div>
+      )}
+      {result && !result.outcome.ok && (
+        <div style={errorStyle}>
+          Not connected ({result.outcome.category}): {result.outcome.reason}
+          {result.nextStep ? <div style={hintStyle}>Next step: {result.nextStep}</div> : null}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// DRO-1187: same staleness window as Connection above -- a preserved
+// last-known telemetry projection older than this (or shown after a refresh
+// failure) is marked stale rather than presented as current.
+const SLACK_TELEMETRY_STALE_AFTER_MS = 5 * 60 * 1000;
+
+function SlackIngressStatusPanel(props: {
+  agentId: string;
+  label: string;
+  loading: boolean;
+  telemetry: SlackIngressTelemetry | null;
+  error: string | null;
+  lastFetchedAtMs: number | null;
+}) {
+  const { agentId, label, loading, telemetry, error, lastFetchedAtMs } = props;
+  useStaleAfter(lastFetchedAtMs, SLACK_TELEMETRY_STALE_AFTER_MS);
+  const now = Date.now();
+  const ageMs = lastFetchedAtMs !== null ? now - lastFetchedAtMs : null;
+  const isStale = Boolean(error) || (ageMs !== null && ageMs > SLACK_TELEMETRY_STALE_AFTER_MS);
+  const hasObservation = Boolean(telemetry?.lastVerifiedEventAt || telemetry?.lastFailure);
+
+  return (
+    <div style={inlineNoticeStyle}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
+        <strong>Ingress.</strong>
+        {loading && <span>Refreshing...</span>}
+      </div>
+      {!hasObservation && !error && (
+        <div>
+          Never observed. No verified Slack event has been recorded yet for <strong>{label || agentId}</strong>.
+        </div>
+      )}
+      {error && (
+        <div style={errorStyle}>
+          Could not refresh ingress telemetry ({error}).
+          {hasObservation ? " Showing the last known result below, marked stale." : ""}
+        </div>
+      )}
+      {telemetry?.lastVerifiedEventAt && telemetry.lastRoutingResult === "routed" && (
+        <div style={successStyle}>
+          Last verified event ({telemetry.lastEventType ?? "other"}) routed successfully at{" "}
+          {new Date(telemetry.lastVerifiedEventAt).toLocaleString()}
+          {isStale ? ` (stale -- ${formatRelativeAge(ageMs as number)}, refresh to confirm it still holds)` : ""}.
+        </div>
+      )}
+      {telemetry?.lastFailure && (
+        <div style={errorStyle}>
+          Last ingress failure ({telemetry.lastFailure.category}) at{" "}
+          {new Date(telemetry.lastFailure.at).toLocaleString()}
+          <div style={hintStyle}>Next step: {telemetry.lastFailure.nextStep}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SlackDeliveryStatusPanel(props: {
+  agentId: string;
+  label: string;
+  loading: boolean;
+  telemetry: SlackDeliveryTelemetry | null;
+  error: string | null;
+  lastFetchedAtMs: number | null;
+}) {
+  const { agentId, label, loading, telemetry, error, lastFetchedAtMs } = props;
+  useStaleAfter(lastFetchedAtMs, SLACK_TELEMETRY_STALE_AFTER_MS);
+  const now = Date.now();
+  const ageMs = lastFetchedAtMs !== null ? now - lastFetchedAtMs : null;
+  const isStale = Boolean(error) || (ageMs !== null && ageMs > SLACK_TELEMETRY_STALE_AFTER_MS);
+  const hasObservation = Boolean(
+    telemetry?.lastEnqueuedAt || telemetry?.lastDrainStartedAt || telemetry?.lastCompletedAt || telemetry?.lastFailure,
+  );
+
+  return (
+    <div style={inlineNoticeStyle}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.5rem" }}>
+        <strong>Delivery.</strong>
+        {loading && <span>Refreshing...</span>}
+      </div>
+      {!hasObservation && !error && (
+        <div>
+          Never observed. No Slack turn has been queued or delivered yet for <strong>{label || agentId}</strong>.
+        </div>
+      )}
+      {error && (
+        <div style={errorStyle}>
+          Could not refresh delivery telemetry ({error}).
+          {hasObservation ? " Showing the last known result below, marked stale." : ""}
+        </div>
+      )}
+      {telemetry?.lastCompletedAt && (
+        <div style={successStyle}>
+          Last turn completed at {new Date(telemetry.lastCompletedAt).toLocaleString()}
+          {isStale ? ` (stale -- ${formatRelativeAge(ageMs as number)}, refresh to confirm it still holds)` : ""}.
+        </div>
+      )}
+      {telemetry?.lastEnqueuedAt && !telemetry.lastCompletedAt && !telemetry.lastFailure && (
+        <div>Last turn enqueued at {new Date(telemetry.lastEnqueuedAt).toLocaleString()}.</div>
+      )}
+      {telemetry?.lastFailure && (
+        <div style={errorStyle}>
+          Last delivery failure ({telemetry.lastFailure.category}) at{" "}
+          {new Date(telemetry.lastFailure.at).toLocaleString()}
+          <div style={hintStyle}>Next step: {telemetry.lastFailure.nextStep}</div>
+        </div>
+      )}
     </div>
   );
 }

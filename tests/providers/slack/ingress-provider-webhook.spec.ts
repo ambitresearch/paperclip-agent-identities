@@ -22,6 +22,7 @@ import {
   type SlackConversationTarget,
 } from "../../../src/providers/slack/ingress/conversation-session.js";
 import { resetSlackRateLimitState } from "../../../src/providers/slack/ingress/rate-limit.js";
+import { getSlackTelemetry } from "../../../src/providers/slack/telemetry.js";
 
 const SIGNING_SECRET = "provider-webhook-signing-secret";
 const SIGNING_SECRET_ID = "00000000-0000-4000-8000-000000000001";
@@ -68,6 +69,18 @@ const SLACK_SETTINGS_STATE = {
 } as const;
 
 type StateKey = { scopeKind: string; scopeId?: string; namespace?: string; stateKey: string };
+import { makeEntities } from "./entities-fake.js";
+import { listSlackConversationKeys } from "../../../src/providers/slack/ingress/conversation-registry.js";
+
+const entityRowsByStore = new WeakMap<Map<string, unknown>, Map<string, never>>();
+
+function entityRowsFor(store: Map<string, unknown>) {
+  const existing = entityRowsByStore.get(store);
+  if (existing) return existing;
+  const created = new Map<string, never>();
+  entityRowsByStore.set(store, created);
+  return created;
+}
 
 function mapKey(key: StateKey): string {
   return `${key.scopeKind}:${key.scopeId ?? ""}:${key.namespace ?? ""}:${key.stateKey}`;
@@ -134,6 +147,11 @@ function makeCtx(options: {
   threadReplies?: (init?: RequestInit) => Promise<Response>;
 } = {}) {
   const store = options.store ?? new Map<string, unknown>();
+  // The durable registry survives a simulated restart (a fresh ctx over the
+  // same store) the same way host entity rows do. It is keyed off the store
+  // identity rather than stored *in* the store, so assertions about plugin
+  // state keys stay unpolluted by this harness detail.
+  const entities = makeEntities(entityRowsFor(store));
   const settingsState = options.settingsState === undefined ? SLACK_SETTINGS_STATE : options.settingsState;
   if (settingsState !== null && !store.has(mapKey(CONFIG_SCOPE))) {
     store.set(mapKey(CONFIG_SCOPE), structuredClone(settingsState));
@@ -249,6 +267,7 @@ function makeCtx(options: {
       emit,
     },
     companies: { list: vi.fn(async () => [{ id: "co-1", name: "Acme" }]) },
+    entities,
     jobs: {
       register: vi.fn((jobKey: string, handler: () => Promise<void>) => {
         jobHandlers.set(jobKey, handler);
@@ -258,7 +277,7 @@ function makeCtx(options: {
     activity: { log: vi.fn(async () => undefined) },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   };
-  return { ctx, store, emitted, eventHandlers, jobHandlers, activeSessions, sendMessage, close };
+  return { ctx, store, entities, emitted, eventHandlers, jobHandlers, activeSessions, sendMessage, close };
 }
 
 function queueState(store: Map<string, unknown>) {
@@ -1171,7 +1190,12 @@ describe("Slack provider durable ingress", () => {
       channel_type: "channel",
       channel: "C111",
     }), ctx as never);
-    expect([...store.keys()]).toEqual([mapKey(CONFIG_SCOPE)]);
+    // Verified-but-not-dispatched events still record a routed ingress
+    // telemetry observation (DRO-1187) alongside the untouched company config
+    // key -- no queue/drain state is created for a non-dispatchable event.
+    expect([...store.keys()].sort()).toEqual(
+      [mapKey(CONFIG_SCOPE), "agent:agent-1:slack-telemetry:health"].sort(),
+    );
     expect(ctx.events.emit).not.toHaveBeenCalled();
   });
 
@@ -1808,6 +1832,50 @@ describe("Slack provider durable ingress", () => {
     expect(restarted.sendMessage.mock.calls[0][2].prompt).toContain('"text":"second"');
   });
 
+  it("retires a fully drained conversation from the recovery registry", async () => {
+    // Without retirement the registry grows to every conversation the agent has
+    // ever seen, so each tick pays a state read per dead conversation forever.
+    const store = new Map<string, unknown>();
+    const first = makeCtx({ store });
+    await handleSlackProviderWebhook(delivery("Ev001", "only turn"), first.ctx as never);
+
+    let callback!: (event: AgentSessionEvent) => void | Promise<void>;
+    const restarted = makeCtx({
+      store,
+      sendMessage: async (_sessionId, _companyId, options) => {
+        callback = options.onEvent!;
+        return { runId: "run-drained" };
+      },
+    });
+    contributeSlackIngress(restarted.ctx as never, async () => undefined);
+    expect(await listSlackConversationKeys(restarted.entities, "agent-1", "co-1")).toHaveLength(1);
+
+    // First tick dispatches the queued turn; the conversation is still active,
+    // so it must stay registered.
+    await restarted.jobHandlers.get("slack-queue-recovery")!();
+    expect(await listSlackConversationKeys(restarted.entities, "agent-1", "co-1")).toHaveLength(1);
+
+    // Complete the run, then the next tick observes an idle queue and retires it.
+    await callback({
+      sessionId: "session-1",
+      runId: "run-drained",
+      seq: 1,
+      eventType: "done",
+      stream: "system",
+      message: null,
+      payload: null,
+    });
+    await vi.waitFor(() => expect(queueState(store).pending).toHaveLength(0));
+    await restarted.jobHandlers.get("slack-queue-recovery")!();
+
+    expect(await listSlackConversationKeys(restarted.entities, "agent-1", "co-1")).toEqual([]);
+
+    // A later turn must re-register, so retirement never strands new work.
+    const resumed = makeCtx({ store, sendMessage: async () => ({ runId: "run-resumed" }) });
+    await handleSlackProviderWebhook(delivery("Ev002", "later turn"), resumed.ctx as never);
+    expect(await listSlackConversationKeys(resumed.entities, "agent-1", "co-1")).toHaveLength(1);
+  });
+
   it("scheduled recovery dead-letters poison work after the bounded attempt limit", async () => {
     const store = new Map<string, unknown>();
     const first = makeCtx({ store });
@@ -1909,7 +1977,13 @@ describe("Slack provider durable ingress", () => {
       status: 401,
       body: { error: "unauthorized" },
     });
-    expect([...store.keys()]).toEqual([mapKey(CONFIG_SCOPE)]);
+    // A pre-verification signature failure is never attributed to any
+    // identity (including the routing-hinted candidate, which is still
+    // unauthenticated at this point) -- no telemetry state is created, and no
+    // queue/drain state is created since the event was never trusted.
+    expect([...store.keys()].sort()).toEqual(
+      [mapKey(CONFIG_SCOPE)].sort(),
+    );
     expect(ctx.events.emit).not.toHaveBeenCalled();
   });
 
@@ -1954,5 +2028,125 @@ describe("Slack provider durable ingress", () => {
     expect(ctx.events.on).toHaveBeenCalledOnce();
     expect(ctx.jobs.register).toHaveBeenCalledWith("slack-queue-recovery", expect.any(Function));
     expect(jobHandlers.has("slack-queue-recovery")).toBe(true);
+  });
+
+  // DRO-1187: bounded, secret-free Ingress/Delivery telemetry recording
+  // wired through the real webhook -> enqueue -> drain -> completion path,
+  // reusing this file's existing makeCtx/delivery/runtime fixtures rather
+  // than re-deriving route/service setups.
+  describe("DRO-1187 ingress/delivery telemetry recording", () => {
+    it("records a routed ingress event on a successfully dispatched webhook", async () => {
+      const { ctx } = makeCtx();
+      await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
+      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
+      expect(telemetry.ingress?.lastRoutingResult).toBe("routed");
+      expect(telemetry.ingress?.lastEventType).toBe("message");
+    });
+
+    it("records a queue_failed delivery failure when the durable queue rejects enqueue", async () => {
+      // Review finding (DRO-1187): this previously fired a 40-webhook burst
+      // and tolerated the failure path never occurring. Force the rejection
+      // deterministically instead by prefilling the conversation's durable
+      // queue to its pending bound, then asserting the recorded category and
+      // guidance unconditionally.
+      const store = new Map<string, unknown>();
+      const { ctx } = makeCtx({ store });
+      // Seed the queue record for this conversation up to SLACK_PENDING_TURN_LIMIT.
+      await handleSlackProviderWebhook(delivery("Ev000"), ctx as never);
+      const queueEntry = [...store.entries()].find(([key]) => key.includes("slack-conversations"))!;
+      const seeded = structuredClone(queueEntry[1]) as { pending: unknown[] };
+      const template = seeded.pending[0];
+      while (seeded.pending.length < 32) {
+        seeded.pending.push(structuredClone(template));
+      }
+      store.set(queueEntry[0], seeded);
+
+      await expect(handleSlackProviderWebhook(delivery("Ev999"), ctx as never)).rejects.toThrow();
+
+      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1", { teamId: "T111", appId: "A111" });
+      expect(telemetry.delivery?.lastFailure?.category).toBe("queue_failed");
+      expect(telemetry.delivery?.lastFailure?.nextStep).toContain("durable conversation queue");
+      expect(telemetry.delivery?.lastFailedAt).toBeTruthy();
+      // Bounded metadata only -- never Slack text or request content.
+      expect(JSON.stringify(telemetry)).not.toContain("Ev999");
+    });
+
+    it("records reply_failed, not completed, when posting the reply back to Slack fails", async () => {
+      // Review finding (DRO-1187): the postReply rejection is caught and only
+      // logged so the durable claim still completes (no duplicate re-send),
+      // but Slack never received the reply -- so delivery health must show
+      // reply_failed rather than a clean completion.
+      const { ctx } = makeCtx({
+        sendMessage: async (sessionId, _companyId, options) => {
+          const callback = options.onEvent!;
+          await callback({
+            sessionId,
+            runId: "run-1",
+            seq: 1,
+            eventType: "chunk",
+            stream: "stdout",
+            message: '{"type":"result","result":"a reply"}\n',
+            payload: null,
+          });
+          queueMicrotask(() => void callback({
+            sessionId,
+            runId: "run-1",
+            seq: 2,
+            eventType: "done",
+            stream: "system",
+            message: null,
+            payload: null,
+          }));
+          return { runId: "run-1" };
+        },
+      });
+      const postReply = vi.fn(async () => {
+        throw new Error("slack post failed");
+      });
+      await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
+      const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
+      await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime(postReply));
+      await vi.waitFor(() => expect(postReply).toHaveBeenCalledOnce());
+      await vi.waitFor(async () => {
+        const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1", { teamId: "T111", appId: "A111" });
+        expect(telemetry.delivery?.lastFailure?.category).toBe("reply_failed");
+      });
+      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1", { teamId: "T111", appId: "A111" });
+      expect(telemetry.delivery?.lastCompletedAt).toBeFalsy();
+      expect(telemetry.delivery?.lastFailure?.nextStep).toBeTruthy();
+      expect(JSON.stringify(telemetry)).not.toContain("slack post failed");
+    });
+
+    it("records delivery completion once a routed agent session finishes", async () => {
+      const { ctx } = makeCtx();
+      await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
+      const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
+      await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime());
+      await vi.waitFor(async () => {
+        const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
+        expect(telemetry.delivery?.lastCompletedAt).toBeTruthy();
+      });
+      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
+      expect(telemetry.delivery?.lastEnqueuedAt).toBeTruthy();
+      expect(telemetry.delivery?.lastDrainStartedAt).toBeTruthy();
+    });
+
+    it("does not record drain_started merely from scheduling the queue kick, only once a session is actually claimed", async () => {
+      // DRO-1187 review finding: drain_started must reflect an actual
+      // claim/session start, not just that a self-event kick was scheduled.
+      const { ctx } = makeCtx();
+      await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
+      // The webhook enqueued the turn and scheduled the drain kick, but the
+      // drain worker itself has not run yet -- lastDrainStartedAt must still
+      // be absent even though enqueue is recorded.
+      const beforeDrain = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
+      expect(beforeDrain.delivery?.lastEnqueuedAt).toBeTruthy();
+      expect(beforeDrain.delivery?.lastDrainStartedAt).toBeUndefined();
+
+      const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
+      await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime());
+      const afterDrain = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
+      expect(afterDrain.delivery?.lastDrainStartedAt).toBeTruthy();
+    });
   });
 });

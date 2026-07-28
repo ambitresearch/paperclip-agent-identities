@@ -100,7 +100,7 @@ Parameters:
 Runtime behavior:
 
 1. validates params and rejects empty, whitespace-containing, NUL-containing, or dash-prefixed branch/remote values;
-2. lists the invoking agent's in-progress project issues, matches `runCtx.runId` against `executionRunId` or `checkoutRunId`, and uses that issue's execution workspace `cwd` (or `path`); when no usable execution workspace is available, falls back to the project's primary workspace;
+2. lists the invoking agent's in-progress issues, omitting a blank runtime project filter, matches `runCtx.runId` against `executionRunId` or `checkoutRunId`, and uses that issue's execution workspace `cwd` (or `path`); when no usable execution workspace is available and the runtime supplied a valid project ID, falls back to the project's primary workspace;
 3. runs `git remote get-url <remote>` in the workspace;
 4. normalizes the remote URL to a GitHub owner/repo;
 5. resolves the agent identity;

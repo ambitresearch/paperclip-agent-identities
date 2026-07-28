@@ -35,6 +35,7 @@ export type SlackConnectionFailureCategory =
   | "auth_test_failed"
   | "workspace_mismatch"
   | "identity_mismatch"
+  | "network_failed"
   | "timeout"
   | "unknown";
 
@@ -61,28 +62,59 @@ const CONNECTION_FAILURE_GUIDANCE: Record<SlackConnectionFailureCategory, string
     "The resolved bot token's user/bot identity does not match the configured bot user ID. Re-run Slack App discovery to refresh the stored identity metadata.",
   timeout:
     "The live Slack credential check did not complete in time. This may be transient network/API latency; retry the check.",
+  network_failed:
+    "The live Slack credential check could not reach Slack (network or DNS failure). This is a connectivity problem, not a credential problem -- check outbound network access to slack.com and retry.",
   unknown:
     "An unexpected error occurred while checking the Slack connection. Retry the check; if it persists, contact support.",
 };
 
+/**
+ * Tags an error with the check stage it came from, so the categorizer never
+ * has to guess. Without this, a transport/DNS throw out of
+ * `verifySlackToken`'s `fetch` fell through to the catch-all and was
+ * reported as `credential_resolution_failed`, sending operators to fix a
+ * secret reference during a plain network outage.
+ */
+type SlackConnectionStage = "resolution" | "verification";
+
+class SlackConnectionStageError extends Error {
+  constructor(readonly stage: SlackConnectionStage, readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Unknown error");
+    this.name = "SlackConnectionStageError";
+  }
+}
+
+function isTimeoutLike(message: string): boolean {
+  return message.includes("timed out") || message.includes("aborted");
+}
+
 function categorizeConnectionError(error: unknown): { category: SlackConnectionFailureCategory; reason: string } {
+  const stage = error instanceof SlackConnectionStageError ? error.stage : undefined;
   const message = error instanceof Error ? error.message : "Unknown error";
+  if (isTimeoutLike(message)) {
+    return { category: "timeout", reason: "The live credential check timed out." };
+  }
+  if (stage === "resolution") {
+    // Only a genuine secret-resolution rejection reaches here.
+    return { category: "credential_resolution_failed", reason: "The bot token secret reference could not be resolved." };
+  }
+  if (stage === "verification") {
+    if (message.includes("token verification failed")) {
+      return { category: "auth_test_failed", reason: "Slack auth.test rejected the resolved bot token." };
+    }
+    // A transport/DNS/unexpected throw out of fetch -- never a credential problem.
+    return { category: "network_failed", reason: "The live credential check could not reach Slack." };
+  }
   if (message.includes("workspace mismatch")) {
     return { category: "workspace_mismatch", reason: "Resolved token's workspace does not match the configured identity." };
   }
   if (message.includes("no bot_id") || message.includes("does not match the configured botUserId")) {
     return { category: "identity_mismatch", reason: "Resolved token's identity does not match the configured bot user." };
   }
-  if (message.includes("token verification failed")) {
-    return { category: "auth_test_failed", reason: "Slack auth.test rejected the resolved bot token." };
-  }
   if (message.includes("Missing or invalid Slack botToken secret reference")) {
     return { category: "credential_missing", reason: "No bot token secret reference is configured." };
   }
-  if (message.includes("timed out") || message.includes("aborted")) {
-    return { category: "timeout", reason: "The live credential check timed out." };
-  }
-  return { category: "credential_resolution_failed", reason: "The bot token secret reference could not be resolved." };
+  return { category: "unknown", reason: "An unexpected error occurred while checking the Slack connection." };
 }
 
 /**
@@ -106,8 +138,24 @@ export async function runSlackConnectionCheck(
         resolvedIdentity,
         config,
         companyId,
-        resolveSecret,
-        (token) => verifySlackToken(token, fetchImpl),
+        // Tag each stage's failures so a network blip while reaching Slack is
+        // never reported as a bad secret reference (and vice versa). The
+        // workspace/identity assertions inside resolveSlackBotToken stay
+        // untagged and keep their own message-based categories.
+        async (secretRef, options) => {
+          try {
+            return await resolveSecret(secretRef, options);
+          } catch (error) {
+            throw new SlackConnectionStageError("resolution", error);
+          }
+        },
+        async (token) => {
+          try {
+            return await verifySlackToken(token, fetchImpl);
+          } catch (error) {
+            throw new SlackConnectionStageError("verification", error);
+          }
+        },
       ),
       SLACK_CONNECTION_CHECK_TIMEOUT_MS,
     );

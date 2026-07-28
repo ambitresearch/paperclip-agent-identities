@@ -1,5 +1,6 @@
 import type { PluginContext, PluginStateClient } from "@paperclipai/plugin-sdk";
 import { requireHumanSettingsActor } from "../../core/settings-action-authorization.js";
+import { readSlackIdentityConfigEntry, validateSlackConfig } from "./config.js";
 
 /**
  * DRO-1187: bounded, secret-free "Ingress" and "Delivery" health telemetry,
@@ -184,10 +185,42 @@ function parseTelemetryRecord(value: unknown): SlackTelemetryRecord | null {
   };
 }
 
+/**
+ * Binding scope a record belongs to beyond (companyId, agentId): the Slack
+ * workspace and app the agent identity is currently bound to. Rebinding an
+ * agent to a different Slack app/workspace must not merge into, or project,
+ * the previous binding's record.
+ */
+export interface SlackTelemetryBinding {
+  readonly teamId?: string;
+  readonly appId?: string;
+}
+
+function normalizeBindingId(value: unknown): string | undefined {
+  return isBoundedString(value) && value.trim() === value ? value : undefined;
+}
+
+/**
+ * Fail-closed binding check: when both the stored record and the requested
+ * scope name a teamId (or appId) and they differ, the stored record belongs
+ * to a previous Slack app/workspace binding and must be treated as absent
+ * (readers project nothing; writers start a fresh record rather than merging
+ * into the stale one). A caller that cannot name its binding (unknown
+ * team/app) imposes no constraint, exactly as before.
+ */
+function bindingMatches(record: SlackTelemetryRecord, binding: SlackTelemetryBinding): boolean {
+  const teamId = normalizeBindingId(binding.teamId);
+  const appId = normalizeBindingId(binding.appId);
+  if (teamId !== undefined && record.teamId !== undefined && record.teamId !== teamId) return false;
+  if (appId !== undefined && record.appId !== undefined && record.appId !== appId) return false;
+  return true;
+}
+
 async function readTelemetryRecord(
   state: PluginStateClient,
   agentId: string,
   companyId: string,
+  binding: SlackTelemetryBinding = {},
 ): Promise<SlackTelemetryRecord | null> {
   const raw = await state.get(slackTelemetryStateKey(agentId));
   if (raw === null || raw === undefined) return null;
@@ -198,6 +231,8 @@ async function readTelemetryRecord(
   // caller who merely knows a valid agentId could read another company's
   // telemetry for that agent.
   if (parsed.companyId !== companyId) return null;
+  // ...and to the caller's current Slack app/workspace binding.
+  if (!bindingMatches(parsed, binding)) return null;
   return parsed;
 }
 
@@ -208,6 +243,44 @@ async function writeTelemetryRecord(
 ): Promise<void> {
   const serialized = structuredClone(next);
   await state.set(slackTelemetryStateKey(agentId), serialized);
+}
+
+/**
+ * Serializes telemetry read-modify-write cycles per (state client, company,
+ * agent) so a concurrent ingress record and delivery record cannot read the
+ * same base record and clobber each other's branch. Mirrors the queue code's
+ * `withConversationMutation` gate in `ingress/conversation-session.ts` --
+ * same in-process tail-chaining shape, keyed per state client so tests with
+ * independent stores never contend.
+ */
+const telemetryMutationTailsByState = new WeakMap<PluginStateClient, Map<string, Promise<void>>>();
+
+async function withTelemetryMutation<T>(
+  state: PluginStateClient,
+  companyId: string,
+  agentId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let tails = telemetryMutationTailsByState.get(state);
+  if (!tails) {
+    tails = new Map();
+    telemetryMutationTailsByState.set(state, tails);
+  }
+  const key = `${companyId}:${agentId}`;
+  const previous = tails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => gate);
+  tails.set(key, tail);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (tails.get(key) === tail) tails.delete(key);
+  }
 }
 
 export interface SlackTelemetryScope {
@@ -245,31 +318,33 @@ export async function recordSlackIngressOutcome(
 ): Promise<void> {
   assertScope(scope);
   if (!isFiniteTimestamp(nowMs)) throw new Error("Slack telemetry timestamp is invalid.");
-  const existing = (await readTelemetryRecord(scope.state, scope.agentId, scope.companyId)) ?? {
-    version: SLACK_TELEMETRY_STATE_VERSION,
-    companyId: scope.companyId,
-  };
-  const ingress: SlackIngressTelemetry = outcome.ok
-    ? {
-        lastVerifiedEventAt: nowMs,
-        lastEventType: outcome.eventType,
-        lastRoutingResult: "routed",
-      }
-    : {
-        ...existing.ingress,
-        lastRoutingResult: "routing_failed",
-        lastFailure: {
-          category: outcome.category,
-          nextStep: SLACK_INGRESS_FAILURE_GUIDANCE[outcome.category],
-          at: nowMs,
-        },
-      };
-  await writeTelemetryRecord(scope.state, scope.agentId, {
-    ...existing,
-    companyId: scope.companyId,
-    ...(scope.teamId ? { teamId: scope.teamId } : {}),
-    ...(scope.appId ? { appId: scope.appId } : {}),
-    ingress,
+  await withTelemetryMutation(scope.state, scope.companyId, scope.agentId, async () => {
+    const existing = (await readTelemetryRecord(scope.state, scope.agentId, scope.companyId, scope)) ?? {
+      version: SLACK_TELEMETRY_STATE_VERSION,
+      companyId: scope.companyId,
+    };
+    const ingress: SlackIngressTelemetry = outcome.ok
+      ? {
+          lastVerifiedEventAt: nowMs,
+          lastEventType: outcome.eventType,
+          lastRoutingResult: "routed",
+        }
+      : {
+          ...existing.ingress,
+          lastRoutingResult: "routing_failed",
+          lastFailure: {
+            category: outcome.category,
+            nextStep: SLACK_INGRESS_FAILURE_GUIDANCE[outcome.category],
+            at: nowMs,
+          },
+        };
+    await writeTelemetryRecord(scope.state, scope.agentId, {
+      ...existing,
+      companyId: scope.companyId,
+      ...(scope.teamId ? { teamId: scope.teamId } : {}),
+      ...(scope.appId ? { appId: scope.appId } : {}),
+      ingress,
+    });
   });
 }
 
@@ -281,50 +356,52 @@ export async function recordSlackDeliveryOutcome(
 ): Promise<void> {
   assertScope(scope);
   if (!isFiniteTimestamp(nowMs)) throw new Error("Slack telemetry timestamp is invalid.");
-  const existing = (await readTelemetryRecord(scope.state, scope.agentId, scope.companyId)) ?? {
-    version: SLACK_TELEMETRY_STATE_VERSION,
-    companyId: scope.companyId,
-  };
-  const priorDelivery = existing.delivery;
-  let delivery: SlackDeliveryTelemetry;
-  switch (outcome.phase) {
-    case "enqueued":
-      delivery = { ...priorDelivery, lastEnqueuedAt: nowMs };
-      break;
-    case "drain_started":
-      delivery = { ...priorDelivery, lastDrainStartedAt: nowMs };
-      break;
-    case "completed":
-      // A later successful completion supersedes an earlier failure record --
-      // clear lastFailure/lastFailedAt so the panel doesn't show a completed
-      // turn and a stale failure as simultaneous, contradictory health.
-      delivery = {
-        ...priorDelivery,
-        lastCompletedAt: nowMs,
-        lastFailedAt: undefined,
-        lastFailure: undefined,
-      };
-      break;
-    case "failed":
-      delivery = {
-        ...priorDelivery,
-        lastFailedAt: nowMs,
-        lastFailure: {
-          category: outcome.category,
-          nextStep: SLACK_DELIVERY_FAILURE_GUIDANCE[outcome.category],
-          at: nowMs,
-        },
-      };
-      break;
-    default:
-      throw new Error("Slack delivery telemetry phase is invalid.");
-  }
-  await writeTelemetryRecord(scope.state, scope.agentId, {
-    ...existing,
-    companyId: scope.companyId,
-    ...(scope.teamId ? { teamId: scope.teamId } : {}),
-    ...(scope.appId ? { appId: scope.appId } : {}),
-    delivery,
+  await withTelemetryMutation(scope.state, scope.companyId, scope.agentId, async () => {
+    const existing = (await readTelemetryRecord(scope.state, scope.agentId, scope.companyId, scope)) ?? {
+      version: SLACK_TELEMETRY_STATE_VERSION,
+      companyId: scope.companyId,
+    };
+    const priorDelivery = existing.delivery;
+    let delivery: SlackDeliveryTelemetry;
+    switch (outcome.phase) {
+      case "enqueued":
+        delivery = { ...priorDelivery, lastEnqueuedAt: nowMs };
+        break;
+      case "drain_started":
+        delivery = { ...priorDelivery, lastDrainStartedAt: nowMs };
+        break;
+      case "completed":
+        // A later successful completion supersedes an earlier failure record --
+        // clear lastFailure/lastFailedAt so the panel doesn't show a completed
+        // turn and a stale failure as simultaneous, contradictory health.
+        delivery = {
+          ...priorDelivery,
+          lastCompletedAt: nowMs,
+          lastFailedAt: undefined,
+          lastFailure: undefined,
+        };
+        break;
+      case "failed":
+        delivery = {
+          ...priorDelivery,
+          lastFailedAt: nowMs,
+          lastFailure: {
+            category: outcome.category,
+            nextStep: SLACK_DELIVERY_FAILURE_GUIDANCE[outcome.category],
+            at: nowMs,
+          },
+        };
+        break;
+      default:
+        throw new Error("Slack delivery telemetry phase is invalid.");
+    }
+    await writeTelemetryRecord(scope.state, scope.agentId, {
+      ...existing,
+      companyId: scope.companyId,
+      ...(scope.teamId ? { teamId: scope.teamId } : {}),
+      ...(scope.appId ? { appId: scope.appId } : {}),
+      delivery,
+    });
   });
 }
 
@@ -338,8 +415,9 @@ export async function getSlackTelemetry(
   state: PluginStateClient,
   agentId: string,
   companyId: string,
+  binding: SlackTelemetryBinding = {},
 ): Promise<SlackTelemetryProjection> {
-  const record = await readTelemetryRecord(state, agentId, companyId);
+  const record = await readTelemetryRecord(state, agentId, companyId, binding);
   return {
     ingress: record?.ingress ?? null,
     delivery: record?.delivery ?? null,
@@ -365,6 +443,32 @@ export function contributeSlackTelemetryAction(ctx: PluginContext): void {
     if (!companyId) {
       throw new Error("A host-authorized companyId is required to read Slack telemetry.");
     }
-    return getSlackTelemetry(ctx.state, agentId, companyId);
+    return getSlackTelemetry(ctx.state, agentId, companyId, await readCurrentBinding(ctx, companyId, agentId));
   });
+}
+
+/**
+ * Reads the agent's *currently configured* Slack workspace/app binding so a
+ * record written under a previous Slack app/workspace binding is never
+ * projected into Settings after a rebind. Config read failures degrade to an
+ * unconstrained binding (the companyId check still applies) rather than
+ * failing the read-only projection.
+ */
+async function readCurrentBinding(
+  ctx: PluginContext,
+  companyId: string,
+  agentId: string,
+): Promise<SlackTelemetryBinding> {
+  try {
+    const config = await ctx.config.get(companyId);
+    const entry = readSlackIdentityConfigEntry(config, agentId);
+    const validated = entry ? validateSlackConfig(entry.value) : undefined;
+    if (!validated || typeof validated === "string") return {};
+    return {
+      ...(validated.teamId ? { teamId: validated.teamId } : {}),
+      ...(validated.appId ? { appId: validated.appId } : {}),
+    };
+  } catch {
+    return {};
+  }
 }

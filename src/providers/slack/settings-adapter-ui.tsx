@@ -1678,6 +1678,27 @@ function formatRelativeAge(ms: number): string {
   return `${hours}h ago`;
 }
 
+/**
+ * Review finding (DRO-1161): `Date.now()` sampled during render alone means
+ * an *open* dialog keeps showing "Connected" forever once it has rendered,
+ * because nothing re-renders it at the freshness boundary. This schedules a
+ * single one-shot timer for the exact moment the observation goes stale and
+ * re-renders then. It arms no timer when there is nothing to age out
+ * (`atMs === null`) or when the boundary has already passed, so there is no
+ * interval churn, and it clears on unmount / whenever `atMs` changes (a new
+ * check or an identity switch), so no timer leaks.
+ */
+function useStaleAfter(atMs: number | null, staleAfterMs: number): void {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (atMs === null) return;
+    const remainingMs = atMs + staleAfterMs - Date.now();
+    if (remainingMs <= 0) return;
+    const timer = setTimeout(() => setTick((value) => value + 1), remainingMs + 1);
+    return () => clearTimeout(timer);
+  }, [atMs, staleAfterMs]);
+}
+
 function SlackConnectionStatusPanel(props: {
   agentId: string;
   label: string;
@@ -1688,6 +1709,7 @@ function SlackConnectionStatusPanel(props: {
   onCheck: () => Promise<void>;
 }) {
   const { agentId, label, loading, result, error, lastSuccessAtMs, onCheck } = props;
+  useStaleAfter(lastSuccessAtMs, SLACK_CONNECTION_STATUS_STALE_AFTER_MS);
   const now = Date.now();
   const ageMs = lastSuccessAtMs !== null ? now - lastSuccessAtMs : null;
   // A refresh failure over a preserved last-known-good result must mark it
@@ -1749,6 +1771,7 @@ function SlackIngressStatusPanel(props: {
   lastFetchedAtMs: number | null;
 }) {
   const { agentId, label, loading, telemetry, error, lastFetchedAtMs } = props;
+  useStaleAfter(lastFetchedAtMs, SLACK_TELEMETRY_STALE_AFTER_MS);
   const now = Date.now();
   const ageMs = lastFetchedAtMs !== null ? now - lastFetchedAtMs : null;
   const isStale = Boolean(error) || (ageMs !== null && ageMs > SLACK_TELEMETRY_STALE_AFTER_MS);
@@ -1798,6 +1821,7 @@ function SlackDeliveryStatusPanel(props: {
   lastFetchedAtMs: number | null;
 }) {
   const { agentId, label, loading, telemetry, error, lastFetchedAtMs } = props;
+  useStaleAfter(lastFetchedAtMs, SLACK_TELEMETRY_STALE_AFTER_MS);
   const now = Date.now();
   const ageMs = lastFetchedAtMs !== null ? now - lastFetchedAtMs : null;
   const isStale = Boolean(error) || (ageMs !== null && ageMs > SLACK_TELEMETRY_STALE_AFTER_MS);

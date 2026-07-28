@@ -1839,22 +1839,78 @@ describe("Slack provider durable ingress", () => {
       expect(telemetry.ingress?.lastEventType).toBe("message");
     });
 
-    it("records a queue_full delivery failure when the durable queue rejects enqueue", async () => {
-      const { ctx } = makeCtx();
-      const full = Array.from({ length: 40 }, (_, index) => handleSlackProviderWebhook(
-        delivery(`Ev${String(index).padStart(3, "0")}`),
-        ctx as never,
-      ).catch(() => undefined));
-      await Promise.all(full);
-      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
-      // Either the queue stayed within bounds (no failure recorded) or it hit
-      // capacity and recorded a bounded queue_failed delivery failure -- both
-      // are acceptable outcomes of this burst; the assertion only pins down
-      // the *shape* a recorded failure must take when one does occur.
-      if (telemetry.delivery?.lastFailure) {
-        expect(telemetry.delivery.lastFailure.category).toBe("queue_failed");
-        expect(telemetry.delivery.lastFailure.nextStep).toBeTruthy();
+    it("records a queue_failed delivery failure when the durable queue rejects enqueue", async () => {
+      // Review finding (DRO-1187): this previously fired a 40-webhook burst
+      // and tolerated the failure path never occurring. Force the rejection
+      // deterministically instead by prefilling the conversation's durable
+      // queue to its pending bound, then asserting the recorded category and
+      // guidance unconditionally.
+      const store = new Map<string, unknown>();
+      const { ctx } = makeCtx({ store });
+      // Seed the queue record for this conversation up to SLACK_PENDING_TURN_LIMIT.
+      await handleSlackProviderWebhook(delivery("Ev000"), ctx as never);
+      const queueEntry = [...store.entries()].find(([key]) => key.includes("slack-conversations"))!;
+      const seeded = structuredClone(queueEntry[1]) as { pending: unknown[] };
+      const template = seeded.pending[0];
+      while (seeded.pending.length < 32) {
+        seeded.pending.push(structuredClone(template));
       }
+      store.set(queueEntry[0], seeded);
+
+      await expect(handleSlackProviderWebhook(delivery("Ev999"), ctx as never)).rejects.toThrow();
+
+      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1", { teamId: "T111", appId: "A111" });
+      expect(telemetry.delivery?.lastFailure?.category).toBe("queue_failed");
+      expect(telemetry.delivery?.lastFailure?.nextStep).toContain("durable conversation queue");
+      expect(telemetry.delivery?.lastFailedAt).toBeTruthy();
+      // Bounded metadata only -- never Slack text or request content.
+      expect(JSON.stringify(telemetry)).not.toContain("Ev999");
+    });
+
+    it("records reply_failed, not completed, when posting the reply back to Slack fails", async () => {
+      // Review finding (DRO-1187): the postReply rejection is caught and only
+      // logged so the durable claim still completes (no duplicate re-send),
+      // but Slack never received the reply -- so delivery health must show
+      // reply_failed rather than a clean completion.
+      const { ctx } = makeCtx({
+        sendMessage: async (sessionId, _companyId, options) => {
+          const callback = options.onEvent!;
+          await callback({
+            sessionId,
+            runId: "run-1",
+            seq: 1,
+            eventType: "chunk",
+            stream: "stdout",
+            message: '{"type":"result","result":"a reply"}\n',
+            payload: null,
+          });
+          queueMicrotask(() => void callback({
+            sessionId,
+            runId: "run-1",
+            seq: 2,
+            eventType: "done",
+            stream: "system",
+            message: null,
+            payload: null,
+          }));
+          return { runId: "run-1" };
+        },
+      });
+      const postReply = vi.fn(async () => {
+        throw new Error("slack post failed");
+      });
+      await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
+      const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
+      await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime(postReply));
+      await vi.waitFor(() => expect(postReply).toHaveBeenCalledOnce());
+      await vi.waitFor(async () => {
+        const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1", { teamId: "T111", appId: "A111" });
+        expect(telemetry.delivery?.lastFailure?.category).toBe("reply_failed");
+      });
+      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1", { teamId: "T111", appId: "A111" });
+      expect(telemetry.delivery?.lastCompletedAt).toBeFalsy();
+      expect(telemetry.delivery?.lastFailure?.nextStep).toBeTruthy();
+      expect(JSON.stringify(telemetry)).not.toContain("slack post failed");
     });
 
     it("records delivery completion once a routed agent session finishes", async () => {

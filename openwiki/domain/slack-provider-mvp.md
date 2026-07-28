@@ -631,9 +631,14 @@ accept — not a separately-defined, weaker notion of "connected".
 - **Bounded, secret-free response shape**: `{ outcome: { ok: true } |
   { ok: false, category, reason }, checkedAt, nextStep? }`. `category` is one
   of a small closed set (`credential_missing`, `credential_resolution_failed`,
-  `auth_test_failed`, `workspace_mismatch`, `identity_mismatch`, `timeout`,
-  `unknown`) — never a raw Slack error string, response body, header, or
-  stack trace. `nextStep` is a fixed, per-category guidance string (see
+  `auth_test_failed`, `workspace_mismatch`, `identity_mismatch`,
+  `network_failed`, `timeout`, `unknown`) — never a raw Slack error string,
+  response body, header, or stack trace. The check tags each stage
+  (secret resolution vs. `auth.test` verification) so only a genuine secret
+  resolution rejection maps to `credential_resolution_failed`; a
+  transport/DNS throw while reaching Slack maps to `network_failed`, and
+  anything else falls through to `unknown` rather than blaming the secret
+  reference. `nextStep` is a fixed, per-category guidance string (see
   `CONNECTION_FAILURE_GUIDANCE`), satisfying the "next-step guidance for
   credential ... failures" acceptance criterion for the credential/routing
   half of DRO-1161's scope.
@@ -650,16 +655,18 @@ accept — not a separately-defined, weaker notion of "connected".
   the plugin action bridge) preserves the last known result and shows it
   alongside the error, per "UI preserves the last known state on refresh
   failure and marks it stale."
-- **Scope of this increment**: this lands the **Configured vs. Connection**
-  separation described in DRO-1161's "Required states". The **Ingress**
-  (most recent verified event time/type and routing result) and **Delivery**
-  (enqueue/drain/session-start/completion/failure phase) states are tracked
-  as a separate follow-up (durable queue recovery is explicitly out of scope
-  per the issue too) — see the Ingress/Delivery telemetry work item linked
-  from DRO-1161. That follow-up will read from
-  `src/providers/slack/ingress/provider-webhook.ts` and
+- **Scope of this increment**: this lands the full
+  **Configured / Connection / Ingress / Delivery** split described in
+  DRO-1161's "Required states". Configured and Connection are implemented as
+  described above; **Ingress** (most recent verified event time/type and
+  routing result) and **Delivery** (enqueue/drain/session-start/completion/
+  failure phase) are implemented alongside them in
+  `src/providers/slack/telemetry.ts`, recorded from
+  `src/providers/slack/ingress/provider-webhook.ts` against
   `src/providers/slack/ingress/conversation-session.ts`'s existing
-  queue/session state rather than adding a new live network call.
+  queue/session state rather than adding a new live network call — see
+  "Implementation status (DRO-1187)" below. **Durable queue recovery remains
+  out of scope** here and is tracked as the separate recovery issue.
 - Test coverage: `tests/providers/slack/connection-status.spec.ts` — healthy
   `auth.test` round trip (asserts the response never contains the token),
   auth-rejected credential, workspace mismatch, user-token

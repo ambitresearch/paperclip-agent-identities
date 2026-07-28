@@ -1174,6 +1174,11 @@ async function finishAcceptedRun(
     return;
   }
   controller.finalizing = true;
+  // DRO-1187 review finding: a postReply rejection is caught and logged so
+  // the turn can still be completed durably (the claim must not be replayed
+  // and re-sent), but Slack never received the reply -- so the recorded
+  // delivery phase below must be `reply_failed`, not `completed`.
+  let replyFailed = false;
   try {
     if (event.eventType === "done") {
       const text = response.finish();
@@ -1200,6 +1205,7 @@ async function finishAcceptedRun(
               ...(active.turn.event.threadTs ? { threadTs: active.turn.event.threadTs } : {}),
             });
           } catch {
+            replyFailed = true;
             safeLog(ctx.logger, "error", "Slack ingress: failed to post routed agent response", {
               agentId: reference.agentId,
             });
@@ -1246,7 +1252,7 @@ async function finishAcceptedRun(
       reference.agentId,
       { teamId: reference.conversation?.teamId ?? "", appId: reference.conversation?.appId ?? "" },
       event.eventType === "done"
-        ? { phase: "completed" }
+        ? (replyFailed ? { phase: "failed", category: "reply_failed" } : { phase: "completed" })
         : { phase: "failed", category: "session_failed" },
     );
     deleteController(ctx.state, reference.companyId, reference.agentId, reference.conversationKey, active.attemptId);

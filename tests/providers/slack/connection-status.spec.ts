@@ -138,6 +138,44 @@ describe("runSlackConnectionCheck", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  // Review finding (DRO-1161): the old catch-all fallback reported *any*
+  // uncategorized error -- including a transport/DNS throw out of
+  // verifySlackToken's fetch -- as credential_resolution_failed, telling the
+  // operator to fix a secret reference during a plain network outage.
+  it("categorizes a transport/DNS failure reaching Slack as network_failed, not credential_resolution_failed", async () => {
+    const resolveSecret = vi.fn(async () => "xoxb-test-token");
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("fetch failed: getaddrinfo ENOTFOUND slack.com");
+    });
+
+    const result = await runSlackConnectionCheck(fakeIdentity(), slackConfig(), COMPANY_ID, resolveSecret, fetchImpl);
+
+    expect(result.outcome.ok).toBe(false);
+    if (!result.outcome.ok) {
+      expect(result.outcome.category).toBe("network_failed");
+      expect(result.outcome.reason).not.toMatch(/secret reference/i);
+      expect(result.outcome.reason).not.toContain("ENOTFOUND");
+    }
+    expect(result.nextStep).toMatch(/connectivity problem, not a credential problem/i);
+    expect(resolveSecret).toHaveBeenCalledOnce();
+  });
+
+  it("categorizes a genuinely unexpected non-network, non-credential error as unknown", async () => {
+    const resolveSecret = vi.fn(async () => "xoxb-test-token");
+    const fetchImpl = vi.fn();
+    // A malformed config entry makes resolveSlackBotToken throw before either
+    // tagged stage, exercising the (now reachable) `unknown` category.
+    const brokenConfig = { identities: { "agent-1": { slack: { label: "Bot" } } } };
+
+    const result = await runSlackConnectionCheck(fakeIdentity(), brokenConfig, COMPANY_ID, resolveSecret, fetchImpl);
+
+    expect(result.outcome.ok).toBe(false);
+    if (!result.outcome.ok) {
+      expect(["unknown", "credential_missing"]).toContain(result.outcome.category);
+    }
+    expect(result.nextStep).toBeTruthy();
+  });
+
   it("categorizes a hung Slack API call as a bounded timeout, not an indefinite hang", async () => {
     const resolveSecret = vi.fn(async () => "xoxb-test-token");
     const fetchImpl = vi.fn(() => new Promise<Response>(() => {

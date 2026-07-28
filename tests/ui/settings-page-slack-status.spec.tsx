@@ -648,6 +648,43 @@ describe("Slack Connection panel (check-slack-connection)", () => {
     }
   });
 
+  // Review finding (DRO-1161): Date.now() was sampled only during render, so
+  // an *open* dialog kept showing "Connected" past the freshness boundary
+  // indefinitely. The panel now schedules a re-render at the boundary.
+  it("flips an open dialog to stale at the freshness boundary with no other state change", async () => {
+    vi.useFakeTimers();
+    try {
+      actionFor("slack_bot_whoami").mockResolvedValue({
+        data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+      });
+      actionFor("check-slack-connection").mockResolvedValue({
+        outcome: { ok: true },
+        checkedAt: Date.now(),
+      });
+
+      await openSlackEditDialog();
+      const checkButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Check Slack connection");
+      await act(async () => {
+        click(checkButton ?? null);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(text()).toMatch(/Connected\./i);
+      expect(text()).not.toMatch(/\(stale --/i);
+
+      // No re-check, no rerenderSettingsPage(), no other state change --
+      // only wall-clock time passing past the 5-minute boundary.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 100);
+      });
+
+      expect(text()).toMatch(/\(stale --/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("marks a refresh failure over a preserved last-known-good result as stale immediately, not just after 5 minutes", async () => {
     actionFor("slack_bot_whoami").mockResolvedValue({
       data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },

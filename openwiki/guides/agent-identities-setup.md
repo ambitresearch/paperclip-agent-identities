@@ -54,6 +54,26 @@ Invite the bot to any public channel where it should receive mentions or post me
 
 If you change the manifest permissions or events after installing the app, reinstall it in Slack so the new grants take effect.
 
+### Configured vs. Connection (DRO-1161)
+
+Once a Slack identity is saved, Settings shows two distinct panels instead of a single "Ready" state:
+
+- **Configured** (`slack_bot_whoami`) reflects saved install metadata only -- team/app/bot IDs and secret references. It does not verify the bot token is still valid.
+- **Connection** runs a bounded, secret-free live Slack `auth.test` against the resolved bot credential. It never exposes the token to the browser or agent. Select **Check Slack connection** to run it on demand.
+
+The Connection panel has four states: **never tested** (no check has run yet), **loading**, **connected** (with the timestamp of the last successful check), and **not connected** (with a safe error category/reason and a next-step hint). A successful result is marked **stale** once it is more than 5 minutes old, or immediately if a subsequent refresh attempt fails -- a stale result is never presented as current health. Switching identities (or closing and reopening the edit dialog) clears the previous identity's Connection result so it can never render under a different identity's label.
+
+Ingress (event verification/routing) and Delivery (enqueue/drain/session completion) health are tracked separately; see [DRO-1187](https://paperclip.roshangautam.com/DRO/issues/DRO-1187).
+
+### Ingress and Delivery telemetry (DRO-1187)
+
+Below Connection, Settings shows two more panels reflecting real Slack activity for this identity, not a live check:
+
+- **Ingress** reflects the most recent verified Slack event: its bounded event type (`message`/`app_mention`/`other` -- never the event text), whether it routed to exactly one agent, and, on failure, a bounded category (`signature_failed`/`routing_failed`) with operator next-step guidance.
+- **Delivery** reflects the most recent durable-queue phase: enqueue, session/drain start, completion, or failure (`queue_failed`/`session_failed`/`reply_failed`, each with guidance).
+
+Both panels show **Never observed** until the identity has actually processed a Slack event -- there is nothing to check on demand, so both refresh automatically whenever you view the identity, and (like Connection) preserve the last known result and mark it stale on a refresh failure rather than clearing it. Neither panel ever shows message text, prompts, model output, tokens, signing secrets, or raw Slack payloads -- only bounded categories, timestamps, and the already-public `teamId`/`appId` scoping identifiers.
+
 ### Upgrade from v0.1.7 or v0.1.8
 
 Before upgrading, confirm every Slack identity appears in Agent Identities settings. Static

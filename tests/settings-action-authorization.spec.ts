@@ -58,6 +58,14 @@ const protectedActions = [
     key: "rebind-legacy-slack-credentials",
     params: { agentId: "agent-1", signingSecretId: SIGNING_SECRET_ID },
   },
+  {
+    key: "check-slack-connection",
+    params: { agentId: "agent-1" },
+  },
+  {
+    key: "get-slack-telemetry",
+    params: { agentId: "agent-1" },
+  },
 ] as const;
 
 describe("human settings action authorization", () => {
@@ -128,9 +136,11 @@ describe("human settings action authorization", () => {
     const stateGet = vi.spyOn(harness.ctx.state, "get");
     const stateSet = vi.spyOn(harness.ctx.state, "set");
     const agentsList = vi.spyOn(harness.ctx.agents, "list");
+    const configGet = vi.spyOn(harness.ctx.config, "get");
 
     if (key === "create-github-app-manifest") stateSet.mockRejectedValue(downstreamError);
     else if (key === "rebind-legacy-slack-credentials") stateGet.mockRejectedValue(downstreamError);
+    else if (key === "check-slack-connection") configGet.mockRejectedValue(downstreamError);
     else if (key.startsWith("save-bot-") || key.startsWith("delete-bot-") || key.startsWith("create-slack-")) {
       agentsList.mockRejectedValue(downstreamError);
     } else stateGet.mockRejectedValue(downstreamError);

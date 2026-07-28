@@ -671,3 +671,90 @@ accept — not a separately-defined, weaker notion of "connected".
   registered `check-slack-connection` action itself (missing `agentId`,
   missing `companyId`, no configured identity, and a full round trip
   asserting the returned payload never contains a token-shaped string).
+
+## Implementation status (DRO-1187: deferred Ingress and Delivery telemetry in Settings)
+
+Completes the Configured/Connection/Ingress/Delivery split named in DRO-1161's
+"Required states" and left as a follow-up above. Unlike Connection (a live,
+on-demand `auth.test` call), Ingress and Delivery are **recorded**, not
+checked on demand: `src/providers/slack/telemetry.ts` persists one small
+bounded record per (companyId, agentId) as real webhook/queue/session
+activity happens, and Settings only *projects* the most recent record back.
+
+- **Storage**: one bounded, `structuredClone`-serializable record per agent,
+  keyed the same way `conversation-session.ts` scopes its durable queue
+  state (`scopeKind: "agent"`), under a dedicated `slack-telemetry` plugin
+  state namespace (never mixed into `SLACK_CONVERSATION_STATE_NAMESPACE`, so
+  telemetry recording can never contend with or corrupt queue ownership).
+  Fields are strictly bounded: ISO-shaped/epoch-ms timestamps, closed enum
+  categories, and the same correlation-safe `teamId`/`appId` identifiers
+  already treated as safe elsewhere in this provider — **never** message
+  text, prompts, model output, tokens, signing secrets, HTTP headers, or
+  stack traces. Failure `reason` strings are additionally passed through a
+  defense-in-depth redaction (`redactReason`) that strips any Slack
+  token-shaped substring (`xox[abposr]-...`) before being persisted, on top
+  of every call site only ever passing a short, already-bounded description
+  (never a raw thrown `Error.message` or Slack response body).
+- **Ingress** (pre-queue, recorded via an optional `recordIngressOutcome` dep
+  threaded through `handleSlackWebhook` in `webhook-handler.ts` — kept a pure
+  callback seam, exactly like `onAgentEvent`/`shouldProcessEvent`, so the
+  handler itself never touches state/db directly): records the most recent
+  verified event's timestamp and a bounded event-type category (`message` |
+  `app_mention` | `other` — never raw event/text content) plus routing result
+  (`routed` | `routing_failed`) on success, and a bounded failure (category
+  `signature_failed` | `routing_failed`, redacted reason, fixed operator
+  guidance, timestamp) on failure. A signature failure is attributed only to
+  the routing-hint-named candidate identities (the only safe pre-signature
+  scope); a post-signature routing failure is attributed to the one identity
+  whose secret already matched. Genuinely ambiguous pre-auth failures (no
+  usable routing hint, e.g. the URL-verification handshake) are not
+  attributed to any identity rather than guessed.
+- **Delivery** (post-queue, recorded from `provider-webhook.ts`, which is the
+  only ingress module that already touches `ctx.state`/`ctx.agents.sessions`):
+  records enqueue, drain/session-start, completion, and failure phase
+  transitions at the existing call sites — `enqueueSlackConversationTurn`
+  success/failure, `kickSlackConversation` success/failure, and
+  `finishAcceptedRun`'s/`finalizeAmbiguousSend`'s/`retireBlockingTurn`'s
+  terminal outcomes. Failure categories are `queue_failed` (durable queue
+  full or conflicted), `session_failed` (session create/resume/kick/lifecycle
+  failure), and `reply_failed` (an ambiguous or failed reply send,
+  classified the same way `classifySlackSendFailure` already does for retry
+  safety). All telemetry writes are wrapped to never throw — a telemetry
+  write failure must never affect queue ownership, session lifecycle, or
+  webhook acknowledgement.
+- **New read-only settings action**: `get-slack-telemetry`, registered by
+  `contributeSlackTelemetryAction` alongside `check-slack-connection` in
+  `contributeSlackActionsAndIngress`. Company-scoped and `agentId`-validated
+  identically to `check-slack-connection`; returns
+  `{ ingress: SlackIngressTelemetry | null, delivery: SlackDeliveryTelemetry
+  | null }`, with `null` (rendered as "Never observed") rather than an error
+  when nothing has ever been recorded for that agent.
+- **UI**: `src/providers/slack/settings-adapter-ui.tsx` adds
+  `SlackIngressStatusPanel` and `SlackDeliveryStatusPanel`, rendered next to
+  `SlackConnectionStatusPanel`. Unlike Connection, neither has a manual
+  "check" button — there is no live check to trigger, only a projection of
+  already-recorded activity — so both are fetched via
+  `handleRefreshSlackTelemetry` (`get-slack-telemetry`) automatically
+  whenever the viewed identity changes, mirroring how `refresh()` is already
+  used elsewhere in this hook. On a refresh failure, the last-known
+  telemetry is preserved (not cleared) and marked stale once older than
+  `SLACK_TELEMETRY_STALE_AFTER_MS` (5 minutes, the same window as
+  Connection's `SLACK_CONNECTION_STATUS_STALE_AFTER_MS`) — identical pattern
+  to `SlackConnectionStatusPanel`'s staleness handling. `SettingsPage.tsx`
+  wires the new `get-slack-telemetry` plugin action through the same
+  `usePluginAction` seam as `check-slack-connection`.
+- Test coverage: `tests/providers/slack/telemetry.spec.ts` (healthy record,
+  never-observed projection, routing/signature/queue/session/reply failure
+  categories with their guidance strings, the full
+  enqueue-drain-completed delivery lifecycle, per-agent scoping, the
+  registered `get-slack-telemetry` action's validation, and a redaction
+  assertion that a token-shaped reason string never survives into the
+  persisted record or its projection); plus focused wiring regressions in
+  `tests/providers/slack/ingress-webhook-handler.spec.ts` (a healthy verified
+  event, a post-signature routing failure, and a pre-auth signature failure)
+  and `tests/providers/slack/ingress-provider-webhook.spec.ts` (a routed
+  ingress event through the real webhook path, a queue-full delivery
+  failure under a enqueue burst, and delivery completion through a full
+  webhook -> enqueue -> drain -> completion round trip) reusing this
+  suite's existing `makeCtx`/`delivery`/`runtime` fixtures rather than
+  duplicating route/service setup.

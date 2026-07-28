@@ -1,0 +1,366 @@
+import type { PluginContext, PluginStateClient } from "@paperclipai/plugin-sdk";
+
+/**
+ * DRO-1187: bounded, secret-free "Ingress" and "Delivery" health telemetry,
+ * completing the Configured/Connection/Ingress/Delivery split deferred by
+ * DRO-1161 (see connection-status.ts for the sibling "Connection" check).
+ *
+ * Ingress covers pre-queue outcomes: signature verification and event
+ * routing. Delivery covers post-queue outcomes: enqueue, drain/session
+ * start, completion, and failure. Both are recorded as a single small
+ * bounded record per (companyId, agentId) scope -- never per-event history,
+ * never message bodies/Slack text/prompts/outputs, never tokens, signing
+ * material, headers, or stack traces.
+ */
+
+const SLACK_TELEMETRY_STATE_NAMESPACE = "slack-telemetry" as const;
+const SLACK_TELEMETRY_STATE_KEY = "health" as const;
+export const SLACK_TELEMETRY_STATE_VERSION = 1 as const;
+
+const SLACK_TELEMETRY_FIELD_MAX_LENGTH = 256;
+
+export type SlackIngressEventTypeCategory =
+  | "message"
+  | "app_mention"
+  | "other";
+
+export type SlackIngressFailureCategory =
+  | "signature_failed"
+  | "routing_failed";
+
+export type SlackDeliveryFailureCategory =
+  | "queue_failed"
+  | "session_failed"
+  | "reply_failed";
+
+export interface SlackTelemetryFailure {
+  readonly category: SlackIngressFailureCategory | SlackDeliveryFailureCategory;
+  /** Short, non-secret human-readable reason (bounded length, no token/header/body content). */
+  readonly reason: string;
+  readonly nextStep: string;
+  readonly at: number;
+}
+
+export interface SlackIngressTelemetry {
+  readonly lastVerifiedEventAt?: number;
+  readonly lastEventType?: SlackIngressEventTypeCategory;
+  readonly lastRoutingResult?: "routed" | "routing_failed";
+  readonly lastFailure?: SlackTelemetryFailure;
+}
+
+export interface SlackDeliveryTelemetry {
+  readonly lastEnqueuedAt?: number;
+  readonly lastDrainStartedAt?: number;
+  readonly lastCompletedAt?: number;
+  readonly lastFailedAt?: number;
+  readonly lastFailure?: SlackTelemetryFailure;
+}
+
+export interface SlackTelemetryRecord {
+  readonly version: typeof SLACK_TELEMETRY_STATE_VERSION;
+  readonly companyId: string;
+  /** Correlation-safe scoping identifiers already treated as safe elsewhere in this provider. */
+  readonly teamId?: string;
+  readonly appId?: string;
+  readonly ingress?: SlackIngressTelemetry;
+  readonly delivery?: SlackDeliveryTelemetry;
+}
+
+export const SLACK_INGRESS_FAILURE_GUIDANCE: Record<SlackIngressFailureCategory, string> = {
+  signature_failed:
+    "Slack's request signature did not verify against the configured signing secret. Confirm the signing secret reference matches the Slack App's Basic Information page, and that the Events Request URL is configured for this exact app.",
+  routing_failed:
+    "No configured agent identity (or more than one) matched this event's Slack app/team. Verify exactly one identity is configured for this Slack app and workspace.",
+};
+
+export const SLACK_DELIVERY_FAILURE_GUIDANCE: Record<SlackDeliveryFailureCategory, string> = {
+  queue_failed:
+    "The durable conversation queue was full or in conflict when this event arrived. Slack will retry the delivery; if this persists, a conversation may be stuck -- check for a long-running or stalled session.",
+  session_failed:
+    "Starting or resuming the agent session for this conversation failed. Retry is automatic on the next inbound event; if it persists, check the agent's session health directly.",
+  reply_failed:
+    "Sending the agent's reply back to Slack failed or was ambiguous, so it was not retried automatically to avoid a duplicate reply. The operator may need to re-prompt the agent in Slack.",
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isBoundedString(value: unknown, maxLength = SLACK_TELEMETRY_FIELD_MAX_LENGTH): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= maxLength;
+}
+
+function isFiniteTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+// Defense in depth: reason strings are meant to be short operator-facing
+// descriptions of *why* an ingress/delivery attempt failed, never raw error
+// messages or Slack response bodies -- but since callers still pass a plain
+// string, redact anything shaped like a Slack token before it is ever
+// persisted, exactly like the pipeline's existing `redactSecrets` step
+// (src/lib/redaction.ts) does for tool output.
+const SLACK_TOKEN_SHAPE_PATTERN = /xox[abposr]-[A-Za-z0-9-]+/gi;
+
+function redactReason(reason: string): string {
+  return reason.replace(SLACK_TOKEN_SHAPE_PATTERN, "[redacted]");
+}
+
+function assertSafeScopeSegment(agentId: string): void {
+  if (!agentId || agentId !== agentId.trim() || agentId.length > SLACK_TELEMETRY_FIELD_MAX_LENGTH) {
+    throw new Error("Slack telemetry agentId is invalid.");
+  }
+}
+
+function slackTelemetryStateKey(agentId: string) {
+  assertSafeScopeSegment(agentId);
+  return {
+    scopeKind: "agent" as const,
+    scopeId: agentId,
+    namespace: SLACK_TELEMETRY_STATE_NAMESPACE,
+    stateKey: SLACK_TELEMETRY_STATE_KEY,
+  };
+}
+
+function parseFailure(value: unknown, categories: readonly string[]): SlackTelemetryFailure | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !isRecord(value) ||
+    !categories.includes(String(value.category)) ||
+    !isBoundedString(value.reason) ||
+    !isBoundedString(value.nextStep, 1024) ||
+    !isFiniteTimestamp(value.at) ||
+    Object.keys(value).some((key) => !["category", "reason", "nextStep", "at"].includes(key))
+  ) {
+    return undefined;
+  }
+  return {
+    category: value.category as SlackTelemetryFailure["category"],
+    reason: value.reason,
+    nextStep: value.nextStep,
+    at: value.at,
+  };
+}
+
+function parseIngress(value: unknown): SlackIngressTelemetry | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return undefined;
+  if (Object.keys(value).some((key) =>
+    !["lastVerifiedEventAt", "lastEventType", "lastRoutingResult", "lastFailure"].includes(key))) {
+    return undefined;
+  }
+  const lastVerifiedEventAt = value.lastVerifiedEventAt === undefined
+    ? undefined
+    : isFiniteTimestamp(value.lastVerifiedEventAt) ? value.lastVerifiedEventAt : undefined;
+  const lastEventType = ["message", "app_mention", "other"].includes(String(value.lastEventType))
+    ? (value.lastEventType as SlackIngressEventTypeCategory)
+    : undefined;
+  const lastRoutingResult = ["routed", "routing_failed"].includes(String(value.lastRoutingResult))
+    ? (value.lastRoutingResult as SlackIngressTelemetry["lastRoutingResult"])
+    : undefined;
+  const lastFailure = parseFailure(value.lastFailure, ["signature_failed", "routing_failed"]);
+  return { lastVerifiedEventAt, lastEventType, lastRoutingResult, lastFailure };
+}
+
+function parseDelivery(value: unknown): SlackDeliveryTelemetry | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return undefined;
+  if (Object.keys(value).some((key) =>
+    !["lastEnqueuedAt", "lastDrainStartedAt", "lastCompletedAt", "lastFailedAt", "lastFailure"].includes(key))) {
+    return undefined;
+  }
+  const timestamp = (field: unknown) => (field === undefined ? undefined : isFiniteTimestamp(field) ? field : undefined);
+  const lastFailure = parseFailure(value.lastFailure, ["queue_failed", "session_failed", "reply_failed"]);
+  return {
+    lastEnqueuedAt: timestamp(value.lastEnqueuedAt),
+    lastDrainStartedAt: timestamp(value.lastDrainStartedAt),
+    lastCompletedAt: timestamp(value.lastCompletedAt),
+    lastFailedAt: timestamp(value.lastFailedAt),
+    lastFailure,
+  };
+}
+
+function parseTelemetryRecord(value: unknown): SlackTelemetryRecord | null {
+  if (!isRecord(value) || value.version !== SLACK_TELEMETRY_STATE_VERSION) return null;
+  if (!isBoundedString(value.companyId)) return null;
+  if (Object.keys(value).some((key) =>
+    !["version", "companyId", "teamId", "appId", "ingress", "delivery"].includes(key))) {
+    return null;
+  }
+  const teamId = value.teamId === undefined ? undefined : isBoundedString(value.teamId) ? value.teamId : undefined;
+  const appId = value.appId === undefined ? undefined : isBoundedString(value.appId) ? value.appId : undefined;
+  return {
+    version: SLACK_TELEMETRY_STATE_VERSION,
+    companyId: value.companyId,
+    ...(teamId ? { teamId } : {}),
+    ...(appId ? { appId } : {}),
+    ...(parseIngress(value.ingress) ? { ingress: parseIngress(value.ingress) } : {}),
+    ...(parseDelivery(value.delivery) ? { delivery: parseDelivery(value.delivery) } : {}),
+  };
+}
+
+async function readTelemetryRecord(state: PluginStateClient, agentId: string): Promise<SlackTelemetryRecord | null> {
+  const raw = await state.get(slackTelemetryStateKey(agentId));
+  if (raw === null || raw === undefined) return null;
+  return parseTelemetryRecord(raw);
+}
+
+async function writeTelemetryRecord(
+  state: PluginStateClient,
+  agentId: string,
+  next: SlackTelemetryRecord,
+): Promise<void> {
+  const serialized = structuredClone(next);
+  await state.set(slackTelemetryStateKey(agentId), serialized);
+}
+
+export interface SlackTelemetryScope {
+  readonly state: PluginStateClient;
+  readonly agentId: string;
+  readonly companyId: string;
+  readonly teamId?: string;
+  readonly appId?: string;
+}
+
+export type SlackIngressOutcome =
+  | { readonly ok: true; readonly eventType: SlackIngressEventTypeCategory }
+  | { readonly ok: false; readonly category: SlackIngressFailureCategory; readonly reason: string };
+
+export type SlackDeliveryOutcome =
+  | { readonly phase: "enqueued" }
+  | { readonly phase: "drain_started" }
+  | { readonly phase: "completed" }
+  | { readonly phase: "failed"; readonly category: SlackDeliveryFailureCategory; readonly reason: string };
+
+function assertScope(scope: SlackTelemetryScope): void {
+  if (!scope || typeof scope !== "object" || !scope.state) {
+    throw new Error("Slack telemetry scope is invalid.");
+  }
+  if (!isBoundedString(scope.companyId) || scope.companyId !== scope.companyId.trim()) {
+    throw new Error("Slack telemetry requires a valid company scope.");
+  }
+}
+
+/** Records the outcome of one verified (post-signature-check) ingress attempt. */
+export async function recordSlackIngressOutcome(
+  scope: SlackTelemetryScope,
+  outcome: SlackIngressOutcome,
+  nowMs = Date.now(),
+): Promise<void> {
+  assertScope(scope);
+  if (!isFiniteTimestamp(nowMs)) throw new Error("Slack telemetry timestamp is invalid.");
+  const existing = (await readTelemetryRecord(scope.state, scope.agentId)) ?? {
+    version: SLACK_TELEMETRY_STATE_VERSION,
+    companyId: scope.companyId,
+  };
+  const ingress: SlackIngressTelemetry = outcome.ok
+    ? {
+        lastVerifiedEventAt: nowMs,
+        lastEventType: outcome.eventType,
+        lastRoutingResult: "routed",
+      }
+    : {
+        ...existing.ingress,
+        lastRoutingResult: "routing_failed",
+        lastFailure: {
+          category: outcome.category,
+          reason: redactReason(outcome.reason),
+          nextStep: SLACK_INGRESS_FAILURE_GUIDANCE[outcome.category],
+          at: nowMs,
+        },
+      };
+  await writeTelemetryRecord(scope.state, scope.agentId, {
+    ...existing,
+    companyId: scope.companyId,
+    ...(scope.teamId ? { teamId: scope.teamId } : {}),
+    ...(scope.appId ? { appId: scope.appId } : {}),
+    ingress,
+  });
+}
+
+/** Records one delivery-phase transition (enqueue, drain/session start, completion, or failure). */
+export async function recordSlackDeliveryOutcome(
+  scope: SlackTelemetryScope,
+  outcome: SlackDeliveryOutcome,
+  nowMs = Date.now(),
+): Promise<void> {
+  assertScope(scope);
+  if (!isFiniteTimestamp(nowMs)) throw new Error("Slack telemetry timestamp is invalid.");
+  const existing = (await readTelemetryRecord(scope.state, scope.agentId)) ?? {
+    version: SLACK_TELEMETRY_STATE_VERSION,
+    companyId: scope.companyId,
+  };
+  const priorDelivery = existing.delivery;
+  let delivery: SlackDeliveryTelemetry;
+  switch (outcome.phase) {
+    case "enqueued":
+      delivery = { ...priorDelivery, lastEnqueuedAt: nowMs };
+      break;
+    case "drain_started":
+      delivery = { ...priorDelivery, lastDrainStartedAt: nowMs };
+      break;
+    case "completed":
+      delivery = { ...priorDelivery, lastCompletedAt: nowMs };
+      break;
+    case "failed":
+      delivery = {
+        ...priorDelivery,
+        lastFailedAt: nowMs,
+        lastFailure: {
+          category: outcome.category,
+          reason: redactReason(outcome.reason),
+          nextStep: SLACK_DELIVERY_FAILURE_GUIDANCE[outcome.category],
+          at: nowMs,
+        },
+      };
+      break;
+    default:
+      throw new Error("Slack delivery telemetry phase is invalid.");
+  }
+  await writeTelemetryRecord(scope.state, scope.agentId, {
+    ...existing,
+    companyId: scope.companyId,
+    ...(scope.teamId ? { teamId: scope.teamId } : {}),
+    ...(scope.appId ? { appId: scope.appId } : {}),
+    delivery,
+  });
+}
+
+/** Secret-free projection returned to Settings; absent when never observed. */
+export interface SlackTelemetryProjection {
+  readonly ingress: SlackIngressTelemetry | null;
+  readonly delivery: SlackDeliveryTelemetry | null;
+}
+
+export async function getSlackTelemetry(
+  state: PluginStateClient,
+  agentId: string,
+): Promise<SlackTelemetryProjection> {
+  const record = await readTelemetryRecord(state, agentId);
+  return {
+    ingress: record?.ingress ?? null,
+    delivery: record?.delivery ?? null,
+  };
+}
+
+const SLACK_TELEMETRY_ACTION = "get-slack-telemetry";
+
+/**
+ * Registers the `get-slack-telemetry` read-only settings action. Returns
+ * only bounded, non-secret ingress/delivery projections -- no bodies, no
+ * secrets, no raw request/response data. Safe to call before any event has
+ * ever been observed (returns nulls, rendered as "never observed").
+ */
+export function contributeSlackTelemetryAction(ctx: PluginContext): void {
+  ctx.actions.register(SLACK_TELEMETRY_ACTION, async (params, context) => {
+    const agentId = typeof params.agentId === "string" ? params.agentId.trim() : "";
+    if (!agentId) {
+      throw new Error("agentId is required to read Slack telemetry.");
+    }
+    const companyId = typeof context.companyId === "string" ? context.companyId.trim() : "";
+    if (!companyId) {
+      throw new Error("A host-authorized companyId is required to read Slack telemetry.");
+    }
+    return getSlackTelemetry(ctx.state, agentId);
+  });
+}

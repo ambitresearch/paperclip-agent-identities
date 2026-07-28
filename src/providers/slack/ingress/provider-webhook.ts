@@ -21,6 +21,7 @@ import {
   verifySlackToken,
   type ResolveSlackSecret,
 } from "../credentials.js";
+import { recordSlackDeliveryOutcome, recordSlackIngressOutcome } from "../telemetry.js";
 import {
   handleSlackWebhook,
   isSlackBroadcastMessage,
@@ -113,6 +114,26 @@ function safeLog(
     logger[level](message, metadata);
   } catch {
     // Logging must never break queue ownership or terminal finalization.
+  }
+}
+
+// DRO-1187: best-effort, bounded, secret-free delivery telemetry recording.
+// Never throws -- a telemetry write failure must never affect queue
+// ownership, session lifecycle, or webhook acknowledgement.
+async function recordSlackDeliveryTelemetrySafely(
+  ctx: PluginContext,
+  companyId: string,
+  agentId: string,
+  conversation: { readonly teamId: string; readonly appId: string },
+  outcome: Parameters<typeof recordSlackDeliveryOutcome>[1],
+): Promise<void> {
+  try {
+    await recordSlackDeliveryOutcome(
+      { state: ctx.state, agentId, companyId, teamId: conversation.teamId, appId: conversation.appId },
+      outcome,
+    );
+  } catch {
+    // Telemetry must never affect delivery correctness.
   }
 }
 
@@ -882,6 +903,13 @@ async function retireBlockingTurn(
     return { result: true, changed: true };
   }, nowMs);
   if (!completedRetirement) return "blocked";
+  await recordSlackDeliveryTelemetrySafely(
+    ctx,
+    reference.companyId,
+    reference.agentId,
+    { teamId: reference.conversation?.teamId ?? "", appId: reference.conversation?.appId ?? "" },
+    { phase: "failed", category: "session_failed", reason: `Slack conversation turn retired as ${uncertainReason}.` },
+  );
   deleteController(ctx.state, reference.companyId, reference.agentId, reference.conversationKey, active.attemptId);
   await kickSuccessorIfQueued(ctx, reference);
   return "retired";
@@ -1053,6 +1081,13 @@ async function finalizeAmbiguousSend(
     if (state.sessionId === sessionId) state.sessionId = undefined;
     return { result: undefined, changed: true };
   }, now);
+  await recordSlackDeliveryTelemetrySafely(
+    ctx,
+    reference.companyId,
+    reference.agentId,
+    { teamId: reference.conversation?.teamId ?? "", appId: reference.conversation?.appId ?? "" },
+    { phase: "failed", category: "reply_failed", reason: "Slack reply send outcome was ambiguous; not retried." },
+  );
   deleteController(ctx.state, reference.companyId, reference.agentId, reference.conversationKey, controller.attemptId);
   await kickSuccessorIfQueued(ctx, reference);
 }
@@ -1194,6 +1229,15 @@ async function finishAcceptedRun(
       deleteController(ctx.state, reference.companyId, reference.agentId, reference.conversationKey, active.attemptId);
       return;
     }
+    await recordSlackDeliveryTelemetrySafely(
+      ctx,
+      reference.companyId,
+      reference.agentId,
+      { teamId: reference.conversation?.teamId ?? "", appId: reference.conversation?.appId ?? "" },
+      event.eventType === "done"
+        ? { phase: "completed" }
+        : { phase: "failed", category: "session_failed", reason: "Routed agent session failed." },
+    );
     deleteController(ctx.state, reference.companyId, reference.agentId, reference.conversationKey, active.attemptId);
     controller.invalidated = true;
     if (event.eventType === "error") {
@@ -1679,6 +1723,22 @@ export async function handleSlackProviderWebhook(
     async shouldProcessEvent() {
       return true;
     },
+    // DRO-1187: bounded, secret-free ingress telemetry. Recording failures
+    // here must never break/retry the webhook itself -- errors are swallowed.
+    async recordIngressOutcome(agentId, outcome) {
+      if (!agentId) return;
+      try {
+        const snapshot = await getSnapshot();
+        const identity = snapshot.identities[agentId];
+        await recordSlackIngressOutcome(
+          { state: ctx.state, agentId, companyId, teamId: identity?.teamId, appId: identity?.appId },
+          outcome,
+          receivedAt,
+        );
+      } catch {
+        // Telemetry must never affect ingress correctness.
+      }
+    },
     async onAgentEvent(dispatch) {
       const { conversation, startMode } = conversationForDispatch(dispatch);
       let queued;
@@ -1696,6 +1756,11 @@ export async function handleSlackProviderWebhook(
         safeLog(ctx.logger, "error", "Slack ingress: durable turn enqueue failed; delivery must be retried", {
           agentId: dispatch.agentId,
         });
+        await recordSlackDeliveryTelemetrySafely(ctx, companyId, dispatch.agentId, conversation, {
+          phase: "failed",
+          category: "queue_failed",
+          reason: "Durable turn enqueue failed.",
+        });
         throw error instanceof Error ? error : new Error("Slack durable turn enqueue failed.");
       }
       if (queued.status === "ignored") {
@@ -1706,14 +1771,21 @@ export async function handleSlackProviderWebhook(
         });
         return;
       }
+      await recordSlackDeliveryTelemetrySafely(ctx, companyId, dispatch.agentId, conversation, { phase: "enqueued" });
       try {
         await kickSlackConversation(ctx, companyId, dispatch.agentId, queued.conversationKey);
       } catch (error) {
         safeLog(ctx.logger, "error", "Slack ingress: durable turn retained but queue kick failed; delivery must be retried", {
           agentId: dispatch.agentId,
         });
+        await recordSlackDeliveryTelemetrySafely(ctx, companyId, dispatch.agentId, conversation, {
+          phase: "failed",
+          category: "session_failed",
+          reason: "Queue drain/session kick failed.",
+        });
         throw error instanceof Error ? error : new Error("Slack durable queue kick failed.");
       }
+      await recordSlackDeliveryTelemetrySafely(ctx, companyId, dispatch.agentId, conversation, { phase: "drain_started" });
       if (queued.status === "duplicate") {
         safeLog(ctx.logger, "info", "Slack ingress: duplicate event re-kicked its durable conversation queue", {
           agentId: dispatch.agentId,

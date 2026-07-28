@@ -65,6 +65,15 @@ The Connection panel has four states: **never tested** (no check has run yet), *
 
 Ingress (event verification/routing) and Delivery (enqueue/drain/session completion) health are tracked separately; see [DRO-1187](https://paperclip.roshangautam.com/DRO/issues/DRO-1187).
 
+### Ingress and Delivery telemetry (DRO-1187)
+
+Below Connection, Settings shows two more panels reflecting real Slack activity for this identity, not a live check:
+
+- **Ingress** reflects the most recent verified Slack event: its bounded event type (`message`/`app_mention`/`other` -- never the event text), whether it routed to exactly one agent, and, on failure, a bounded category (`signature_failed`/`routing_failed`) with operator next-step guidance.
+- **Delivery** reflects the most recent durable-queue phase: enqueue, session/drain start, completion, or failure (`queue_failed`/`session_failed`/`reply_failed`, each with guidance).
+
+Both panels show **Never observed** until the identity has actually processed a Slack event -- there is nothing to check on demand, so both refresh automatically whenever you view the identity, and (like Connection) preserve the last known result and mark it stale on a refresh failure rather than clearing it. Neither panel ever shows message text, prompts, model output, tokens, signing secrets, or raw Slack payloads -- only bounded categories, timestamps, and the already-public `teamId`/`appId` scoping identifiers.
+
 ### Upgrade from v0.1.7 or v0.1.8
 
 Before upgrading, confirm every Slack identity appears in Agent Identities settings. Static

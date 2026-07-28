@@ -112,6 +112,9 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   // only echoes already-stored, unverified metadata. See
   // src/providers/slack/connection-status.ts.
   const checkSlackConnection = usePluginAction("check-slack-connection");
+  // DRO-1187: read-only bounded Ingress/Delivery telemetry projection --
+  // see src/providers/slack/telemetry.ts.
+  const getSlackTelemetry = usePluginAction("get-slack-telemetry");
 
   const [formState, setFormState] = useState<IdentityFormState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -196,6 +199,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     rebindLegacySlackCredentials,
     slackBotWhoami,
     checkSlackConnection,
+    getSlackTelemetry,
   });
 
   const githubUIState = providerSettingsUIRegistry.get(GITHUB_IDENTITY_PROVIDER_ID)!.useCredentialStep({

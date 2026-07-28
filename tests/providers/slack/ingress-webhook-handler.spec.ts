@@ -697,3 +697,101 @@ describe("handleSlackWebhook rate limiting", () => {
     resetSlackRateLimitState();
   });
 });
+
+// DRO-1187: bounded, secret-free ingress telemetry recording via the
+// optional `recordIngressOutcome` dep. Only three focused cases: a verified
+// success, a post-signature routing failure, and a signature failure --
+// covering the distinct call sites in webhook-handler.ts without duplicating
+// the full routing/signature test matrix above.
+describe("handleSlackWebhook ingress telemetry recording (DRO-1187)", () => {
+  beforeEach(() => {
+    resetSlackRateLimitState();
+  });
+
+  it("records a healthy verified event with its bounded event type on a dispatchable route", async () => {
+    const payload = {
+      type: "event_callback",
+      team_id: "T111",
+      api_app_id: "A111",
+      event_id: "Ev900",
+      authorizations: authorizationsFor("T111"),
+      event: { type: "app_mention", channel: "C111", text: "hi" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const recordIngressOutcome = vi.fn(async () => undefined);
+    const deps = makeDeps({
+      rawBody,
+      headers: baseHeaders(timestamp, rawBody),
+      nowEpochSeconds: 1_800_000_000,
+      recordIngressOutcome,
+    });
+
+    await handleSlackWebhook(deps as never);
+
+    expect(recordIngressOutcome).toHaveBeenCalledWith("agent-1", { ok: true, eventType: "app_mention" });
+  });
+
+  it("records a routing failure against the signature-authenticated agent when routing fails after signature verification", async () => {
+    // An overlong team_id makes parseRoutingHints's bounded validation
+    // reject the pre-signature hint (see boundedRoutingHint's max-length
+    // check in webhook-handler.ts), so the handler falls back to checking
+    // the signature against every configured identity rather than a single
+    // hinted candidate. The signing secret still resolves and matches
+    // agent-1 (it does not depend on team_id), so the request authenticates
+    // -- but the *real* post-signature route lookup uses this same
+    // (too-long, so effectively empty-string) team_id and fails to match
+    // any configured identity's teamId, producing a genuine post-signature
+    // routing failure attributable to the agent whose secret verified.
+    const overlongTeamId = "T" + "9".repeat(300);
+    const payload = {
+      type: "event_callback",
+      team_id: overlongTeamId,
+      api_app_id: "A111",
+      event_id: "Ev901",
+      authorizations: authorizationsFor(overlongTeamId),
+      event: { type: "message", channel: "D111", channel_type: "im", user: "U222" },
+    };
+    const rawBody = JSON.stringify(payload);
+    const timestamp = "1800000000";
+    const recordIngressOutcome = vi.fn(async () => undefined);
+    const deps = makeDeps({
+      rawBody,
+      headers: baseHeaders(timestamp, rawBody),
+      nowEpochSeconds: 1_800_000_000,
+      recordIngressOutcome,
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(200);
+    expect(recordIngressOutcome).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ ok: false, category: "routing_failed" }),
+    );
+  });
+
+  it("records a signature failure against the routing-hinted candidate identity, never the unverified event content", async () => {
+    const payload = { type: "event_callback", team_id: "T111", api_app_id: "A111", event_id: "Ev902", event: { type: "message" } };
+    const rawBody = JSON.stringify(payload);
+    const recordIngressOutcome = vi.fn(async () => undefined);
+    const deps = makeDeps({
+      rawBody,
+      headers: { "x-slack-request-timestamp": "1800000000", "x-slack-signature": "v0=deadbeef" },
+      nowEpochSeconds: 1_800_000_000,
+      recordIngressOutcome,
+    });
+
+    const result = await handleSlackWebhook(deps as never);
+
+    expect(result.status).toBe(401);
+    expect(recordIngressOutcome).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({ ok: false, category: "signature_failed" }),
+    );
+    // Never the raw event/body content -- only the bounded outcome shape.
+    for (const call of recordIngressOutcome.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain("Ev902");
+    }
+  });
+});

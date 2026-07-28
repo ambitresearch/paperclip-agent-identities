@@ -90,6 +90,9 @@ Current test files:
 - `/tests/ui/settings-page-slack-status.spec.tsx` (DRO-1161)
   - Connection panel lifecycle: never-tested, successful check, refresh-failure preserving and immediately marking the last known result stale (not just after the 5-minute freshness window), and a result aging past that window without a refresh
   - identity-switch regression: closing/reopening the edit dialog on a different Slack identity clears the previous identity's Connection result instead of leaking it under the new identity's label
+- `/tests/providers/slack/telemetry.spec.ts` (DRO-1187)
+  - `recordSlackIngressOutcome`/`recordSlackDeliveryOutcome`/`getSlackTelemetry`/`get-slack-telemetry` action: never-observed projection, healthy verified ingress event, routing-failed and signature-failed ingress categories with their guidance strings, queue/session/reply-failed delivery categories with their guidance strings, the full enqueue-drain-completed delivery lifecycle, per-agent scoping (no cross-agent leak), and the registered action's validation, plus a redaction assertion that a token-shaped reason string never survives into the persisted record or its projection
+  - focused wiring regressions live alongside the modules they touch rather than duplicating fixtures: `ingress-webhook-handler.spec.ts` covers a healthy verified event, a post-signature routing failure, and a pre-auth signature failure via `handleSlackWebhook`'s optional `recordIngressOutcome` dep; `ingress-provider-webhook.spec.ts` covers a routed ingress event, a queue-full delivery failure under an enqueue burst, and delivery completion through a full webhook-enqueue-drain-completion round trip, reusing that file's existing `makeCtx`/`delivery`/`runtime` fixtures
 - `/tests/identity-policy.spec.ts`
   - config parsing and missing-agent fail-closed behavior
   - GitHub repo normalization from HTTPS/SSH/git URL forms

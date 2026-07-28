@@ -786,3 +786,114 @@ describe("Slack removal confirmation copy", () => {
     expect(confirmMessage).not.toMatch(/Slack/i);
   });
 });
+
+describe("Slack Ingress/Delivery telemetry panels (get-slack-telemetry, DRO-1187)", () => {
+  it("shows 'never observed' for both Ingress and Delivery before anything has been recorded", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+    });
+    actionFor("get-slack-telemetry").mockResolvedValue({ ingress: null, delivery: null });
+
+    await openSlackEditDialog();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).toMatch(/Ingress\./);
+    expect(text()).toMatch(/Never observed\. No verified Slack event/i);
+    expect(text()).toMatch(/Delivery\./);
+    expect(text()).toMatch(/Never observed\. No Slack turn has been queued or delivered/i);
+  });
+
+  it("shows a healthy verified ingress event and delivery completion", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+    });
+    actionFor("get-slack-telemetry").mockResolvedValue({
+      ingress: { lastVerifiedEventAt: Date.now(), lastEventType: "app_mention", lastRoutingResult: "routed" },
+      delivery: { lastEnqueuedAt: Date.now(), lastDrainStartedAt: Date.now(), lastCompletedAt: Date.now() },
+    });
+
+    await openSlackEditDialog();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).toMatch(/Last verified event \(app_mention\) routed successfully/i);
+    expect(text()).toMatch(/Last turn completed at/i);
+  });
+
+  it("shows a routing failure category and operator next-step guidance", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+    });
+    actionFor("get-slack-telemetry").mockResolvedValue({
+      ingress: {
+        lastRoutingResult: "routing_failed",
+        lastFailure: {
+          category: "routing_failed",
+          reason: "No single configured agent identity matched.",
+          nextStep: "Verify exactly one identity is configured for this Slack app and workspace.",
+          at: Date.now(),
+        },
+      },
+      delivery: null,
+    });
+
+    await openSlackEditDialog();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).toMatch(/Last ingress failure \(routing_failed\)/i);
+    expect(text()).toMatch(/Next step: Verify exactly one identity/i);
+  });
+
+  it("shows a queue failure category and operator next-step guidance in Delivery", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+    });
+    actionFor("get-slack-telemetry").mockResolvedValue({
+      ingress: null,
+      delivery: {
+        lastFailedAt: Date.now(),
+        lastFailure: {
+          category: "queue_failed",
+          reason: "Durable turn enqueue failed.",
+          nextStep: "Slack will retry the delivery; if this persists, a conversation may be stuck.",
+          at: Date.now(),
+        },
+      },
+    });
+
+    await openSlackEditDialog();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).toMatch(/Last delivery failure \(queue_failed\)/i);
+    expect(text()).toMatch(/Next step: Slack will retry the delivery/i);
+  });
+
+  it("surfaces a refresh failure with a bounded error message, never secret-shaped content", async () => {
+    actionFor("slack_bot_whoami").mockResolvedValue({
+      data: { label: "Release Bot", teamId: "T0123456789", appId: "A0123456789", botUserId: "U0123456789", hasDefaultChannel: false },
+    });
+    actionFor("get-slack-telemetry").mockRejectedValue(new Error("Telemetry read unavailable"));
+
+    await openSlackEditDialog();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(text()).toMatch(/Could not refresh (ingress|delivery) telemetry \(Telemetry read unavailable\)/i);
+    expect(container.innerHTML).not.toMatch(/xoxb-|xoxp-|signingSecret/i);
+  });
+});
+
+

@@ -19,7 +19,7 @@ Do not edit generated `/dist` files directly; change `/src` and rebuild.
 
 - plugin ID: `ambitresearch.paperclip-agent-identities`
 - display name: `Agent Identities`
-- version: `0.2.4`
+- version: `0.2.5`
 - category: `connector`
 - entrypoints: `./dist/worker.js` and `./dist/ui`
 
@@ -37,7 +37,8 @@ Important capabilities include:
 - `secrets.bind-ref` for binding existing Paperclip secret references into company plugin config
 - `secrets.read-ref` for Paperclip secret resolution
 - `activity.log.write` for PR/push audit events
-- `project.workspaces.read` for mediated git push workspace resolution
+- `issues.read` and `execution.workspaces.read` for resolving a push against the invoking run's execution workspace
+- `project.workspaces.read` for the mediated push fallback to the project's primary workspace
 
 `/src/manifest.ts` sources its tool list from the provider registry rather than importing provider-specific tool definitions directly: it filters every provider's `manifestTools` down to the names present in `registry.liveTools()`. `liveTools()` is a provider-neutral gate distinct from `enabled()`: it returns every tool from a `toolsEnabled()` provider (`definition.toolsStatus ?? definition.status === "enabled"`), PLUS any individual tool a not-yet-`toolsEnabled()` provider marks `live: true` on its `ProviderToolSpec`. This lets a provider ship real, live tools before its full identity/settings-UI surface (`enabled()`) is ready, without adding a provider-specific branch to `/src/manifest.ts` or `/src/worker.ts` — `/src/worker.ts`'s tool-registration loop iterates the same `registry.liveTools()` list. Today `registry.liveTools()` contributes:
 

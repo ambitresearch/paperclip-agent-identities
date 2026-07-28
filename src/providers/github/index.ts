@@ -25,6 +25,10 @@ import { githubListOrganizationProjectsToolSpec } from "./tools/list-organizatio
 import { githubAddPullRequestToProjectToolSpec } from "./tools/add-pull-request-to-project.js";
 import { githubAssignToCurrentUserToolSpec } from "./tools/assign-to-current-user.js";
 import { githubUpdatePullRequestToolSpec } from "./tools/update-pull-request.js";
+import { githubReplyToReviewThreadToolSpec } from "./tools/reply-to-review-thread.js";
+import { githubResolveReviewThreadToolSpec } from "./tools/resolve-review-thread.js";
+import { githubUnresolveReviewThreadToolSpec } from "./tools/unresolve-review-thread.js";
+import { githubListPullRequestReviewThreadsToolSpec } from "./tools/list-pull-request-review-threads.js";
 import { githubManifestTools } from "./manifest-tools.js";
 import { contributeGitHubAppManifestActions } from "./app-manifest.js";
 
@@ -88,7 +92,11 @@ export const githubProvider: IdentityProvider<GitHubAgentIdentity, ResourceRefer
     githubAssignToCurrentUserToolSpec,
     githubUpdatePullRequestToolSpec,
     githubGetPullRequestChecksToolSpec,
-    githubRequestPullRequestReviewersToolSpec
+    githubRequestPullRequestReviewersToolSpec,
+    githubReplyToReviewThreadToolSpec,
+    githubResolveReviewThreadToolSpec,
+    githubUnresolveReviewThreadToolSpec,
+    githubListPullRequestReviewThreadsToolSpec
   ],
   contributeActions: contributeGitHubAppManifestActions,
   manifestTools: githubManifestTools

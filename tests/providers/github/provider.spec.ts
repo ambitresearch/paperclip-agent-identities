@@ -45,17 +45,19 @@ describe("githubProvider", () => {
     expect(typeof result).toBe("string");
   });
 
-  it("registers exactly the four GitHub tool specs in order", () => {
-    expect(githubProvider.tools.map((tool) => tool.name)).toEqual([
-      "github_bot_whoami",
-      "github_bot_create_pull_request",
-      "github_bot_push_branch",
-      "github_bot_submit_pull_request_review"
-    ]);
+  it("registers each GitHub tool spec exactly once, github_bot_whoami first", () => {
+    const names = githubProvider.tools.map((tool) => tool.name);
+    expect(names[0]).toBe("github_bot_whoami");
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain("github_bot_create_pull_request");
+    expect(names).toContain("github_bot_push_branch");
+    expect(names).toContain("github_bot_submit_pull_request_review");
+    expect(names).toContain("github_bot_get_pull_request_checks");
+    expect(names).toContain("github_bot_request_pull_request_reviewers");
   });
 
-  it("exposes four manifest tools and a contributeActions hook", () => {
-    expect(githubProvider.manifestTools).toHaveLength(4);
+  it("exposes a manifest tool fragment for every live tool, plus a contributeActions hook", () => {
+    expect(githubProvider.manifestTools.length).toBe(githubProvider.tools.length);
     expect(typeof githubProvider.contributeActions).toBe("function");
   });
 

@@ -14,6 +14,10 @@ import { githubBotAssignToCurrentUserManifestTool } from "../../shared/github-bo
 import { githubBotUpdatePullRequestManifestTool } from "../../shared/github-bot-update-pull-request-tool.js";
 import { githubBotGetPullRequestChecksManifestTool } from "../../shared/github-bot-get-pull-request-checks-tool.js";
 import { githubBotRequestPullRequestReviewersManifestTool } from "../../shared/github-bot-request-pull-request-reviewers-tool.js";
+import { githubBotReplyToReviewThreadManifestTool } from "../../shared/github-bot-reply-to-review-thread-tool.js";
+import { githubBotResolveReviewThreadManifestTool } from "../../shared/github-bot-resolve-review-thread-tool.js";
+import { githubBotUnresolveReviewThreadManifestTool } from "../../shared/github-bot-unresolve-review-thread-tool.js";
+import { githubBotListPullRequestReviewThreadsManifestTool } from "../../shared/github-bot-list-pull-request-review-threads-tool.js";
 
 /**
  * The manifest-tool fragments the GitHub provider contributes to the plugin
@@ -37,4 +41,8 @@ export const githubManifestTools = [
   githubBotUpdatePullRequestManifestTool,
   githubBotGetPullRequestChecksManifestTool,
   githubBotRequestPullRequestReviewersManifestTool,
+  githubBotReplyToReviewThreadManifestTool,
+  githubBotResolveReviewThreadManifestTool,
+  githubBotUnresolveReviewThreadManifestTool,
+  githubBotListPullRequestReviewThreadsManifestTool,
 ] as const;

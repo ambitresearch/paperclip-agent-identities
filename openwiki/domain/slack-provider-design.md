@@ -729,6 +729,25 @@ the unchanged body and Slack headers to
 `/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events`.
 This adapter does not implement Socket Mode.
 
+**`channel_type` normalization for `app_mention` (DRO-1156):** production
+`app_mention` events may omit `event.channel_type` entirely; Slack does not
+guarantee it is present on that event type. The durable queue
+(`enqueueSlackConversationTurn`) still requires a concrete non-direct
+`channelType` (`channel`, `group`, or `mpim`) and never relaxes that
+invariant. Instead, `projectQueuedTurnEvent` in
+`src/providers/slack/ingress/provider-webhook.ts` normalizes the missing
+field once at the ingress trust boundary, after signature verification and
+before durable persistence: a validated `C…` conversation ID infers
+`channel`, a validated `G…` ID infers `group`. An explicit `channel_type` is
+still accepted, but only when it agrees with the conversation ID's prefix —
+a contradicting explicit type (e.g. `channel_type: "group"` with a `C…` ID)
+fails closed before any queue write, as do direct-message (`D…`), blank,
+malformed, and unknown-prefix conversation IDs for `app_mention`. This keeps
+the fix scoped to ingress normalization rather than weakening the queue's
+validation, and matches the regression fixtures in
+`tests/providers/slack/ingress-provider-webhook.spec.ts` that intentionally
+omit `channel_type` from a production-shaped `app_mention` payload.
+
 ### T6 — Secret leakage through tool output or manifest-flow logs
 **Risk:** same class of risk the project constraints already name explicitly
 ("never place Slack config tokens... in agent config, workspaces, tool

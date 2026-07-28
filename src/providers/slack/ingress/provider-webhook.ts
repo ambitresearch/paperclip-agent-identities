@@ -532,7 +532,35 @@ function projectQueuedTurnEvent(event: unknown): SlackQueuedTurnEvent {
   if (typeof rawEvent.text === "string" && rawEvent.text.length > 0 && !text) {
     throw new Error("Slack event text could not be bounded safely.");
   }
-  const channelType = boundedString(rawEvent.channel_type)?.trim();
+  let channelType = boundedString(rawEvent.channel_type)?.trim();
+  if (type === "app_mention") {
+    // Slack's Events API app_mention payloads may omit channel_type entirely
+    // (observed in production). Normalize it here, at the ingress trust
+    // boundary, from the validated conversation ID prefix, before the
+    // downstream durable queue enforces its strict non-direct channelType
+    // invariant. Explicit values are still checked for internal consistency
+    // rather than trusted blindly.
+    const validAppMentionChannelId = /^[CDG][A-Za-z0-9-]{2,}$/.test(channel);
+    if (!validAppMentionChannelId) {
+      throw new Error("Slack app_mention event has an invalid conversation ID.");
+    }
+    const prefix = channel.charAt(0);
+    if (channelType) {
+      const matchesPrefix =
+        (channelType === "im" && prefix === "D") ||
+        (channelType === "channel" && prefix === "C") ||
+        ((channelType === "group" || channelType === "mpim") && prefix === "G");
+      if (!matchesPrefix) {
+        throw new Error("Slack app_mention event channel type does not match its conversation ID.");
+      }
+    } else if (prefix === "C") {
+      channelType = "channel";
+    } else if (prefix === "G") {
+      channelType = "group";
+    } else {
+      throw new Error("Slack app_mention event is missing a valid non-direct channel type.");
+    }
+  }
   const user = boundedString(rawEvent.user)?.trim();
   const ts = boundedString(rawEvent.ts)?.trim();
   const threadTs = boundedString(rawEvent.thread_ts)?.trim();

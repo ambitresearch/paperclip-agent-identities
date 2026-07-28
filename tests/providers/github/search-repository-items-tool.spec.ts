@@ -193,3 +193,37 @@ describe("githubSearchRepositoryItemsToolSpec.perform", () => {
     expect(loggedCall.metadata.agentId).toBe("agent-1");
   });
 });
+
+describe("githubSearchRepositoryItemsToolSpec.validateParams query scoping", () => {
+  const v = (query: string) =>
+    githubSearchRepositoryItemsToolSpec.validateParams({ repository: "acme/widgets", query });
+
+  it("rejects a query containing a boolean OR that could widen scope", () => {
+    expect(v("bug OR repo:other/repo")).toEqual({
+      ok: false,
+      error: "query must not contain the boolean operators OR/NOT; they can escape repository scoping"
+    });
+  });
+
+  it("rejects a query containing NOT", () => {
+    expect(v("bug NOT flaky")).toMatchObject({ ok: false });
+  });
+
+  it("rejects a caller-supplied repo: qualifier", () => {
+    expect(v("repo:evil/repo secrets")).toMatchObject({ ok: false });
+  });
+
+  it("rejects caller-supplied org:, user:, and owner: qualifiers", () => {
+    expect(v("org:evil secrets")).toMatchObject({ ok: false });
+    expect(v("secrets user:evil")).toMatchObject({ ok: false });
+    expect(v("secrets -owner:evil")).toMatchObject({ ok: false });
+  });
+
+  it("still accepts an ordinary scoped-safe query", () => {
+    expect(v("flaky test in:title")).toMatchObject({ ok: true });
+  });
+
+  it("does not reject lowercase words that merely contain the operator letters", () => {
+    expect(v("minor cannot reproduce")).toMatchObject({ ok: true });
+  });
+});

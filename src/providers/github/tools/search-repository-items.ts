@@ -38,6 +38,23 @@ function validateParams(params: unknown): ParamsValidation {
   if (p.query.length > MAX_QUERY_LENGTH) {
     return { ok: false, error: `query must be ${MAX_QUERY_LENGTH} characters or fewer` };
   }
+  // Repository scoping is enforced by appending `repo:owner/name` to the caller's query.
+  // That only holds if the caller cannot introduce their own scope or boolean alternation:
+  // GitHub search honors multiple `repo:`/`org:`/`user:` qualifiers and `OR`/`NOT`, either of
+  // which can widen results beyond the resolved repository. Reject both up front.
+  if (/\b(?:OR|NOT)\b/.test(p.query)) {
+    return {
+      ok: false,
+      error: "query must not contain the boolean operators OR/NOT; they can escape repository scoping"
+    };
+  }
+  if (/(?:^|\s)-?(?:repo|org|user|owner):/i.test(p.query)) {
+    return {
+      ok: false,
+      error:
+        "query must not contain repo:, org:, user:, or owner: qualifiers; repository scoping is applied automatically"
+    };
+  }
   const type = p.type ?? "issue";
   if (type !== "issue" && type !== "pr") {
     return { ok: false, error: 'type must be "issue" or "pr"' };

@@ -14,6 +14,14 @@ export {
   SLACK_TURN_TEXT_MAX_BYTES,
   SLACK_EVENT_ID_MAX_LENGTH,
 } from "./conversation-session.js";
+export { recoverSlackConversationQueues, SLACK_QUEUE_RECOVERY_JOB_KEY } from "./recovery-job.js";
+export {
+  listSlackConversationKeys,
+  registerSlackConversationKey,
+  unregisterSlackConversationKey,
+  SLACK_CONVERSATION_REGISTRY_ENTITY_TYPE,
+  SLACK_CONVERSATION_REGISTRY_LIMIT,
+} from "./conversation-registry.js";
 export type {
   EnqueueSlackConversationTurnInput,
   EnqueueSlackConversationTurnResult,

@@ -17,6 +17,46 @@ const GITHUB_APP_MANIFEST_FLOW_STATE_PREFIX = "github-app-manifest-flow:";
 const DEFAULT_GITHUB_APP_URL = "https://paperclip.example.com";
 const GITHUB_PROVIDER = "github" as const;
 
+/**
+ * Permission reconciliation for existing GitHub App installations (DRO-1167).
+ *
+ * `default_permissions.organization_projects` below is baked into every
+ * manifest a *new* App-creation flow generates via
+ * `createGitHubAppManifestFlow`. It has NO effect on a GitHub App that was
+ * already created and installed before this permission existed on the
+ * manifest: GitHub does not retroactively grant permissions to a live App
+ * registration just because the code that generates new manifests changed.
+ *
+ * For each existing installation that wants
+ * `github_bot_list_organization_projects` / `github_bot_add_pull_request_to_project`
+ * to work, an operator must walk this one-time reconciliation flow:
+ *
+ * 1. Open the App's settings page on GitHub
+ *    (`https://github.com/settings/apps/<app-slug>/permissions`) and add the
+ *    "Organization permissions -> Projects" permission, set to
+ *    "Read and write", then save. GitHub App permission changes are
+ *    NOT self-approving for org-owned installations: this queues a pending
+ *    permission-update request rather than applying immediately.
+ * 2. The organization's owner/admin (whoever controls the installation, not
+ *    necessarily the App's own author) must review and accept the pending
+ *    request, either via the email GitHub sends or by visiting
+ *    `https://github.com/organizations/<org>/settings/installations/<installation_id>`
+ *    and approving the "Review request" banner. Until accepted, the two
+ *    Projects tools keep failing GraphQL calls with a permission error even
+ *    though the App-level manifest already lists the permission.
+ * 3. Once accepted, no token re-minting or reinstall is required -- the next
+ *    installation-token mint (already done per-call by the credential
+ *    resolver) picks up the expanded scope automatically.
+ *
+ * There is intentionally no code path here that auto-upgrades an existing
+ * installation's permissions: GitHub's API has no endpoint to force-accept a
+ * permission-update request on an org's behalf, and doing so silently would
+ * bypass the org owner's explicit consent. `create-github-app-manifest`
+ * always emits the full desired permission set (including
+ * `organization_projects`) so brand-new Apps never need this reconciliation
+ * step; only Apps created before this change do.
+ */
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -79,6 +119,24 @@ export function createGitHubAppManifestFlow(input: CreateGitHubAppManifestInput)
       pull_requests: "write",
       issues: "write",
       workflows: "write",
+      checks: "read",
+      statuses: "read",
+      // Required for github_bot_get_pull_request_checks, which calls
+      // GET /repos/{owner}/{repo}/actions/runs (and related Checks-adjacent
+      // Actions endpoints) to resolve workflow run status/conclusion detail
+      // beyond what the Checks API alone exposes.
+      actions: "read",
+      // Organization-level permission (not a repository permission) required
+      // for the Projects v2 GraphQL API: listing org Projects
+      // (github_bot_list_organization_projects) and adding a pull request as
+      // a project item (github_bot_add_pull_request_to_project) both operate
+      // on `Organization.projectsV2` / `addProjectV2ItemById`, which GitHub
+      // gates on this single "Projects" organization permission regardless of
+      // whether the target board is a classic or next-gen (v2) project.
+      // "write" is required (not "read") because addProjectV2ItemById is a
+      // mutation. See the reconciliation-flow note below for existing
+      // installations that predate this permission.
+      organization_projects: "write",
     },
     default_events: [],
   });

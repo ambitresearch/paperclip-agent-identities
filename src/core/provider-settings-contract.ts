@@ -70,6 +70,15 @@ export interface ProviderSettingsValidationExtra {
     defaultChannel?: string | null;
   } | null;
   readonly slackSaveBusy?: boolean;
+  /**
+   * Secret ids (DRO-1155) that were selected in a select-backed field but
+   * are absent from the most recent successful secretOptions fetch for the
+   * active company -- i.e. the secret was deleted/renamed server-side.
+   * Adapters must treat a currently-selected missing id as an incomplete
+   * credential rather than a passively-displayed error, so a stale
+   * reference can't be saved.
+   */
+  readonly missingSecretIds?: ReadonlySet<string>;
 }
 
 export interface ProviderSettingsAdapter {

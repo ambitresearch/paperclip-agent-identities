@@ -1,60 +1,134 @@
 /**
  * DRO-1163 / paperclipai/paperclip#10346
  *
- * A minimal, repo-owned model of the ONE fact the incident hinged on: an
- * agent session only sees this plugin's manifest tools through the managed
- * MCP gateway if the adapter actually attached that gateway server. Global
- * plugin manifest registration is a completely independent signal from
- * per-session tool discovery -- the incident was global registration
- * succeeding while per-session attachment silently did not happen.
+ * Loader/validator for captured session tool-discovery fixtures
+ * (tests/fixtures/session-tool-discovery/*.json).
  *
- * This is NOT a stand-in for Paperclip core's real adapter/runtime-MCP
- * attachment path (that lives upstream, tracked at
- * paperclipai/paperclip#10346 and paperclipai/paperclip#10144, and requires
- * a running core instance + real MCP client/server to verify end-to-end).
- * What it DOES let this repo verify, without a live core instance, is that
- * "tools are globally registered" and "tools are exposed in a given
- * session" are computed from genuinely different inputs and can disagree --
- * i.e. a green manifest-registration check can never be mistaken for proof
- * of session-level availability, because this harness makes the two calls
- * structurally distinct and requires an explicit gateway-attachment signal
- * before any tool is considered session-discoverable.
+ * Prior revisions of this harness *simulated* discovery as a pure function
+ * of `githubManifestTools` plus two hand-set booleans -- that model could
+ * never disagree with the manifest by construction, so a spec built on it
+ * could stay green even if real `codex_local` sessions never exposed any
+ * managed tool. Per review feedback (DRO-1163), the session-visible tool
+ * list must come from a source that is independent of
+ * `src/providers/github/manifest-tools.ts`.
+ *
+ * This module does NOT derive tool names from the manifest. It only loads
+ * and schema-validates committed fixture files that record, for a given
+ * adapter state, the literal tool names an agent session could observe via
+ * `tools/list` -- one fixture for the reported incident state (registered
+ * globally, gateway never attached) and one for the healthy state (gateway
+ * attached). The fixtures are hand-authored/captured data (see each file's
+ * `provenance` block), not computed from this repo's source, which is what
+ * lets a spec assert real disagreement between "registered" and
+ * "discoverable" instead of a tautology.
+ *
+ * This still cannot replace a live end-to-end run against a real Paperclip
+ * core gateway session -- that requires a running core instance and is
+ * tracked upstream at paperclipai/paperclip#10346 and
+ * paperclipai/paperclip#10144. What this DOES guarantee within this repo:
+ * the compatibility check compares two independently-sourced signals
+ * (manifest registration vs. a captured discovery fixture) rather than one
+ * signal computed from the other.
  */
 
-export interface ManifestToolLike {
-  readonly name: string;
+import { readFileSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const FIXTURES_DIR = path.dirname(fileURLToPath(new URL("../fixtures/session-tool-discovery/session-tool-discovery.schema.json", import.meta.url)));
+
+export interface SessionToolDiscoveryFixtureProvenance {
+  readonly source: string;
+  readonly capturedAt: string;
+  readonly capturedBy: string;
+  readonly note: string;
 }
 
-/**
- * Mirrors the shape of the per-run attachment signal Paperclip core is
- * responsible for producing: a non-empty `ctx.runtimeMcp` descriptor plus an
- * adapter that actually attaches to it. Both must independently be truthy,
- * matching the incident where credentials existed but no session attached.
- */
-export interface SessionGatewayAttachment {
-  /** Whether `ctx.runtimeMcp` was non-empty for this heartbeat/run. */
+export interface SessionToolDiscoveryFixture {
+  readonly fixtureId: string;
+  readonly adapter: string;
+  readonly provenance: SessionToolDiscoveryFixtureProvenance;
   readonly runtimeMcpPresent: boolean;
-  /** Whether the adapter actually attached the gateway MCP server. */
   readonly gatewayAttached: boolean;
+  readonly discoveredTools: readonly string[];
+}
+
+const REQUIRED_TOP_LEVEL_KEYS = [
+  "fixtureId",
+  "adapter",
+  "provenance",
+  "runtimeMcpPresent",
+  "gatewayAttached",
+  "discoveredTools",
+] as const;
+
+const REQUIRED_PROVENANCE_KEYS = ["source", "capturedAt", "capturedBy", "note"] as const;
+
+function assertShape(fixtureId: string, raw: unknown): asserts raw is SessionToolDiscoveryFixture {
+  if (!raw || typeof raw !== "object") {
+    throw new Error(`Fixture ${fixtureId} is not an object`);
+  }
+  const record = raw as Record<string, unknown>;
+  for (const key of REQUIRED_TOP_LEVEL_KEYS) {
+    if (!(key in record)) {
+      throw new Error(`Fixture ${fixtureId} is missing required key "${key}"`);
+    }
+  }
+  if (typeof record.fixtureId !== "string" || record.fixtureId.length === 0) {
+    throw new Error(`Fixture ${fixtureId} has an invalid fixtureId`);
+  }
+  if (typeof record.adapter !== "string" || record.adapter.length === 0) {
+    throw new Error(`Fixture ${fixtureId} has an invalid adapter`);
+  }
+  if (typeof record.runtimeMcpPresent !== "boolean") {
+    throw new Error(`Fixture ${fixtureId} has a non-boolean runtimeMcpPresent`);
+  }
+  if (typeof record.gatewayAttached !== "boolean") {
+    throw new Error(`Fixture ${fixtureId} has a non-boolean gatewayAttached`);
+  }
+  if (
+    !Array.isArray(record.discoveredTools) ||
+    !record.discoveredTools.every((tool) => typeof tool === "string" && tool.length > 0)
+  ) {
+    throw new Error(`Fixture ${fixtureId} has an invalid discoveredTools array`);
+  }
+  const provenance = record.provenance;
+  if (!provenance || typeof provenance !== "object") {
+    throw new Error(`Fixture ${fixtureId} is missing a provenance object`);
+  }
+  const provenanceRecord = provenance as Record<string, unknown>;
+  for (const key of REQUIRED_PROVENANCE_KEYS) {
+    if (typeof provenanceRecord[key] !== "string" || (provenanceRecord[key] as string).length === 0) {
+      throw new Error(`Fixture ${fixtureId} provenance is missing/invalid key "${key}"`);
+    }
+  }
+}
+
+/** Load and schema-validate a single captured fixture by file stem (no extension). */
+export function loadSessionToolDiscoveryFixture(fixtureFile: string): SessionToolDiscoveryFixture {
+  const filePath = path.join(FIXTURES_DIR, `${fixtureFile}.json`);
+  const raw: unknown = JSON.parse(readFileSync(filePath, "utf8"));
+  assertShape(fixtureFile, raw);
+  return raw;
+}
+
+/** Load every captured fixture in tests/fixtures/session-tool-discovery/. */
+export function loadAllSessionToolDiscoveryFixtures(): SessionToolDiscoveryFixture[] {
+  return readdirSync(FIXTURES_DIR)
+    .filter((file) => file.endsWith(".json") && !file.endsWith(".schema.json"))
+    .map((file) => loadSessionToolDiscoveryFixture(file.replace(/\.json$/, "")));
 }
 
 /**
- * Simulates what an agent session can discover via `list_tools` against the
- * managed MCP gateway, given the plugin's globally registered manifest tools
- * and a session's gateway-attachment state.
- *
- * Discovery only ever returns a non-empty set when BOTH attachment signals
- * are true -- registration alone (`manifestTools`) never leaks through. This
- * is what makes "registered" and "discoverable" independently falsifiable
- * within this repo, instead of the previous suite's single hard-coded string
- * assertion.
+ * Compare a captured fixture's session-visible tool list against a set of
+ * independently-sourced manifest tool names. Returns the manifest tools that
+ * are registered but NOT present in the fixture's discovered set -- this is
+ * the exact gap the incident hinged on.
  */
-export function simulateSessionToolDiscovery(
-  manifestTools: ReadonlyArray<ManifestToolLike>,
-  attachment: SessionGatewayAttachment,
+export function manifestToolsMissingFromDiscovery(
+  manifestToolNames: readonly string[],
+  fixture: SessionToolDiscoveryFixture,
 ): string[] {
-  if (!attachment.runtimeMcpPresent || !attachment.gatewayAttached) {
-    return [];
-  }
-  return manifestTools.map((tool) => tool.name);
+  const discovered = new Set(fixture.discoveredTools);
+  return manifestToolNames.filter((name) => !discovered.has(name));
 }

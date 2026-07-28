@@ -1,0 +1,18 @@
+{
+  "$schema": "./session-tool-discovery.schema.json",
+  "fixtureId": "incident-codex_local",
+  "adapter": "codex_local",
+  "provenance": {
+    "source": "DRO-1163 incident report (Slack-created Voss run)",
+    "capturedAt": "2026-07-24T00:00:00Z",
+    "capturedBy": "hand-transcribed from the incident writeup in DRO-1163; not an automated capture",
+    "note": "Live evidence for this incident showed: the plugin's manifest registered all eight tools globally, per-run tool-gateway credentials were issued (ctx.runtimeMcp non-empty), but the codex_local adapter never attached the gateway MCP server, so no managed-tool session ever existed. The run's actual tools/list surface therefore contained only the adapter's default shell/resource-discovery tools -- none of this plugin's github_bot_* or slack_bot_* tools were present. This fixture encodes that observed tools/list content directly; it is intentionally NOT derived from this repo's manifest or tool-registration code, so it cannot silently track future registration changes."
+  },
+  "runtimeMcpPresent": true,
+  "gatewayAttached": false,
+  "discoveredTools": [
+    "shell",
+    "read_file",
+    "list_directory"
+  ]
+}

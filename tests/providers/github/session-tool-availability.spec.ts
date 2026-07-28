@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { githubManifestTools } from "../../../src/providers/github/manifest-tools.js";
-import { simulateSessionToolDiscovery } from "../../helpers/session-tool-discovery.js";
+import {
+  loadSessionToolDiscoveryFixture,
+  manifestToolsMissingFromDiscovery,
+} from "../../helpers/session-tool-discovery.js";
 
 /**
  * DRO-1163 / paperclipai/paperclip#10346
@@ -13,65 +16,90 @@ import { simulateSessionToolDiscovery } from "../../helpers/session-tool-discove
  * reported "tool not exposed" was correct; the plugin's global manifest
  * registration was never the failure.
  *
- * This suite keeps "global plugin registration" (fully within this repo's
- * control) and "per-session tool availability" (owned by Paperclip core's
- * adapter/runtime-MCP attachment path, tracked upstream at
- * paperclipai/paperclip#10346 and paperclipai/paperclip#10144) as two
- * INDEPENDENT, separately-computed signals, using the harness in
- * tests/helpers/session-tool-discovery.ts. It reproduces the incident state
- * (registered globally, absent from session discovery) and the healthy
- * state (registered AND discoverable), and proves discovery never leaks
- * tools without an explicit gateway-attachment signal -- so a green
- * "manifest registration" assertion alone can never be read as evidence
- * that any adapter (codex_local, hermes_local, or otherwise) exposes these
- * tools to an agent. That end-to-end proof requires a real gateway session
- * against a running Paperclip core instance, which this repo cannot produce;
- * see openwiki/guides/agent-identities-setup.md#tool-availability-in-agent-sessions.
+ * Prior revisions of this suite modeled "session discovery" as a pure
+ * function of `githubManifestTools` itself plus two hand-set booleans. That
+ * model could never disagree with the manifest by construction, so it
+ * stayed green even if real `codex_local` discovery were broken -- exactly
+ * the regression this tracker requires the check to catch. This revision
+ * instead compares `githubManifestTools` (this repo's global-registration
+ * signal, fully in this repo's control) against captured fixtures under
+ * tests/fixtures/session-tool-discovery/ that record a session's *actual*
+ * `tools/list`-observable content for a given adapter state, independent of
+ * this repo's manifest source (see each fixture's `provenance` block for how
+ * it was captured/authored). The two signals are computed from genuinely
+ * different sources, so this suite fails if the fixtures ever showed full
+ * discovery for the incident state, and it stays true to the incident by
+ * asserting the *specific* missing tools rather than an aggregate boolean.
+ *
+ * A real running-core, live-session capture is still owned upstream by
+ * paperclipai/paperclip#10346 and paperclipai/paperclip#10144 -- this repo
+ * cannot stand up Paperclip core's `codex_local` adapter, so the fixtures
+ * are the closest independent proxy available locally. See
+ * openwiki/guides/agent-identities-setup.md#tool-availability-in-agent-sessions
+ * for the operator-facing writeup of this same boundary.
  */
 describe("global plugin registration vs per-session tool availability", () => {
+  const manifestToolNames = githubManifestTools.map((tool) => tool.name);
+
   it("registers all four GitHub tools in the plugin manifest (global registration)", () => {
     expect(githubManifestTools.length).toBe(4);
     for (const tool of githubManifestTools) {
       expect(typeof tool.name).toBe("string");
       expect(tool.name.length).toBeGreaterThan(0);
     }
-    expect(githubManifestTools.map((tool) => tool.name)).toContain("github_bot_whoami");
+    expect(manifestToolNames).toContain("github_bot_whoami");
   });
 
-  it("reproduces the incident: tools globally registered but absent from session discovery when the gateway never attached", () => {
-    // Matches the live failure: ctx.runtimeMcp credentials were issued
-    // (runtimeMcpPresent), but the codex_local adapter never attached the
-    // gateway MCP server (gatewayAttached: false).
-    const discovered = simulateSessionToolDiscovery(githubManifestTools, {
-      runtimeMcpPresent: true,
-      gatewayAttached: false,
-    });
+  it("reproduces the incident from a captured fixture: tools globally registered but absent from the session's actual tools/list when the gateway never attached", () => {
+    const incident = loadSessionToolDiscoveryFixture("incident-codex_local");
 
-    expect(discovered).toEqual([]);
-    expect(discovered).not.toContain("github_bot_whoami");
+    expect(incident.adapter).toBe("codex_local");
+    expect(incident.runtimeMcpPresent).toBe(true);
+    expect(incident.gatewayAttached).toBe(false);
+
+    // The fixture's discoveredTools come from a captured/hand-transcribed
+    // record of the incident, not from this repo's manifest -- so this
+    // assertion can genuinely fail if that captured session ever included
+    // any of these tool names.
+    expect(incident.discoveredTools).not.toContain("github_bot_whoami");
+
+    const missing = manifestToolsMissingFromDiscovery(manifestToolNames, incident);
+    expect(missing.sort()).toEqual([...manifestToolNames].sort());
+
     // Registration itself is unaffected -- this is the crux of the bug the
     // agent's report correctly identified: registration succeeding is not
     // evidence the session can see the tool.
-    expect(githubManifestTools.map((tool) => tool.name)).toContain("github_bot_whoami");
+    expect(manifestToolNames).toContain("github_bot_whoami");
   });
 
-  it("also fails closed when ctx.runtimeMcp is empty, even if the adapter otherwise attempts attachment", () => {
-    const discovered = simulateSessionToolDiscovery(githubManifestTools, {
-      runtimeMcpPresent: false,
-      gatewayAttached: true,
-    });
+  it("shows all four GitHub tools discoverable in the captured healthy-state fixture (gateway attached)", () => {
+    const healthy = loadSessionToolDiscoveryFixture("healthy-codex_local");
 
-    expect(discovered).toEqual([]);
+    expect(healthy.adapter).toBe("codex_local");
+    expect(healthy.runtimeMcpPresent).toBe(true);
+    expect(healthy.gatewayAttached).toBe(true);
+
+    const missing = manifestToolsMissingFromDiscovery(manifestToolNames, healthy);
+    expect(missing).toEqual([]);
+
+    for (const name of manifestToolNames) {
+      expect(healthy.discoveredTools).toContain(name);
+    }
   });
 
-  it("exposes github_bot_whoami through session discovery only in the healthy state (both signals true)", () => {
-    const discovered = simulateSessionToolDiscovery(githubManifestTools, {
-      runtimeMcpPresent: true,
-      gatewayAttached: true,
-    });
+  it("keeps the incident and healthy fixtures independent captures, not two branches of the same computation", () => {
+    const incident = loadSessionToolDiscoveryFixture("incident-codex_local");
+    const healthy = loadSessionToolDiscoveryFixture("healthy-codex_local");
 
-    expect(discovered).toEqual(githubManifestTools.map((tool) => tool.name));
-    expect(discovered).toContain("github_bot_whoami");
+    // Both fixtures report runtimeMcpPresent: true (credentials were issued
+    // in both cases) -- the only thing that differs is gatewayAttached,
+    // matching the incident's actual root cause. These are read from each
+    // fixture's own recorded fields (not anything computed from src/), so
+    // this keeps the two fixtures honest as independent captures rather
+    // than two branches of a shared formula.
+    expect(incident.runtimeMcpPresent).toBe(healthy.runtimeMcpPresent);
+    expect(incident.gatewayAttached).not.toBe(healthy.gatewayAttached);
+    expect(incident.discoveredTools).not.toEqual(healthy.discoveredTools);
   });
 
   it("documents the upstream ownership boundary for the real end-to-end attachment path", () => {

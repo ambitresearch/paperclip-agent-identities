@@ -1,0 +1,22 @@
+{
+  "$schema": "./session-tool-discovery.schema.json",
+  "fixtureId": "healthy-codex_local",
+  "adapter": "codex_local",
+  "provenance": {
+    "source": "DRO-1163 healthy-state comparison fixture",
+    "capturedAt": "2026-07-24T00:00:00Z",
+    "capturedBy": "hand-authored to represent the healthy state acceptance criterion (attachment succeeds) once paperclipai/paperclip#10346 is fixed upstream",
+    "note": "Represents the target post-fix state: ctx.runtimeMcp is non-empty AND the codex_local adapter attaches the gateway MCP server, so tools/list includes this plugin's managed tools alongside the adapter's default surface. Kept as a fixture (not derived from src/) so the comparison in the spec is against a captured/asserted session result, matching the incident fixture's shape."
+  },
+  "runtimeMcpPresent": true,
+  "gatewayAttached": true,
+  "discoveredTools": [
+    "shell",
+    "read_file",
+    "list_directory",
+    "github_bot_whoami",
+    "github_bot_create_pull_request",
+    "github_bot_push_branch",
+    "github_bot_submit_pull_request_review"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Captured session tool-discovery fixture",
+  "description": "Schema for fixtures under tests/fixtures/session-tool-discovery/. Each fixture captures an adapter's tools/list result independently of this repo's manifest source, so compatibility checks can compare 'globally registered' against 'actually discoverable in a session' without deriving one from the other.",
+  "type": "object",
+  "required": ["fixtureId", "adapter", "provenance", "runtimeMcpPresent", "gatewayAttached", "discoveredTools"],
+  "additionalProperties": false,
+  "properties": {
+    "fixtureId": { "type": "string", "minLength": 1 },
+    "adapter": { "type": "string", "minLength": 1 },
+    "provenance": {
+      "type": "object",
+      "required": ["source", "capturedAt", "capturedBy", "note"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "capturedAt": { "type": "string", "minLength": 1 },
+        "capturedBy": { "type": "string", "minLength": 1 },
+        "note": { "type": "string", "minLength": 1 }
+      }
+    },
+    "runtimeMcpPresent": { "type": "boolean" },
+    "gatewayAttached": { "type": "boolean" },
+    "discoveredTools": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "The literal tool names an agent session could actually call via tools/list, as observed/captured for this adapter state. Deliberately a flat string list independent of any manifest-derived type, so drift between registration and discovery is detectable."
+    }
+  }
+}

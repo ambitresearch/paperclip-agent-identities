@@ -138,6 +138,7 @@ function makeCtx(options: {
     store.set(mapKey(CONFIG_SCOPE), structuredClone(settingsState));
   }
   const eventHandlers = new Map<string, (event: PluginEvent) => Promise<void>>();
+  const jobHandlers = new Map<string, () => Promise<void>>();
   const activeSessions = new Map<string, {
     sessionId: string;
     agentId: string;
@@ -214,7 +215,7 @@ function makeCtx(options: {
       }),
     },
     agents: {
-      list: vi.fn(async () => []),
+      list: vi.fn(async () => [{ id: "agent-1", companyId: "co-1", status: "idle" }]),
       get: vi.fn(async (agentId: string, companyId: string) => ({ id: agentId, companyId })),
       sessions: {
         create: vi.fn(async (agentId: string, companyId: string) => {
@@ -243,17 +244,25 @@ function makeCtx(options: {
       }),
       emit,
     },
+    companies: { list: vi.fn(async () => [{ id: "co-1", name: "Acme" }]) },
+    jobs: {
+      register: vi.fn((jobKey: string, handler: () => Promise<void>) => {
+        jobHandlers.set(jobKey, handler);
+        return () => jobHandlers.delete(jobKey);
+      }),
+    },
     activity: { log: vi.fn(async () => undefined) },
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
   };
-  return { ctx, store, emitted, eventHandlers, activeSessions, sendMessage, close };
+  return { ctx, store, emitted, eventHandlers, jobHandlers, activeSessions, sendMessage, close };
 }
 
 function queueState(store: Map<string, unknown>) {
-  return [...store.entries()].find(([key]) => key.includes("slack-conversations"))?.[1] as {
+  return [...store.entries()].find(([key]) => key.includes("slack-conversations:session:"))?.[1] as {
     pending: Array<{ eventId: string }>;
     active?: { phase: string; turn: { eventId: string }; runId?: string; retireAfter?: number };
     completed: Array<{ eventHash: string; completedAt: number }>;
+    deadLetters: Array<{ eventHash: string; reason: string; attemptCount: number }>;
     sessionId?: string;
   };
 }
@@ -1002,7 +1011,7 @@ describe("Slack provider durable ingress", () => {
       thread_ts: "1719000000.000001",
     }), ctx as never);
 
-    const conversationRecords = [...store.keys()].filter((key) => key.includes("slack-conversations"));
+    const conversationRecords = [...store.keys()].filter((key) => key.includes("slack-conversations:session:"));
     expect(conversationRecords).toHaveLength(1);
     expect(queueState(store).pending.map((turn) => turn.eventId)).toEqual(["Ev001", "Ev002"]);
   });
@@ -1349,7 +1358,9 @@ describe("Slack provider durable ingress", () => {
 
     expect(close).toHaveBeenCalledWith("session-1", "co-1");
     expect(queueState(store).active).toBeUndefined();
-    expect(queueState(store).completed).toHaveLength(1);
+    expect(queueState(store).deadLetters).toEqual([
+      expect.objectContaining({ reason: "ownership-lost" }),
+    ]);
   });
 
   it("ignores pre-accept callbacks for a stale session during missing-session recovery", async () => {
@@ -1391,7 +1402,7 @@ describe("Slack provider durable ingress", () => {
     expect(postReply).not.toHaveBeenCalled();
   });
 
-  it("classifies an ambiguous send failure as uncertain, retires the session, completes the claim, and never auto-resends", async () => {
+  it("classifies an ambiguous send failure as uncertain, dead-letters the claim, and never auto-resends", async () => {
     const retirement = deferred<void>();
     const { ctx, store, sendMessage, close } = makeCtx({
       sendMessage: async () => { throw new Error("connection reset after request write"); },
@@ -1412,7 +1423,9 @@ describe("Slack provider durable ingress", () => {
     retirement.resolve();
     await expect(drain).resolves.toBeUndefined();
     expect(queueState(store).active).toBeUndefined();
-    expect(queueState(store).completed).toHaveLength(1);
+    expect(queueState(store).deadLetters).toEqual([
+      expect.objectContaining({ reason: "ambiguous-send" }),
+    ]);
 
     await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
     await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime());
@@ -1428,7 +1441,9 @@ describe("Slack provider durable ingress", () => {
 
     await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime());
     expect(close).toHaveBeenCalledWith("session-1", "co-1");
-    expect(queueState(store).completed).toHaveLength(1);
+    expect(queueState(store).deadLetters).toEqual([
+      expect.objectContaining({ reason: "ownership-lost" }),
+    ]);
 
     await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
     await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime());
@@ -1565,6 +1580,132 @@ describe("Slack provider durable ingress", () => {
     expect(queueState(store).pending.map((turn) => turn.eventId)).toEqual(["Ev002"]);
   });
 
+  it("scheduled recovery resumes a persisted queue after restart without another webhook", async () => {
+    const store = new Map<string, unknown>();
+    const first = makeCtx({ store });
+    await handleSlackProviderWebhook(delivery("Ev001", "persisted"), first.ctx as never);
+
+    const restarted = makeCtx({ store, sendMessage: async () => ({ runId: "run-scheduled" }) });
+    contributeSlackIngress(restarted.ctx as never, async () => undefined);
+    await restarted.jobHandlers.get("slack-queue-recovery")!();
+
+    expect(restarted.sendMessage).toHaveBeenCalledOnce();
+    expect(restarted.sendMessage.mock.calls[0][2].prompt).toContain('"text":"persisted"');
+  });
+
+  it("coalesces overlapping recovery jobs and preserves FIFO ordering", async () => {
+    const store = new Map<string, unknown>();
+    const first = makeCtx({ store });
+    await handleSlackProviderWebhook(delivery("Ev001", "first"), first.ctx as never);
+    await handleSlackProviderWebhook(delivery("Ev002", "second"), first.ctx as never);
+    const send = deferred<{ runId: string }>();
+    const restarted = makeCtx({ store, sendMessage: async () => send.promise });
+    contributeSlackIngress(restarted.ctx as never, async () => undefined);
+    const recover = restarted.jobHandlers.get("slack-queue-recovery")!;
+
+    const runs = Promise.all([recover(), recover()]);
+    await vi.waitFor(() => expect(restarted.sendMessage).toHaveBeenCalledOnce());
+    expect(restarted.sendMessage.mock.calls[0][2].prompt).toContain('"text":"first"');
+    send.resolve({ runId: "run-first" });
+    await runs;
+
+    expect(restarted.sendMessage).toHaveBeenCalledOnce();
+    expect(queueState(store).pending.map((turn) => turn.eventId)).toEqual(["Ev002"]);
+  });
+
+  it("scheduled recovery leaves a live accepted lease alone and dead-letters it after expiry", async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new Map<string, unknown>();
+      const first = makeCtx({ store, sendMessage: async () => ({ runId: "run-owned" }) });
+      await handleSlackProviderWebhook(delivery("Ev001"), first.ctx as never);
+      const payload = first.ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
+      await drainSlackConversationQueue(first.ctx as never, "co-1", payload, {
+        ...runtime(),
+        acceptedRunLeaseMs: 1_000,
+      });
+
+      const restarted = makeCtx({ store });
+      contributeSlackIngress(restarted.ctx as never, async () => undefined, undefined, 1_000);
+      const recover = restarted.jobHandlers.get("slack-queue-recovery")!;
+      await recover();
+      expect(restarted.close).not.toHaveBeenCalled();
+      expect(queueState(store).active?.phase).toBe("accepted");
+
+      await vi.advanceTimersByTimeAsync(1_001);
+      await recover();
+      expect(restarted.close).toHaveBeenCalledWith("session-1", "co-1");
+      expect(queueState(store).active).toBeUndefined();
+      expect(queueState(store).deadLetters).toEqual([
+        expect.objectContaining({ reason: "lease-expired" }),
+      ]);
+      expect(restarted.sendMessage).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("scheduled recovery retries a successor stranded by a failed self-event emit", async () => {
+    let emitCount = 0;
+    let callback!: (event: AgentSessionEvent) => void | Promise<void>;
+    const store = new Map<string, unknown>();
+    const first = makeCtx({
+      store,
+      emit: async () => {
+        emitCount += 1;
+        if (emitCount === 3) throw new Error("successor kick unavailable");
+      },
+      sendMessage: async (_sessionId, _companyId, options) => {
+        callback = options.onEvent!;
+        return { runId: "run-first" };
+      },
+    });
+    await handleSlackProviderWebhook(delivery("Ev001", "first"), first.ctx as never);
+    await handleSlackProviderWebhook(delivery("Ev002", "second"), first.ctx as never);
+    const payload = createSlackTurnDrainPayload("agent-1", slackConversationKey({
+      teamId: "T111",
+      appId: "A111",
+      channel: "D111",
+    }));
+    await drainSlackConversationQueue(first.ctx as never, "co-1", payload, runtime());
+    await callback({
+      sessionId: "session-1",
+      runId: "run-first",
+      seq: 1,
+      eventType: "done",
+      stream: "system",
+      message: null,
+      payload: null,
+    });
+    await vi.waitFor(() => expect(queueState(store).pending.map((turn) => turn.eventId)).toEqual(["Ev002"]));
+
+    const restarted = makeCtx({ store, sendMessage: async () => ({ runId: "run-second" }) });
+    contributeSlackIngress(restarted.ctx as never, async () => undefined);
+    await restarted.jobHandlers.get("slack-queue-recovery")!();
+    expect(restarted.sendMessage).toHaveBeenCalledOnce();
+    expect(restarted.sendMessage.mock.calls[0][2].prompt).toContain('"text":"second"');
+  });
+
+  it("scheduled recovery dead-letters poison work after the bounded attempt limit", async () => {
+    const store = new Map<string, unknown>();
+    const first = makeCtx({ store });
+    await handleSlackProviderWebhook(delivery("Ev-poison", "secret body"), first.ctx as never);
+    const queued = queueState(store).pending[0] as unknown as { attemptCount: number };
+    queued.attemptCount = 5;
+
+    const restarted = makeCtx({ store });
+    contributeSlackIngress(restarted.ctx as never, async () => undefined);
+    await restarted.jobHandlers.get("slack-queue-recovery")!();
+
+    expect(restarted.sendMessage).not.toHaveBeenCalled();
+    expect(queueState(store).pending).toEqual([]);
+    expect(queueState(store).deadLetters).toEqual([
+      expect.objectContaining({ reason: "attempt-limit", attemptCount: 5 }),
+    ]);
+    expect(JSON.stringify(restarted.ctx.logger.error.mock.calls)).not.toContain("secret body");
+    expect(JSON.stringify(restarted.ctx.logger.error.mock.calls)).not.toContain("Ev-poison");
+  });
+
   it("registers exactly one provider self-event handler", () => {
     const { ctx, eventHandlers } = makeCtx();
     contributeSlackIngress(ctx as never, async () => undefined);
@@ -1685,10 +1826,11 @@ describe("Slack provider durable ingress", () => {
     }
   });
 
-  it("registers no scheduled job for queue draining", () => {
-    const { ctx } = makeCtx();
-    expect((ctx as unknown as { jobs?: unknown }).jobs).toBeUndefined();
+  it("registers the host-backed scheduled recovery job", () => {
+    const { ctx, jobHandlers } = makeCtx();
     contributeSlackIngress(ctx as never, async () => undefined);
     expect(ctx.events.on).toHaveBeenCalledOnce();
+    expect(ctx.jobs.register).toHaveBeenCalledWith("slack-queue-recovery", expect.any(Function));
+    expect(jobHandlers.has("slack-queue-recovery")).toBe(true);
   });
 });

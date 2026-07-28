@@ -1,6 +1,7 @@
 export {
   enqueueSlackConversationTurn,
   getSlackConversationQueueSummary,
+  listSlackConversationKeys,
   isRetryableSlackQueueError,
   slackConversationKey,
   shouldKickSlackConversationQueue,
@@ -14,6 +15,7 @@ export {
   SLACK_TURN_TEXT_MAX_BYTES,
   SLACK_EVENT_ID_MAX_LENGTH,
 } from "./conversation-session.js";
+export { recoverSlackConversationQueues, SLACK_QUEUE_RECOVERY_JOB_KEY } from "./recovery-job.js";
 export type {
   EnqueueSlackConversationTurnInput,
   EnqueueSlackConversationTurnResult,

@@ -94,6 +94,9 @@ describe("Slack durable conversation queue", () => {
   it("fails retryably when a competing write replaces the just-enqueued claim before confirmation", async () => {
     const state = makeState();
     state.set.mockImplementationOnce(async (key: StateKey, value: unknown) => {
+      state.store.set(mapKey(key), structuredClone(value));
+    });
+    state.set.mockImplementationOnce(async (key: StateKey, value: unknown) => {
       const written = structuredClone(value) as {
         pending: Array<{ claimId: string; eventId: string; eventHash: string }>;
       };
@@ -480,6 +483,7 @@ describe("Slack durable conversation queue", () => {
       pendingCount: 1,
       hasSession: false,
       completedCount: 0,
+      deadLetterCount: 0,
       atCapacity: false,
     });
     expect(JSON.stringify(summary)).not.toContain("Ev-summary");

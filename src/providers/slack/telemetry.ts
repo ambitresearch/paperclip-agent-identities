@@ -294,7 +294,15 @@ export async function recordSlackDeliveryOutcome(
       delivery = { ...priorDelivery, lastDrainStartedAt: nowMs };
       break;
     case "completed":
-      delivery = { ...priorDelivery, lastCompletedAt: nowMs };
+      // A later successful completion supersedes an earlier failure record --
+      // clear lastFailure/lastFailedAt so the panel doesn't show a completed
+      // turn and a stale failure as simultaneous, contradictory health.
+      delivery = {
+        ...priorDelivery,
+        lastCompletedAt: nowMs,
+        lastFailedAt: undefined,
+        lastFailure: undefined,
+      };
       break;
     case "failed":
       delivery = {

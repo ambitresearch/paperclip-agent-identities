@@ -144,6 +144,28 @@ describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOut
     });
   });
 
+  it("clears a prior delivery failure once a later turn completes, so health is never contradictory", async () => {
+    const state = makeState();
+    await recordSlackDeliveryOutcome(
+      { state: state as never, agentId: "agent-1", companyId: COMPANY_ID },
+      { phase: "failed", category: "queue_failed" },
+      1_000,
+    );
+    let result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
+    expect(result.delivery?.lastFailure?.category).toBe("queue_failed");
+    expect(result.delivery?.lastFailedAt).toBe(1_000);
+
+    await recordSlackDeliveryOutcome(
+      { state: state as never, agentId: "agent-1", companyId: COMPANY_ID },
+      { phase: "completed" },
+      2_000,
+    );
+    result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
+    expect(result.delivery?.lastCompletedAt).toBe(2_000);
+    expect(result.delivery?.lastFailure).toBeUndefined();
+    expect(result.delivery?.lastFailedAt).toBeUndefined();
+  });
+
   it("scopes telemetry per agent so one agent's record never leaks into another's projection", async () => {
     const state = makeState();
     await recordSlackIngressOutcome(

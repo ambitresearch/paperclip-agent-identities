@@ -1,0 +1,23 @@
+{
+  "$schema": "./session-tool-discovery.schema.json",
+  "fixtureId": "target-codex_local",
+  "adapter": "codex_local",
+  "status": "target-not-captured",
+  "provenance": {
+    "source": "DRO-1163 target/expected-state specification (NOT a captured session result)",
+    "capturedAt": "n/a -- not captured from any real run",
+    "capturedBy": "hand-authored spec of the desired post-fix behavior; no codex_local session has ever produced this tools/list",
+    "note": "THIS IS NOT EVIDENCE. This fixture only documents what tools/list SHOULD contain once paperclipai/paperclip#10346 is fixed upstream and a real codex_local session attaches the gateway MCP server. Per DRO-1163 review, a hypothetical fixture cannot be treated as proof that the healthy path works, and this repo has no way to exercise Paperclip core's codex_local adapter to capture a real one. This file exists only to express the target shape for a future real capture to replace once #10346 ships; the spec that consumes it must not claim the healthy path is verified."
+  },
+  "runtimeMcpPresent": true,
+  "gatewayAttached": true,
+  "discoveredTools": [
+    "shell",
+    "read_file",
+    "list_directory",
+    "github_bot_whoami",
+    "github_bot_create_pull_request",
+    "github_bot_push_branch",
+    "github_bot_submit_pull_request_review"
+  ]
+}

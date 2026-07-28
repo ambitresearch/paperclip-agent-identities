@@ -135,6 +135,22 @@ managed tool gateway, identity policy, and audit path this plugin depends on.
 If an agent hits this gap, escalate it as an adapter bug rather than adding a
 workaround.
 
+This repo's own compatibility check
+(`tests/providers/github/session-tool-availability.spec.ts`) only proves that
+this plugin's global manifest registration is correct; it cannot exercise a
+real Paperclip core `codex_local` session, so it cannot prove attachment
+works. It compares the manifest against a captured incident fixture
+(`tests/fixtures/session-tool-discovery/incident-codex_local.json`,
+reproducing the failure above) and a separate, explicitly-unverified
+target-state fixture
+(`tests/fixtures/session-tool-discovery/target-codex_local.json`) describing
+what `tools/list` should contain once
+[paperclipai/paperclip#10346](https://github.com/paperclipai/paperclip/issues/10346)
+ships -- that second fixture is a specification, not a captured result, and
+must not be read as proof the fix is in place. Until an upstream release
+fixes attachment and a real session capture replaces the target fixture,
+treat `codex_local` tool availability as unverified in production.
+
 ## Edit or remove an identity
 
 Use **Edit** on a configured identity to update its provider metadata or credential references. Use **Delete** to remove only that provider's mapping from Paperclip; deleting Slack also removes that identity's exact released legacy Slack sidecar entry after host/state deletion succeeds, while preserving all GitHub entries. Deleting an identity does not delete the GitHub App or Slack App from the provider, so remove the provider app separately if it is no longer needed.

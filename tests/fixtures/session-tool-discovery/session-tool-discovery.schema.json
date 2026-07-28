@@ -3,11 +3,16 @@
   "title": "Captured session tool-discovery fixture",
   "description": "Schema for fixtures under tests/fixtures/session-tool-discovery/. Each fixture captures an adapter's tools/list result independently of this repo's manifest source, so compatibility checks can compare 'globally registered' against 'actually discoverable in a session' without deriving one from the other.",
   "type": "object",
-  "required": ["fixtureId", "adapter", "provenance", "runtimeMcpPresent", "gatewayAttached", "discoveredTools"],
+  "required": ["fixtureId", "adapter", "status", "provenance", "runtimeMcpPresent", "gatewayAttached", "discoveredTools"],
   "additionalProperties": false,
   "properties": {
     "fixtureId": { "type": "string", "minLength": 1 },
     "adapter": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["captured-incident", "target-not-captured"],
+      "description": "Whether this fixture records an actually-observed session result ('captured-incident') or is merely a hand-authored specification of a not-yet-verified target state ('target-not-captured'). Consumers must not treat a 'target-not-captured' fixture as proof any real session behaves this way."
+    },
     "provenance": {
       "type": "object",
       "required": ["source", "capturedAt", "capturedBy", "note"],

@@ -44,9 +44,12 @@ export interface SessionToolDiscoveryFixtureProvenance {
   readonly note: string;
 }
 
+export type SessionToolDiscoveryFixtureStatus = "captured-incident" | "target-not-captured";
+
 export interface SessionToolDiscoveryFixture {
   readonly fixtureId: string;
   readonly adapter: string;
+  readonly status: SessionToolDiscoveryFixtureStatus;
   readonly provenance: SessionToolDiscoveryFixtureProvenance;
   readonly runtimeMcpPresent: boolean;
   readonly gatewayAttached: boolean;
@@ -56,11 +59,17 @@ export interface SessionToolDiscoveryFixture {
 const REQUIRED_TOP_LEVEL_KEYS = [
   "fixtureId",
   "adapter",
+  "status",
   "provenance",
   "runtimeMcpPresent",
   "gatewayAttached",
   "discoveredTools",
 ] as const;
+
+const VALID_STATUSES: readonly SessionToolDiscoveryFixtureStatus[] = [
+  "captured-incident",
+  "target-not-captured",
+];
 
 const REQUIRED_PROVENANCE_KEYS = ["source", "capturedAt", "capturedBy", "note"] as const;
 
@@ -79,6 +88,12 @@ function assertShape(fixtureId: string, raw: unknown): asserts raw is SessionToo
   }
   if (typeof record.adapter !== "string" || record.adapter.length === 0) {
     throw new Error(`Fixture ${fixtureId} has an invalid adapter`);
+  }
+  if (
+    typeof record.status !== "string" ||
+    !VALID_STATUSES.includes(record.status as SessionToolDiscoveryFixtureStatus)
+  ) {
+    throw new Error(`Fixture ${fixtureId} has an invalid status (must be one of ${VALID_STATUSES.join(", ")})`);
   }
   if (typeof record.runtimeMcpPresent !== "boolean") {
     throw new Error(`Fixture ${fixtureId} has a non-boolean runtimeMcpPresent`);
@@ -131,4 +146,18 @@ export function manifestToolsMissingFromDiscovery(
 ): string[] {
   const discovered = new Set(fixture.discoveredTools);
   return manifestToolNames.filter((name) => !discovered.has(name));
+}
+
+/**
+ * Guard against treating a hand-authored target/expected-state fixture as if
+ * it were verified evidence of real adapter behavior. Throws unless the
+ * fixture's status is "captured-incident" (an actually-observed result).
+ */
+export function assertFixtureIsCapturedEvidence(fixture: SessionToolDiscoveryFixture): void {
+  if (fixture.status !== "captured-incident") {
+    throw new Error(
+      `Fixture ${fixture.fixtureId} has status "${fixture.status}", not "captured-incident" -- ` +
+        "it cannot be used as evidence that a real codex_local session behaves this way.",
+    );
+  }
 }

@@ -3,6 +3,7 @@ import { githubManifestTools } from "../../../src/providers/github/manifest-tool
 import {
   loadSessionToolDiscoveryFixture,
   manifestToolsMissingFromDiscovery,
+  assertFixtureIsCapturedEvidence,
 } from "../../helpers/session-tool-discovery.js";
 
 /**
@@ -16,27 +17,20 @@ import {
  * reported "tool not exposed" was correct; the plugin's global manifest
  * registration was never the failure.
  *
- * Prior revisions of this suite modeled "session discovery" as a pure
- * function of `githubManifestTools` itself plus two hand-set booleans. That
- * model could never disagree with the manifest by construction, so it
- * stayed green even if real `codex_local` discovery were broken -- exactly
- * the regression this tracker requires the check to catch. This revision
- * instead compares `githubManifestTools` (this repo's global-registration
- * signal, fully in this repo's control) against captured fixtures under
- * tests/fixtures/session-tool-discovery/ that record a session's *actual*
- * `tools/list`-observable content for a given adapter state, independent of
- * this repo's manifest source (see each fixture's `provenance` block for how
- * it was captured/authored). The two signals are computed from genuinely
- * different sources, so this suite fails if the fixtures ever showed full
- * discovery for the incident state, and it stays true to the incident by
- * asserting the *specific* missing tools rather than an aggregate boolean.
- *
- * A real running-core, live-session capture is still owned upstream by
- * paperclipai/paperclip#10346 and paperclipai/paperclip#10144 -- this repo
- * cannot stand up Paperclip core's `codex_local` adapter, so the fixtures
- * are the closest independent proxy available locally. See
- * openwiki/guides/agent-identities-setup.md#tool-availability-in-agent-sessions
- * for the operator-facing writeup of this same boundary.
+ * IMPORTANT SCOPE NOTE (per DRO-1163 review): this repo cannot stand up
+ * Paperclip core's `codex_local` adapter or gateway, so it cannot capture or
+ * verify a real "healthy" session result. `tests/fixtures/session-tool-discovery/`
+ * contains exactly one *captured* fixture (`incident-codex_local`, status
+ * `captured-incident`) reproducing the actually-observed incident, and one
+ * *target-spec* fixture (`target-codex_local`, status `target-not-captured`)
+ * that only documents the shape of the desired post-fix state -- it is NOT
+ * evidence that codex_local attachment works, and every assertion below that
+ * touches it is scoped to "this is the target shape", never "this is proven
+ * to work". The real end-to-end fix, its regression coverage, and gateway
+ * telemetry are owned upstream by paperclipai/paperclip#10346 /
+ * paperclipai/paperclip#10144 and remain unresolved; this suite cannot close
+ * that gap, only prevent this repo's own manifest-vs-discovery check from
+ * being tautological.
  */
 describe("global plugin registration vs per-session tool availability", () => {
   const manifestToolNames = githubManifestTools.map((tool) => tool.name);
@@ -50,8 +44,9 @@ describe("global plugin registration vs per-session tool availability", () => {
     expect(manifestToolNames).toContain("github_bot_whoami");
   });
 
-  it("reproduces the incident from a captured fixture: tools globally registered but absent from the session's actual tools/list when the gateway never attached", () => {
+  it("reproduces the incident from a CAPTURED fixture: tools globally registered but absent from the session's actual tools/list when the gateway never attached", () => {
     const incident = loadSessionToolDiscoveryFixture("incident-codex_local");
+    assertFixtureIsCapturedEvidence(incident);
 
     expect(incident.adapter).toBe("codex_local");
     expect(incident.runtimeMcpPresent).toBe(true);
@@ -72,42 +67,39 @@ describe("global plugin registration vs per-session tool availability", () => {
     expect(manifestToolNames).toContain("github_bot_whoami");
   });
 
-  it("shows all four GitHub tools discoverable in the captured healthy-state fixture (gateway attached)", () => {
-    const healthy = loadSessionToolDiscoveryFixture("healthy-codex_local");
+  it("documents (but does NOT verify) the target post-fix shape: the target-spec fixture is explicitly unverified", () => {
+    const target = loadSessionToolDiscoveryFixture("target-codex_local");
 
-    expect(healthy.adapter).toBe("codex_local");
-    expect(healthy.runtimeMcpPresent).toBe(true);
-    expect(healthy.gatewayAttached).toBe(true);
+    // This fixture is a specification, not evidence -- assert that fact
+    // rather than treating its contents as a proven healthy state.
+    expect(target.status).toBe("target-not-captured");
+    expect(() => assertFixtureIsCapturedEvidence(target)).toThrow(/cannot be used as evidence/);
 
-    const missing = manifestToolsMissingFromDiscovery(manifestToolNames, healthy);
+    // The shape itself is still useful to keep aligned with the manifest so
+    // the target spec doesn't silently drift, but this is NOT a claim that
+    // any real codex_local session has ever produced this list.
+    const missing = manifestToolsMissingFromDiscovery(manifestToolNames, target);
     expect(missing).toEqual([]);
-
-    for (const name of manifestToolNames) {
-      expect(healthy.discoveredTools).toContain(name);
-    }
   });
 
-  it("keeps the incident and healthy fixtures independent captures, not two branches of the same computation", () => {
+  it("keeps the incident and target fixtures independent, distinctly-sourced records, not two branches of the same computation", () => {
     const incident = loadSessionToolDiscoveryFixture("incident-codex_local");
-    const healthy = loadSessionToolDiscoveryFixture("healthy-codex_local");
+    const target = loadSessionToolDiscoveryFixture("target-codex_local");
 
-    // Both fixtures report runtimeMcpPresent: true (credentials were issued
-    // in both cases) -- the only thing that differs is gatewayAttached,
-    // matching the incident's actual root cause. These are read from each
-    // fixture's own recorded fields (not anything computed from src/), so
-    // this keeps the two fixtures honest as independent captures rather
-    // than two branches of a shared formula.
-    expect(incident.runtimeMcpPresent).toBe(healthy.runtimeMcpPresent);
-    expect(incident.gatewayAttached).not.toBe(healthy.gatewayAttached);
-    expect(incident.discoveredTools).not.toEqual(healthy.discoveredTools);
+    expect(incident.status).toBe("captured-incident");
+    expect(target.status).toBe("target-not-captured");
+    expect(incident.gatewayAttached).not.toBe(target.gatewayAttached);
+    expect(incident.discoveredTools).not.toEqual(target.discoveredTools);
   });
 
   it("documents the upstream ownership boundary for the real end-to-end attachment path", () => {
     const claim =
       "manifest registration proves global availability only; " +
-      "per-session availability requires adapter runtime-MCP attachment " +
+      "per-session availability requires adapter runtime-MCP attachment, " +
+      "which remains UNVERIFIED by this repo pending upstream fixes " +
       "(tracked: paperclipai/paperclip#10346, paperclipai/paperclip#10144)";
     expect(claim).toContain("paperclipai/paperclip#10346");
     expect(claim).toContain("paperclipai/paperclip#10144");
+    expect(claim).toContain("UNVERIFIED");
   });
 });

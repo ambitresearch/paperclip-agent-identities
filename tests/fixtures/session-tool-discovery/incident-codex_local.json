@@ -2,6 +2,7 @@
   "$schema": "./session-tool-discovery.schema.json",
   "fixtureId": "incident-codex_local",
   "adapter": "codex_local",
+  "status": "captured-incident",
   "provenance": {
     "source": "DRO-1163 incident report (Slack-created Voss run)",
     "capturedAt": "2026-07-24T00:00:00Z",

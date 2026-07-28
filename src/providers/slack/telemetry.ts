@@ -35,8 +35,6 @@ export type SlackDeliveryFailureCategory =
 
 export interface SlackTelemetryFailure {
   readonly category: SlackIngressFailureCategory | SlackDeliveryFailureCategory;
-  /** Short, non-secret human-readable reason (bounded length, no token/header/body content). */
-  readonly reason: string;
   readonly nextStep: string;
   readonly at: number;
 }
@@ -94,18 +92,6 @@ function isFiniteTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-// Defense in depth: reason strings are meant to be short operator-facing
-// descriptions of *why* an ingress/delivery attempt failed, never raw error
-// messages or Slack response bodies -- but since callers still pass a plain
-// string, redact anything shaped like a Slack token before it is ever
-// persisted, exactly like the pipeline's existing `redactSecrets` step
-// (src/lib/redaction.ts) does for tool output.
-const SLACK_TOKEN_SHAPE_PATTERN = /xox[abposr]-[A-Za-z0-9-]+/gi;
-
-function redactReason(reason: string): string {
-  return reason.replace(SLACK_TOKEN_SHAPE_PATTERN, "[redacted]");
-}
-
 function assertSafeScopeSegment(agentId: string): void {
   if (!agentId || agentId !== agentId.trim() || agentId.length > SLACK_TELEMETRY_FIELD_MAX_LENGTH) {
     throw new Error("Slack telemetry agentId is invalid.");
@@ -127,16 +113,14 @@ function parseFailure(value: unknown, categories: readonly string[]): SlackTelem
   if (
     !isRecord(value) ||
     !categories.includes(String(value.category)) ||
-    !isBoundedString(value.reason) ||
     !isBoundedString(value.nextStep, 1024) ||
     !isFiniteTimestamp(value.at) ||
-    Object.keys(value).some((key) => !["category", "reason", "nextStep", "at"].includes(key))
+    Object.keys(value).some((key) => !["category", "nextStep", "at"].includes(key))
   ) {
     return undefined;
   }
   return {
     category: value.category as SlackTelemetryFailure["category"],
-    reason: value.reason,
     nextStep: value.nextStep,
     at: value.at,
   };
@@ -199,10 +183,21 @@ function parseTelemetryRecord(value: unknown): SlackTelemetryRecord | null {
   };
 }
 
-async function readTelemetryRecord(state: PluginStateClient, agentId: string): Promise<SlackTelemetryRecord | null> {
+async function readTelemetryRecord(
+  state: PluginStateClient,
+  agentId: string,
+  companyId: string,
+): Promise<SlackTelemetryRecord | null> {
   const raw = await state.get(slackTelemetryStateKey(agentId));
   if (raw === null || raw === undefined) return null;
-  return parseTelemetryRecord(raw);
+  const parsed = parseTelemetryRecord(raw);
+  if (!parsed) return null;
+  // Enforce that the stored record actually belongs to the caller's company
+  // scope. The state key is scoped by agentId alone, so without this check a
+  // caller who merely knows a valid agentId could read another company's
+  // telemetry for that agent.
+  if (parsed.companyId !== companyId) return null;
+  return parsed;
 }
 
 async function writeTelemetryRecord(
@@ -224,13 +219,13 @@ export interface SlackTelemetryScope {
 
 export type SlackIngressOutcome =
   | { readonly ok: true; readonly eventType: SlackIngressEventTypeCategory }
-  | { readonly ok: false; readonly category: SlackIngressFailureCategory; readonly reason: string };
+  | { readonly ok: false; readonly category: SlackIngressFailureCategory };
 
 export type SlackDeliveryOutcome =
   | { readonly phase: "enqueued" }
   | { readonly phase: "drain_started" }
   | { readonly phase: "completed" }
-  | { readonly phase: "failed"; readonly category: SlackDeliveryFailureCategory; readonly reason: string };
+  | { readonly phase: "failed"; readonly category: SlackDeliveryFailureCategory };
 
 function assertScope(scope: SlackTelemetryScope): void {
   if (!scope || typeof scope !== "object" || !scope.state) {
@@ -249,7 +244,7 @@ export async function recordSlackIngressOutcome(
 ): Promise<void> {
   assertScope(scope);
   if (!isFiniteTimestamp(nowMs)) throw new Error("Slack telemetry timestamp is invalid.");
-  const existing = (await readTelemetryRecord(scope.state, scope.agentId)) ?? {
+  const existing = (await readTelemetryRecord(scope.state, scope.agentId, scope.companyId)) ?? {
     version: SLACK_TELEMETRY_STATE_VERSION,
     companyId: scope.companyId,
   };
@@ -264,7 +259,6 @@ export async function recordSlackIngressOutcome(
         lastRoutingResult: "routing_failed",
         lastFailure: {
           category: outcome.category,
-          reason: redactReason(outcome.reason),
           nextStep: SLACK_INGRESS_FAILURE_GUIDANCE[outcome.category],
           at: nowMs,
         },
@@ -286,7 +280,7 @@ export async function recordSlackDeliveryOutcome(
 ): Promise<void> {
   assertScope(scope);
   if (!isFiniteTimestamp(nowMs)) throw new Error("Slack telemetry timestamp is invalid.");
-  const existing = (await readTelemetryRecord(scope.state, scope.agentId)) ?? {
+  const existing = (await readTelemetryRecord(scope.state, scope.agentId, scope.companyId)) ?? {
     version: SLACK_TELEMETRY_STATE_VERSION,
     companyId: scope.companyId,
   };
@@ -308,7 +302,6 @@ export async function recordSlackDeliveryOutcome(
         lastFailedAt: nowMs,
         lastFailure: {
           category: outcome.category,
-          reason: redactReason(outcome.reason),
           nextStep: SLACK_DELIVERY_FAILURE_GUIDANCE[outcome.category],
           at: nowMs,
         },
@@ -335,8 +328,9 @@ export interface SlackTelemetryProjection {
 export async function getSlackTelemetry(
   state: PluginStateClient,
   agentId: string,
+  companyId: string,
 ): Promise<SlackTelemetryProjection> {
-  const record = await readTelemetryRecord(state, agentId);
+  const record = await readTelemetryRecord(state, agentId, companyId);
   return {
     ingress: record?.ingress ?? null,
     delivery: record?.delivery ?? null,
@@ -361,6 +355,6 @@ export function contributeSlackTelemetryAction(ctx: PluginContext): void {
     if (!companyId) {
       throw new Error("A host-authorized companyId is required to read Slack telemetry.");
     }
-    return getSlackTelemetry(ctx.state, agentId);
+    return getSlackTelemetry(ctx.state, agentId, companyId);
   });
 }

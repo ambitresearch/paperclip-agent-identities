@@ -178,7 +178,6 @@ export type SlackDeliveryFailureCategory = "queue_failed" | "session_failed" | "
 
 export interface SlackTelemetryFailure {
   category: SlackIngressFailureCategory | SlackDeliveryFailureCategory;
-  reason: string;
   nextStep: string;
   at: number;
 }
@@ -1782,7 +1781,7 @@ function SlackIngressStatusPanel(props: {
       {telemetry?.lastFailure && (
         <div style={errorStyle}>
           Last ingress failure ({telemetry.lastFailure.category}) at{" "}
-          {new Date(telemetry.lastFailure.at).toLocaleString()}: {telemetry.lastFailure.reason}
+          {new Date(telemetry.lastFailure.at).toLocaleString()}
           <div style={hintStyle}>Next step: {telemetry.lastFailure.nextStep}</div>
         </div>
       )}
@@ -1835,7 +1834,7 @@ function SlackDeliveryStatusPanel(props: {
       {telemetry?.lastFailure && (
         <div style={errorStyle}>
           Last delivery failure ({telemetry.lastFailure.category}) at{" "}
-          {new Date(telemetry.lastFailure.at).toLocaleString()}: {telemetry.lastFailure.reason}
+          {new Date(telemetry.lastFailure.at).toLocaleString()}
           <div style={hintStyle}>Next step: {telemetry.lastFailure.nextStep}</div>
         </div>
       )}

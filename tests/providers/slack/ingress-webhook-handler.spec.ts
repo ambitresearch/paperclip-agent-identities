@@ -771,7 +771,13 @@ describe("handleSlackWebhook ingress telemetry recording (DRO-1187)", () => {
     );
   });
 
-  it("records a signature failure against the routing-hinted candidate identity, never the unverified event content", async () => {
+  it("never attributes a pre-verification signature failure to an unauthenticated routing-hinted identity", async () => {
+    // Before any signature has matched, team_id/api_app_id are attacker-
+    // controlled routing *hints*, not proof of identity. If a signature
+    // failure were attributed to the hinted candidate agent, anyone who
+    // merely knows (or guesses) a configured team/app pair could poison that
+    // agent's ingress health without ever proving control of the signing
+    // secret. So no ingress outcome is recorded at all for this case.
     const payload = { type: "event_callback", team_id: "T111", api_app_id: "A111", event_id: "Ev902", event: { type: "message" } };
     const rawBody = JSON.stringify(payload);
     const recordIngressOutcome = vi.fn(async () => undefined);
@@ -785,13 +791,6 @@ describe("handleSlackWebhook ingress telemetry recording (DRO-1187)", () => {
     const result = await handleSlackWebhook(deps as never);
 
     expect(result.status).toBe(401);
-    expect(recordIngressOutcome).toHaveBeenCalledWith(
-      "agent-1",
-      expect.objectContaining({ ok: false, category: "signature_failed" }),
-    );
-    // Never the raw event/body content -- only the bounded outcome shape.
-    for (const call of recordIngressOutcome.mock.calls) {
-      expect(JSON.stringify(call)).not.toContain("Ev902");
-    }
+    expect(recordIngressOutcome).not.toHaveBeenCalled();
   });
 });

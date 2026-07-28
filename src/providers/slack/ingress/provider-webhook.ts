@@ -908,7 +908,7 @@ async function retireBlockingTurn(
     reference.companyId,
     reference.agentId,
     { teamId: reference.conversation?.teamId ?? "", appId: reference.conversation?.appId ?? "" },
-    { phase: "failed", category: "session_failed", reason: `Slack conversation turn retired as ${uncertainReason}.` },
+    { phase: "failed", category: "session_failed" },
   );
   deleteController(ctx.state, reference.companyId, reference.agentId, reference.conversationKey, active.attemptId);
   await kickSuccessorIfQueued(ctx, reference);
@@ -1086,7 +1086,7 @@ async function finalizeAmbiguousSend(
     reference.companyId,
     reference.agentId,
     { teamId: reference.conversation?.teamId ?? "", appId: reference.conversation?.appId ?? "" },
-    { phase: "failed", category: "reply_failed", reason: "Slack reply send outcome was ambiguous; not retried." },
+    { phase: "failed", category: "reply_failed" },
   );
   deleteController(ctx.state, reference.companyId, reference.agentId, reference.conversationKey, controller.attemptId);
   await kickSuccessorIfQueued(ctx, reference);
@@ -1236,7 +1236,7 @@ async function finishAcceptedRun(
       { teamId: reference.conversation?.teamId ?? "", appId: reference.conversation?.appId ?? "" },
       event.eventType === "done"
         ? { phase: "completed" }
-        : { phase: "failed", category: "session_failed", reason: "Routed agent session failed." },
+        : { phase: "failed", category: "session_failed" },
     );
     deleteController(ctx.state, reference.companyId, reference.agentId, reference.conversationKey, active.attemptId);
     controller.invalidated = true;
@@ -1292,6 +1292,17 @@ async function startClaimedTurn(
       controller.invalidated = true;
       return;
     }
+    // DRO-1187: record drain/session start only once a session has actually
+    // been claimed/resolved for this turn -- not merely when a queue kick was
+    // scheduled (that only proves an event was enqueued, not that draining
+    // ever started).
+    await recordSlackDeliveryTelemetrySafely(
+      ctx,
+      reference.companyId,
+      reference.agentId,
+      { teamId: state.conversation.teamId, appId: state.conversation.appId },
+      { phase: "drain_started" },
+    );
     const userId = active.turn.event.user;
     let sender: SlackSenderProfile | undefined;
     if (userId) {
@@ -1759,7 +1770,6 @@ export async function handleSlackProviderWebhook(
         await recordSlackDeliveryTelemetrySafely(ctx, companyId, dispatch.agentId, conversation, {
           phase: "failed",
           category: "queue_failed",
-          reason: "Durable turn enqueue failed.",
         });
         throw error instanceof Error ? error : new Error("Slack durable turn enqueue failed.");
       }
@@ -1781,11 +1791,12 @@ export async function handleSlackProviderWebhook(
         await recordSlackDeliveryTelemetrySafely(ctx, companyId, dispatch.agentId, conversation, {
           phase: "failed",
           category: "session_failed",
-          reason: "Queue drain/session kick failed.",
         });
         throw error instanceof Error ? error : new Error("Slack durable queue kick failed.");
       }
-      await recordSlackDeliveryTelemetrySafely(ctx, companyId, dispatch.agentId, conversation, { phase: "drain_started" });
+      // DRO-1187: drain_started is recorded from startClaimedTurn once a
+      // session has actually been claimed/resolved -- scheduling this kick
+      // only proves an event was enqueued, not that draining began.
       if (queued.status === "duplicate") {
         safeLog(ctx.logger, "info", "Slack ingress: duplicate event re-kicked its durable conversation queue", {
           agentId: dispatch.agentId,

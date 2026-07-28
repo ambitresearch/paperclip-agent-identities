@@ -834,7 +834,6 @@ describe("Slack Ingress/Delivery telemetry panels (get-slack-telemetry, DRO-1187
         lastRoutingResult: "routing_failed",
         lastFailure: {
           category: "routing_failed",
-          reason: "No single configured agent identity matched.",
           nextStep: "Verify exactly one identity is configured for this Slack app and workspace.",
           at: Date.now(),
         },
@@ -862,7 +861,6 @@ describe("Slack Ingress/Delivery telemetry panels (get-slack-telemetry, DRO-1187
         lastFailedAt: Date.now(),
         lastFailure: {
           category: "queue_failed",
-          reason: "Durable turn enqueue failed.",
           nextStep: "Slack will retry the delivery; if this persists, a conversation may be stuck.",
           at: Date.now(),
         },

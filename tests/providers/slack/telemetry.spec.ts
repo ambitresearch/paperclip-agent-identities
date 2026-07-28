@@ -9,6 +9,7 @@ import {
 } from "../../../src/providers/slack/telemetry.js";
 
 const COMPANY_ID = "00000000-0000-4000-8000-0000000000c1";
+const OTHER_COMPANY_ID = "00000000-0000-4000-8000-0000000000c2";
 
 // Mirrors the `makeState` fixture pattern used in
 // ingress-conversation-queue.spec.ts (a bounded in-memory PluginStateClient
@@ -35,7 +36,7 @@ function makeState(store = new Map<string, unknown>()) {
 describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOutcome", () => {
   it("reports null ingress/delivery when nothing has ever been observed", async () => {
     const state = makeState();
-    const result = await getSlackTelemetry(state as never, "agent-1");
+    const result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
     expect(result).toEqual({ ingress: null, delivery: null });
   });
 
@@ -46,7 +47,7 @@ describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOut
       { ok: true, eventType: "app_mention" },
       1_000,
     );
-    const result = await getSlackTelemetry(state as never, "agent-1");
+    const result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
     expect(result.ingress).toEqual({
       lastVerifiedEventAt: 1_000,
       lastEventType: "app_mention",
@@ -55,18 +56,17 @@ describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOut
     expect(result.delivery).toBeNull();
   });
 
-  it("records a routing failure with bounded category, reason, and operator guidance", async () => {
+  it("records a routing failure with bounded category and operator guidance", async () => {
     const state = makeState();
     await recordSlackIngressOutcome(
       { state: state as never, agentId: "agent-1", companyId: COMPANY_ID },
-      { ok: false, category: "routing_failed", reason: "No single configured agent identity matched." },
+      { ok: false, category: "routing_failed" },
       2_000,
     );
-    const result = await getSlackTelemetry(state as never, "agent-1");
+    const result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
     expect(result.ingress?.lastRoutingResult).toBe("routing_failed");
     expect(result.ingress?.lastFailure).toEqual({
       category: "routing_failed",
-      reason: "No single configured agent identity matched.",
       nextStep: SLACK_INGRESS_FAILURE_GUIDANCE.routing_failed,
       at: 2_000,
     });
@@ -76,10 +76,10 @@ describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOut
     const state = makeState();
     await recordSlackIngressOutcome(
       { state: state as never, agentId: "agent-1", companyId: COMPANY_ID },
-      { ok: false, category: "signature_failed", reason: "Signature mismatch." },
+      { ok: false, category: "signature_failed" },
       3_000,
     );
-    const result = await getSlackTelemetry(state as never, "agent-1");
+    const result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
     expect(result.ingress?.lastFailure?.category).toBe("signature_failed");
     expect(result.ingress?.lastFailure?.nextStep).toBe(SLACK_INGRESS_FAILURE_GUIDANCE.signature_failed);
   });
@@ -88,13 +88,12 @@ describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOut
     const state = makeState();
     await recordSlackDeliveryOutcome(
       { state: state as never, agentId: "agent-1", companyId: COMPANY_ID },
-      { phase: "failed", category: "queue_failed", reason: "Queue is full." },
+      { phase: "failed", category: "queue_failed" },
       4_000,
     );
-    const result = await getSlackTelemetry(state as never, "agent-1");
+    const result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
     expect(result.delivery?.lastFailure).toEqual({
       category: "queue_failed",
-      reason: "Queue is full.",
       nextStep: SLACK_DELIVERY_FAILURE_GUIDANCE.queue_failed,
       at: 4_000,
     });
@@ -105,18 +104,18 @@ describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOut
     const state = makeState();
     await recordSlackDeliveryOutcome(
       { state: state as never, agentId: "agent-1", companyId: COMPANY_ID },
-      { phase: "failed", category: "session_failed", reason: "Session could not start." },
+      { phase: "failed", category: "session_failed" },
       5_000,
     );
-    let result = await getSlackTelemetry(state as never, "agent-1");
+    let result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
     expect(result.delivery?.lastFailure?.category).toBe("session_failed");
 
     await recordSlackDeliveryOutcome(
       { state: state as never, agentId: "agent-1", companyId: COMPANY_ID },
-      { phase: "failed", category: "reply_failed", reason: "Reply send was ambiguous." },
+      { phase: "failed", category: "reply_failed" },
       6_000,
     );
-    result = await getSlackTelemetry(state as never, "agent-1");
+    result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
     expect(result.delivery?.lastFailure?.category).toBe("reply_failed");
   });
 
@@ -137,7 +136,7 @@ describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOut
       { phase: "completed" },
       1_200,
     );
-    const result = await getSlackTelemetry(state as never, "agent-1");
+    const result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
     expect(result.delivery).toEqual({
       lastEnqueuedAt: 1_000,
       lastDrainStartedAt: 1_100,
@@ -152,31 +151,45 @@ describe("getSlackTelemetry / recordSlackIngressOutcome / recordSlackDeliveryOut
       { ok: true, eventType: "message" },
       1_000,
     );
-    const other = await getSlackTelemetry(state as never, "agent-2");
+    const other = await getSlackTelemetry(state as never, "agent-2", COMPANY_ID);
     expect(other).toEqual({ ingress: null, delivery: null });
   });
 
-  it("never contains secret-shaped content (tokens, signing secrets) for bounded, non-secret reason text", async () => {
-    // recordSlackIngressOutcome/recordSlackDeliveryOutcome accept `reason` as
-    // a caller-supplied string. Every real call site (webhook-handler.ts,
-    // provider-webhook.ts) passes only fixed, bounded, non-secret literal
-    // text -- never a raw caught error message or Slack response body, which
-    // could otherwise leak operational detail. This test exercises exactly
-    // that contract: bounded operator-facing text round-trips untouched, and
-    // the module itself introduces no secret-shaped content anywhere in the
-    // persisted record (categories, timestamps, guidance strings).
+  it("never leaks another company's telemetry for a known agentId (cross-company scope enforcement)", async () => {
+    // The state key is scoped only by agentId, so an agentId alone must never
+    // be sufficient to read another company's telemetry -- the stored
+    // record's own companyId must match the caller's authorized companyId.
+    const state = makeState();
+    await recordSlackIngressOutcome(
+      { state: state as never, agentId: "shared-agent", companyId: COMPANY_ID },
+      { ok: true, eventType: "message" },
+      1_000,
+    );
+    const ownerResult = await getSlackTelemetry(state as never, "shared-agent", COMPANY_ID);
+    expect(ownerResult.ingress?.lastRoutingResult).toBe("routed");
+
+    const otherCompanyResult = await getSlackTelemetry(state as never, "shared-agent", OTHER_COMPANY_ID);
+    expect(otherCompanyResult).toEqual({ ingress: null, delivery: null });
+  });
+
+  it("never contains secret-shaped content anywhere in the persisted record", async () => {
+    // Failure reasons are no longer caller-supplied free text -- only a fixed,
+    // bounded category and its associated static guidance string are ever
+    // persisted. This test exercises exactly that contract: the module
+    // introduces no secret-shaped content anywhere in the persisted record
+    // (categories, timestamps, guidance strings).
     const state = makeState();
     await recordSlackIngressOutcome(
       { state: state as never, agentId: "agent-1", companyId: COMPANY_ID },
-      { ok: false, category: "signature_failed", reason: "Slack request signature did not verify." },
+      { ok: false, category: "signature_failed" },
       1_000,
     );
     await recordSlackDeliveryOutcome(
       { state: state as never, agentId: "agent-1", companyId: COMPANY_ID },
-      { phase: "failed", category: "reply_failed", reason: "Slack reply send outcome was ambiguous." },
+      { phase: "failed", category: "reply_failed" },
       2_000,
     );
-    const result = await getSlackTelemetry(state as never, "agent-1");
+    const result = await getSlackTelemetry(state as never, "agent-1", COMPANY_ID);
     const serialized = JSON.stringify(result);
     expect(serialized).not.toMatch(/xoxb-|xoxp-|"token"|"signingSecret"|Authorization:|Bearer /);
     for (const value of state.store.values()) {
@@ -233,5 +246,18 @@ describe("contributeSlackTelemetryAction", () => {
     contributeSlackTelemetryAction(ctx as never);
     const handler = registered.get("get-slack-telemetry")!;
     await expect(handler({ agentId: "agent-1" }, { companyId: null })).rejects.toThrow(/companyId/);
+  });
+
+  it("never returns another company's telemetry through the registered action for a shared agentId", async () => {
+    const { ctx, registered, state } = fakeCtx();
+    await recordSlackIngressOutcome(
+      { state: state as never, agentId: "shared-agent", companyId: COMPANY_ID },
+      { ok: true, eventType: "message" },
+      1_000,
+    );
+    contributeSlackTelemetryAction(ctx as never);
+    const handler = registered.get("get-slack-telemetry")!;
+    const result = await handler({ agentId: "shared-agent" }, { companyId: OTHER_COMPANY_ID });
+    expect(result).toEqual({ ingress: null, delivery: null });
   });
 });

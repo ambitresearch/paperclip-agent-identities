@@ -1652,11 +1652,12 @@ describe("Slack provider durable ingress", () => {
       status: 401,
       body: { error: "unauthorized" },
     });
-    // A signature failure attributed to the routing-hinted identity still
-    // records a bounded ingress telemetry observation (DRO-1187) -- no
+    // A pre-verification signature failure is never attributed to any
+    // identity (including the routing-hinted candidate, which is still
+    // unauthenticated at this point) -- no telemetry state is created, and no
     // queue/drain state is created since the event was never trusted.
     expect([...store.keys()].sort()).toEqual(
-      [mapKey(CONFIG_SCOPE), "agent:agent-1:slack-telemetry:health"].sort(),
+      [mapKey(CONFIG_SCOPE)].sort(),
     );
     expect(ctx.events.emit).not.toHaveBeenCalled();
   });
@@ -1711,7 +1712,7 @@ describe("Slack provider durable ingress", () => {
     it("records a routed ingress event on a successfully dispatched webhook", async () => {
       const { ctx } = makeCtx();
       await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
-      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1");
+      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
       expect(telemetry.ingress?.lastRoutingResult).toBe("routed");
       expect(telemetry.ingress?.lastEventType).toBe("message");
     });
@@ -1723,7 +1724,7 @@ describe("Slack provider durable ingress", () => {
         ctx as never,
       ).catch(() => undefined));
       await Promise.all(full);
-      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1");
+      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
       // Either the queue stayed within bounds (no failure recorded) or it hit
       // capacity and recorded a bounded queue_failed delivery failure -- both
       // are acceptable outcomes of this burst; the assertion only pins down
@@ -1740,12 +1741,30 @@ describe("Slack provider durable ingress", () => {
       const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
       await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime());
       await vi.waitFor(async () => {
-        const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1");
+        const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
         expect(telemetry.delivery?.lastCompletedAt).toBeTruthy();
       });
-      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1");
+      const telemetry = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
       expect(telemetry.delivery?.lastEnqueuedAt).toBeTruthy();
       expect(telemetry.delivery?.lastDrainStartedAt).toBeTruthy();
+    });
+
+    it("does not record drain_started merely from scheduling the queue kick, only once a session is actually claimed", async () => {
+      // DRO-1187 review finding: drain_started must reflect an actual
+      // claim/session start, not just that a self-event kick was scheduled.
+      const { ctx } = makeCtx();
+      await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
+      // The webhook enqueued the turn and scheduled the drain kick, but the
+      // drain worker itself has not run yet -- lastDrainStartedAt must still
+      // be absent even though enqueue is recorded.
+      const beforeDrain = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
+      expect(beforeDrain.delivery?.lastEnqueuedAt).toBeTruthy();
+      expect(beforeDrain.delivery?.lastDrainStartedAt).toBeUndefined();
+
+      const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
+      await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime());
+      const afterDrain = await getSlackTelemetry(ctx.state as never, "agent-1", "co-1");
+      expect(afterDrain.delivery?.lastDrainStartedAt).toBeTruthy();
     });
   });
 });

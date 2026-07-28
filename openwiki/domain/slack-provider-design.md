@@ -786,23 +786,27 @@ enum categories (`SlackIngressEventTypeCategory`, `SlackIngressFailureCategory`,
 `SlackDeliveryFailureCategory`), and the same correlation-safe `teamId`/
 `appId`/`companyId` identifiers already treated as safe throughout this
 provider (never message text, prompts, model output, tokens, signing
-secrets, HTTP headers, or stack traces). Every call site that supplies a
-failure `reason` passes only a short, already-authored description (never a
-raw thrown `Error.message` or Slack response body); `redactReason` is an
-additional defense-in-depth pass that strips any Slack token-shaped
-substring before persistence. There is no historical log — each write
+secrets, HTTP headers, or stack traces). There is no caller-supplied
+free-text `reason` field at all: every failure carries only its closed-enum
+`category` and that category's fixed, static `nextStep` guidance string, so
+there is no per-call text that could ever carry a raw thrown `Error.message`
+or Slack response body into storage. There is no historical log — each write
 replaces the single bounded record for that (companyId, agentId) scope, so
 there is no unbounded growth path. The read action
 (`contributeSlackTelemetryAction`/`get-slack-telemetry`) validates
 `agentId`/`companyId` from `params`/`context` exactly like
 `check-slack-connection` (`context.companyId` is host-authorized, never a
-caller-supplied `params.companyId`) and scopes storage per-agent the same
-way `conversation-session.ts` scopes its durable queue state, so one agent's
-record cannot be read under another's key. Test coverage
+caller-supplied `params.companyId`), and — because the underlying state key
+is scoped by `agentId` alone, not `companyId` — `getSlackTelemetry` also
+checks the stored record's own `companyId` against the caller's authorized
+`companyId` before returning it, so a known/guessed `agentId` alone can
+never disclose another company's telemetry for that agent. Test coverage
 (`tests/providers/slack/telemetry.spec.ts`) explicitly asserts per-agent
-scoping (one agent's record never leaks into another's projection) and that
-a token-shaped reason string never survives into the persisted record or
-its projection.
+scoping (one agent's record never leaks into another's projection), a
+dedicated cross-company case (a shared `agentId` recorded under one company
+never projects for a different caller `companyId`, at both the module and
+registered-action layers), and that
+the persisted record and its projection never contain secret-shaped content.
 
 ## 10. Implementation notes and deferred questions
 

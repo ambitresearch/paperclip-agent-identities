@@ -545,9 +545,15 @@ function projectQueuedTurnEvent(event: unknown): SlackQueuedTurnEvent {
       throw new Error("Slack app_mention event has an invalid conversation ID.");
     }
     const prefix = channel.charAt(0);
+    if (prefix === "D" || channelType === "im") {
+      // app_mention is never valid for a direct-message conversation, even
+      // when an explicit channel_type: "im" is supplied alongside a D... ID
+      // (the two would otherwise "match" and slip through as a direct turn
+      // downstream, bypassing the non-direct invariant entirely).
+      throw new Error("Slack app_mention event cannot target a direct-message conversation.");
+    }
     if (channelType) {
       const matchesPrefix =
-        (channelType === "im" && prefix === "D") ||
         (channelType === "channel" && prefix === "C") ||
         ((channelType === "group" || channelType === "mpim") && prefix === "G");
       if (!matchesPrefix) {

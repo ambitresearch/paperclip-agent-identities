@@ -982,6 +982,17 @@ describe("Slack provider durable ingress", () => {
     expect(queueState(store)).toBeUndefined();
   });
 
+  it("fails closed for an app_mention with an explicit im channel_type and a D… ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-dm-mention-explicit", "hello", {
+      type: "app_mention",
+      channel_type: "im",
+      channel: "D111",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
   it("fails closed for an app_mention with an unknown-prefix conversation ID", async () => {
     const { ctx, store } = makeCtx();
     await expect(handleSlackProviderWebhook(delivery("Ev-bad-prefix", "hello", {

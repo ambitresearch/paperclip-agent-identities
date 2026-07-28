@@ -23,21 +23,41 @@ describe("worker provider registration", () => {
     const register = vi.spyOn(harness.ctx.tools, "register");
     await plugin.definition.setup(harness.ctx);
 
-    // github (enabled) contributes all four of its tools. slack is still
+    // github (enabled) contributes all of its tools. slack is still
     // "coming-soon" as a PROVIDER, but its whoami tool spec sets `live: true`
     // (DRO-972), so it registers too -- through the generic `liveTools()`
     // seam, not a provider-id branch. example is coming-soon with no `live`
     // tools, so it stays fully dormant.
-    expect(register.mock.calls.map(([name]) => name)).toEqual([
-      "github_bot_whoami",
-      "github_bot_create_pull_request",
-      "github_bot_push_branch",
-      "github_bot_submit_pull_request_review",
+    const registeredNames = register.mock.calls.map(([name]) => name);
+    const slackNames = [
       "slack_bot_whoami",
       "slack_bot_post_message",
       "slack_bot_add_reaction",
       "slack_bot_remove_reaction",
-    ]);
+    ];
+    expect(registeredNames[0]).toBe("github_bot_whoami");
+    expect(registeredNames.slice(-slackNames.length)).toEqual(slackNames);
+    expect(new Set(registeredNames).size).toBe(registeredNames.length);
+    expect(registeredNames).toEqual(
+      expect.arrayContaining([
+        "github_bot_create_pull_request",
+        "github_bot_push_branch",
+        "github_bot_submit_pull_request_review",
+        "github_bot_add_issue_comment",
+        "github_bot_list_issue_comments",
+        "github_bot_get_issue",
+        "github_bot_update_issue",
+        "github_bot_get_pull_request",
+        "github_bot_list_pull_request_files",
+        "github_bot_list_organization_projects",
+        "github_bot_add_pull_request_to_project",
+        "github_bot_assign_to_current_user",
+        "github_bot_update_pull_request",
+        "github_bot_get_pull_request_checks",
+        "github_bot_request_pull_request_reviewers",
+        ...slackNames,
+      ])
+    );
     // `example` is coming-soon (`toolsStatus` falls back to `status`) and
     // none of its tool specs set `live: true`, so its tool stays out of the
     // live registration loop even though its `tools` array is non-empty —

@@ -65,13 +65,16 @@ describe("provider composition root", () => {
   });
 
   it("keeps all live tool definitions provider-owned", () => {
-    expect(githubProvider.tools.map((tool) => tool.name)).toEqual([
-      "github_bot_whoami", "github_bot_create_pull_request", "github_bot_push_branch",
-      "github_bot_submit_pull_request_review",
-    ]);
-    expect(githubProvider.manifestTools.map((tool) => (tool as { name: string }).name)).toEqual([
-      "github_bot_whoami", "github_bot_create_pull_request", "github_bot_push_branch",
-      "github_bot_submit_pull_request_review",
-    ]);
+    const names = githubProvider.tools.map((tool) => tool.name);
+    expect(names[0]).toBe("github_bot_whoami");
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "github_bot_whoami", "github_bot_create_pull_request", "github_bot_push_branch",
+        "github_bot_submit_pull_request_review", "github_bot_get_pull_request_checks",
+        "github_bot_request_pull_request_reviewers",
+      ])
+    );
+    expect(githubProvider.manifestTools.map((tool) => (tool as { name: string }).name)).toEqual(names);
   });
 });

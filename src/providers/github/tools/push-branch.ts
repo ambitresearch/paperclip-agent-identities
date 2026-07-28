@@ -108,7 +108,15 @@ export function __resetGitCommandRunnerForTests(): void {
   runGitCommand = runGitCommandDefault;
 }
 
-function redactSecretText(input: string, secretValues: string[]): string {
+// Exposed so other provider tools (e.g. create-pull-request.ts) can reuse the
+// exact same git plumbing rather than re-implementing push/verify logic.
+export function runGitCommandForTools(input: GitCommandRunnerInput): Promise<GitCommandResult> {
+  return runGitCommand(input);
+}
+
+export type { GitCommandResult, GitCommandRunnerInput };
+
+export function redactSecretText(input: string, secretValues: string[]): string {
   let output = input;
   for (const secretValue of secretValues) {
     if (!secretValue) {
@@ -127,7 +135,7 @@ function normalizeExpectedRepository(input: string): string | null {
   return normalizeGitHubRepoRef(input)?.fullName ?? null;
 }
 
-function validateBranchName(branch: string): string | null {
+export function validateBranchName(branch: string): string | null {
   const trimmed = branch.trim();
   if (!trimmed) {
     return null;
@@ -141,7 +149,7 @@ function validateBranchName(branch: string): string | null {
   return trimmed;
 }
 
-function validateRemoteName(remote: string): string | null {
+export function validateRemoteName(remote: string): string | null {
   const trimmed = remote.trim();
   if (!trimmed) {
     return null;
@@ -175,7 +183,7 @@ function isStaleLeaseRejection(stderr: string): boolean {
   return /!\s*\[rejected\][^\n]*\(stale info\)/.test(stderr);
 }
 
-function toBranchRef(branch: string): string {
+export function toBranchRef(branch: string): string {
   return branch.startsWith("refs/heads/") ? branch : `refs/heads/${branch}`;
 }
 
@@ -183,7 +191,11 @@ function usableWorkspacePath(path: string | null | undefined): string | null {
   return path && path.trim().length > 0 ? path : null;
 }
 
-async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext): Promise<string | null> {
+// Exposed so other provider tools (e.g. create-pull-request.ts) can resolve
+// the same run-scoped execution workspace rather than falling back to the
+// project's primary workspace, which may differ from the worktree the
+// current run's commits actually live in.
+export async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext): Promise<string | null> {
   const projectId = usableWorkspacePath(runCtx.projectId);
   const issues = await ctx.issues.list({
     companyId: runCtx.companyId,
@@ -215,7 +227,7 @@ async function resolveWorkspacePath(ctx: PluginContext, runCtx: ToolRunContext):
   return usableWorkspacePath(primaryWorkspace?.path);
 }
 
-async function buildGitAuthEnvironment(token: string): Promise<{ env: NodeJS.ProcessEnv; cleanup: () => Promise<void> }> {
+export async function buildGitAuthEnvironment(token: string): Promise<{ env: NodeJS.ProcessEnv; cleanup: () => Promise<void> }> {
   const tempDir = await mkdtemp(join(tmpdir(), "paperclip-github-bot-push-"));
   const askPassPath = join(tempDir, "askpass.sh");
   const script = `#!/bin/sh

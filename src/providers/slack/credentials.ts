@@ -105,37 +105,27 @@ export async function verifySlackToken(
     throw new Error("Slack token verification timeout is invalid.");
   }
 
-  // The AbortController/timeout must stay live across *both* the fetch()
-  // call and the response.json() body-read below — clearing it right after
-  // fetch() resolves would leave body parsing unbounded again (a slow/hung
-  // stream can still stall past the documented budget even once headers
-  // arrive promptly). Only clear it once both steps are done.
+  // Keep one deadline across both the fetch and body read. Race locally as
+  // well as passing the signal because the host-proxied plugin fetch may not
+  // carry AbortSignal across its RPC boundary.
   const controller = new AbortController();
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    controller.signal.addEventListener(
+      "abort",
+      () => reject(new DOMException("Slack token verification timed out.", "AbortError")),
+      { once: true },
+    );
+  });
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl("https://slack.com/api/auth.test", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    });
-
-    // response.json() does not itself observe an AbortSignal passed to
-    // fetch() — some runtimes/mocks abort the in-flight body read (which
-    // response.json().catch below handles), but others (e.g. a stream that
-    // simply never closes) leave json() hanging forever even after the
-    // controller aborts. Race the body read against the same abort signal so
-    // a hung body stream cannot outlive the documented timeout budget either.
-    const abortPromise = new Promise<never>((_resolve, reject) => {
-      if (controller.signal.aborted) {
-        reject(new DOMException("Slack token verification timed out.", "AbortError"));
-        return;
-      }
-      controller.signal.addEventListener(
-        "abort",
-        () => reject(new DOMException("Slack token verification timed out.", "AbortError")),
-        { once: true },
-      );
-    });
+    const response = await Promise.race([
+      fetchImpl("https://slack.com/api/auth.test", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      }),
+      abortPromise,
+    ]);
 
     const body = await Promise.race([
       response.json().catch((error: unknown) => {

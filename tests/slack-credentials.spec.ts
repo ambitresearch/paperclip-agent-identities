@@ -67,12 +67,12 @@ describe("discoverSlackAppId", () => {
 });
 
 describe("verifySlackToken", () => {
-  it("aborts a hung auth.test call at the configured timeout instead of hanging indefinitely", async () => {
-    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
-    }));
+  it("times out a hung auth.test call even when fetch ignores AbortSignal", async () => {
+    const fetchImpl = vi.fn(async () => new Promise<Response>(() => {}));
 
-    await expect(verifySlackToken("xoxb-test", fetchImpl as never, 10)).rejects.toThrow(/abort/i);
+    await expect(verifySlackToken("xoxb-test", fetchImpl as never, 10)).rejects.toMatchObject({
+      name: "AbortError",
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 

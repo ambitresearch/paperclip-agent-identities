@@ -4,6 +4,12 @@
   "description": "Schema for captured evidence and unverified target specifications under tests/fixtures/session-tool-discovery/. Fixture tool lists remain independent of this repo's manifest source, so compatibility checks can compare 'globally registered' against 'discoverable in a session' without deriving one from the other.",
   "type": "object",
   "required": ["$schema", "fixtureId", "adapter", "status", "provenance", "runtimeMcpPresent", "gatewayAttached", "discoveredTools"],
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "captured-incident" } } },
+      "then": { "required": ["globallyRegisteredTools"] }
+    }
+  ],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -30,6 +36,11 @@
     },
     "runtimeMcpPresent": { "type": "boolean" },
     "gatewayAttached": { "type": "boolean" },
+    "globallyRegisteredTools": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Tool names the plugin manifest registered when a captured incident occurred. This freezes historical registration evidence so later manifest additions do not rewrite the incident claim."
+    },
     "discoveredTools": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },

@@ -39,8 +39,11 @@ describe("global plugin registration vs per-session tool availability", () => {
   const registeredGitHubToolNames = manifestToolNames.filter((name) =>
     name.startsWith("github_bot_"),
   );
+  const registeredSlackToolNames = manifestToolNames.filter((name) =>
+    name.startsWith("slack_bot_"),
+  );
 
-  it("composes the incident-era GitHub tools into the final plugin manifest", () => {
+  it("still composes the captured incident-era GitHub tools into the final plugin manifest", () => {
     expect(registeredGitHubToolNames).toEqual(expect.arrayContaining([
       "github_bot_whoami",
       "github_bot_create_pull_request",
@@ -64,8 +67,21 @@ describe("global plugin registration vs per-session tool availability", () => {
     // any of these tool names.
     expect(incident.discoveredTools).not.toContain("github_bot_whoami");
 
-    const missing = manifestToolsMissingFromDiscovery(registeredGitHubToolNames, incident);
-    expect(missing.sort()).toEqual([...registeredGitHubToolNames].sort());
+    const incidentRegisteredGitHubToolNames = (incident.globallyRegisteredTools ?? []).filter(
+      (name) => name.startsWith("github_bot_"),
+    );
+    expect(incidentRegisteredGitHubToolNames).toEqual([
+      "github_bot_whoami",
+      "github_bot_create_pull_request",
+      "github_bot_push_branch",
+      "github_bot_submit_pull_request_review",
+    ]);
+    expect(registeredGitHubToolNames).toEqual(
+      expect.arrayContaining(incidentRegisteredGitHubToolNames),
+    );
+
+    const missing = manifestToolsMissingFromDiscovery(incidentRegisteredGitHubToolNames, incident);
+    expect(missing.sort()).toEqual([...incidentRegisteredGitHubToolNames].sort());
 
     // Registration itself is unaffected -- this is the crux of the bug the
     // agent's report correctly identified: registration succeeding is not
@@ -84,8 +100,14 @@ describe("global plugin registration vs per-session tool availability", () => {
     // The shape itself is still useful to keep aligned with the manifest so
     // the target spec doesn't silently drift, but this is NOT a claim that
     // any real codex_local session has ever produced this list.
-    const missing = manifestToolsMissingFromDiscovery(registeredGitHubToolNames, target);
-    expect(missing).toEqual([]);
+    const targetGitHubToolNames = target.discoveredTools.filter((name) =>
+      name.startsWith("github_bot_"),
+    );
+    const targetSlackToolNames = target.discoveredTools.filter((name) =>
+      name.startsWith("slack_bot_"),
+    );
+    expect([...targetGitHubToolNames].sort()).toEqual([...registeredGitHubToolNames].sort());
+    expect([...targetSlackToolNames].sort()).toEqual([...registeredSlackToolNames].sort());
   });
 
   it("keeps the incident and target fixtures independent, distinctly-sourced records, not two branches of the same computation", () => {

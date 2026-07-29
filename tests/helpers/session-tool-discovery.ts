@@ -31,7 +31,7 @@
  * signal computed from the other.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { Ajv, type AnySchema } from "ajv";
@@ -59,6 +59,7 @@ export interface SessionToolDiscoveryFixture {
   readonly provenance: SessionToolDiscoveryFixtureProvenance;
   readonly runtimeMcpPresent: boolean;
   readonly gatewayAttached: boolean;
+  readonly globallyRegisteredTools?: readonly string[];
   readonly discoveredTools: readonly string[];
 }
 
@@ -86,13 +87,6 @@ export function loadSessionToolDiscoveryFixture(fixtureFile: string): SessionToo
   const raw: unknown = JSON.parse(readFileSync(filePath, "utf8"));
   assertSchemaValid(fixtureFile, raw);
   return raw;
-}
-
-/** Load every fixture in tests/fixtures/session-tool-discovery/. */
-export function loadAllSessionToolDiscoveryFixtures(): SessionToolDiscoveryFixture[] {
-  return readdirSync(FIXTURES_DIR)
-    .filter((file) => file.endsWith(".json") && !file.endsWith(".schema.json"))
-    .map((file) => loadSessionToolDiscoveryFixture(file.replace(/\.json$/, "")));
 }
 
 /**

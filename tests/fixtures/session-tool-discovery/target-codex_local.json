@@ -7,7 +7,7 @@
     "source": "DRO-1163 target/expected-state specification (NOT a captured session result)",
     "capturedAt": "n/a -- not captured from any real run",
     "capturedBy": "hand-authored spec of the desired post-fix behavior; no codex_local session has ever produced this tools/list",
-    "note": "THIS IS NOT EVIDENCE. This fixture only documents what tools/list SHOULD contain once paperclipai/paperclip#10346 is fixed upstream and a real codex_local session attaches the gateway MCP server. Per DRO-1163 review, a hypothetical fixture cannot be treated as proof that the healthy path works, and this repo has no way to exercise Paperclip core's codex_local adapter to capture a real one. This file exists only to express the target shape for a future real capture to replace once #10346 ships; the spec that consumes it must not claim the healthy path is verified."
+    "note": "THIS IS NOT EVIDENCE. This fixture only documents what tools/list SHOULD contain once paperclipai/paperclip#10346 is fixed upstream and a real codex_local session attaches the gateway MCP server. Its provider-tool entries match the plugin's current composed GitHub and Slack manifest. Per DRO-1163 review, a hypothetical fixture cannot be treated as proof that the healthy path works, and this repo has no way to exercise Paperclip core's codex_local adapter to capture a real one. This file exists only to express the target shape for a future real capture to replace once #10346 ships; the spec that consumes it must not claim the healthy path is verified."
   },
   "runtimeMcpPresent": true,
   "gatewayAttached": true,
@@ -38,6 +38,11 @@
     "github_bot_search_repository_items",
     "github_bot_upload_pull_request_asset",
     "github_bot_get_issue_interaction_summary",
-    "github_bot_link_github_item"
+    "github_bot_link_github_item",
+    "slack_bot_post_message",
+    "slack_bot_add_reaction",
+    "slack_bot_remove_reaction",
+    "slack_bot_whoami",
+    "slack_bot_lookup_channel"
   ]
 }

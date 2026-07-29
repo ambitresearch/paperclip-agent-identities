@@ -110,17 +110,24 @@ issues for that run. Global registration and per-session availability are
 different properties, and only the first is under this plugin's control.
 
 If an agent session reports a tool as "not available" even though the plugin
-is installed and the identity is configured, check first whether a
-tool-gateway session was ever created for that run
-(`/api/tool-gateway/sessions`) and whether the per-run credential was used.
-If no gateway session was created, the gap is in the adapter/runtime-MCP
-attachment path in Paperclip core, not in this plugin. Known adapter-side
-gaps as of this writing:
+is installed and the identity is configured, start from the Paperclip run ID.
+Inspect the named gateway's `heartbeat_run` token whose `subjectId` matches
+that run. A non-null `lastUsedAt` or a `tool_gateway.discovery`/tool-call event
+with the same `runId` in `/api/tool-gateway/audit` proves the credential was
+used. A null `lastUsedAt` proves only that the credential was not used; it does
+not distinguish a missing attachment from a request that omitted the header or
+never reached the gateway. Correlate adapter config, run output, gateway audit,
+and transport evidence before naming the failure mode. Do not use
+`/api/tool-gateway/sessions` as an inspection endpoint; that route only creates
+sessions (with a separate revoke route).
 
-- `codex_local`: a per-run gateway credential can be issued and never
-  attached/used by the session, so the agent's tool list never includes any
-  plugin tool. Tracked upstream at
-  [paperclipai/paperclip#10346](https://github.com/paperclipai/paperclip/issues/10346).
+- `codex_local`: the investigated run received a managed MCP config, but
+  Paperclip wrote the bearer map under unsupported `headers` instead of
+  Codex's `http_headers`, so Codex discarded the credential and
+  `github_bot_whoami` was unavailable. Tracked upstream at
+  [paperclipai/paperclip#10346](https://github.com/paperclipai/paperclip/issues/10346);
+  the narrow fork fix is
+  [roshangautam/paperclip#19](https://github.com/roshangautam/paperclip/pull/19).
 - `hermes_local`: does not wire `ctx.runtimeMcp` into the Hermes process at
   all. Tracked upstream at
   [paperclipai/paperclip#10144](https://github.com/paperclipai/paperclip/issues/10144).
@@ -128,7 +135,7 @@ gaps as of this writing:
   MCP tools for these adapters. Tracked upstream at
   [paperclipai/paperclip#6707](https://github.com/paperclipai/paperclip/issues/6707).
 
-Do not work around a missing gateway attachment with direct `curl`/shell or
+Do not work around a managed-tool availability failure with direct `curl`/shell or
 `gh api` calls to provider APIs. Those direct provider calls bypass the
 managed tool gateway, identity policy, and audit path this plugin depends on.
 The raw Paperclip tool-gateway HTTP API is different: calls authenticated with
@@ -139,21 +146,16 @@ That adapter-specific HTTP flow is still not the native managed MCP surface
 and does not prove attachment works. Treat it as a temporary workaround while
 escalating the missing MCP attachment as an adapter bug, not as a core fix.
 
-This repo's own compatibility check
-(`tests/providers/github/session-tool-availability.spec.ts`) only proves that
-this plugin's global manifest registration is correct; it cannot exercise a
-real Paperclip core `codex_local` session, so it cannot prove attachment
-works. It compares the manifest against a captured incident fixture
-(`tests/fixtures/session-tool-discovery/incident-codex_local.json`,
-reproducing the failure above) and a separate, explicitly-unverified
-target-state fixture
-(`tests/fixtures/session-tool-discovery/target-codex_local.json`) describing
-what `tools/list` should contain once
-[paperclipai/paperclip#10346](https://github.com/paperclipai/paperclip/issues/10346)
-ships -- that second fixture is a specification, not a captured result, and
-must not be read as proof the fix is in place. Until an upstream release
-fixes attachment and a real session capture replaces the target fixture,
-treat `codex_local` tool availability as unverified in production.
+This repo's compatibility check
+(`tests/providers/github/session-tool-availability.spec.ts`) compares the
+current manifest with the independently recorded incident fixture
+(`tests/fixtures/session-tool-discovery/incident-codex_local.json`). The
+fixture records only established facts: runtime MCP and managed config were
+present, the credential was not used, transport reachability was unknown, and
+`github_bot_whoami` was reported unavailable. It does not reconstruct a raw
+`tools/list` capture or prove a healthy path. Until a corrected Paperclip core
+build is running and an authenticated live session produces discovery/audit
+evidence, treat `codex_local` tool availability as unverified in production.
 
 ## Edit or remove an identity
 

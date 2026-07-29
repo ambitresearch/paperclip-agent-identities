@@ -1,15 +1,9 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Session tool-discovery fixture",
-  "description": "Schema for captured evidence and unverified target specifications under tests/fixtures/session-tool-discovery/. Fixture tool lists remain independent of this repo's manifest source, so compatibility checks can compare 'globally registered' against 'discoverable in a session' without deriving one from the other.",
+  "description": "Schema for captured session tool-availability incidents under tests/fixtures/session-tool-discovery/.",
   "type": "object",
-  "required": ["$schema", "fixtureId", "adapter", "status", "provenance", "runtimeMcpPresent", "gatewayAttached", "discoveredTools"],
-  "allOf": [
-    {
-      "if": { "properties": { "status": { "const": "captured-incident" } } },
-      "then": { "required": ["globallyRegisteredTools"] }
-    }
-  ],
+  "required": ["$schema", "fixtureId", "adapter", "status", "provenance", "runtimeMcpPresent", "managedGatewayConfigInjected", "gatewayTransportReached", "gatewayCredentialUsed", "globallyRegisteredTools", "reportedUnavailableTools"],
   "additionalProperties": false,
   "properties": {
     "$schema": {
@@ -20,8 +14,7 @@
     "adapter": { "type": "string", "minLength": 1 },
     "status": {
       "type": "string",
-      "enum": ["captured-incident", "target-not-captured"],
-      "description": "Whether this fixture records an actually-observed session result ('captured-incident') or is merely a hand-authored specification of a not-yet-verified target state ('target-not-captured'). Consumers must not treat a 'target-not-captured' fixture as proof any real session behaves this way."
+      "const": "captured-incident"
     },
     "provenance": {
       "type": "object",
@@ -35,16 +28,26 @@
       }
     },
     "runtimeMcpPresent": { "type": "boolean" },
-    "gatewayAttached": { "type": "boolean" },
+    "managedGatewayConfigInjected": { "type": "boolean" },
+    "gatewayTransportReached": {
+      "type": "string",
+      "enum": ["yes", "no", "unknown"],
+      "description": "Whether transport evidence proves a request reached the gateway. Token-use metadata alone cannot answer this."
+    },
+    "gatewayCredentialUsed": { "type": "boolean" },
     "globallyRegisteredTools": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "minItems": 1,
       "description": "Tool names the plugin manifest registered when a captured incident occurred. This freezes historical registration evidence so later manifest additions do not rewrite the incident claim."
     },
-    "discoveredTools": {
+    "reportedUnavailableTools": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
-      "description": "The literal tool names an agent session could actually call via tools/list, as observed/captured for this adapter state. Deliberately a flat string list independent of any manifest-derived type, so drift between registration and discovery is detectable."
+      "uniqueItems": true,
+      "minItems": 1,
+      "description": "Only plugin tools explicitly reported unavailable in the incident evidence; this is not a reconstructed tools/list capture."
     }
   }
 }

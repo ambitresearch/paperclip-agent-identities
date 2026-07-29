@@ -543,6 +543,7 @@ function projectQueuedTurnEvent(event: unknown): SlackQueuedTurnEvent {
   if (typeof rawEvent.text === "string" && rawEvent.text.length > 0 && !text) {
     throw new Error("Slack event text could not be bounded safely.");
   }
+  const channelTypeProvided = rawEvent.channel_type !== undefined;
   let channelType = boundedString(rawEvent.channel_type)?.trim();
   if (type === "app_mention") {
     // Slack's Events API app_mention payloads may omit channel_type entirely
@@ -550,7 +551,14 @@ function projectQueuedTurnEvent(event: unknown): SlackQueuedTurnEvent {
     // boundary, from the validated conversation ID prefix, before the
     // downstream durable queue enforces its strict non-direct channelType
     // invariant. Explicit values are still checked for internal consistency
-    // rather than trusted blindly.
+    // rather than trusted blindly. A channel_type field that IS present but
+    // fails to resolve to a non-empty, non-whitespace string (null, "",
+    // whitespace-only, or a non-string value) is a malformed explicit value,
+    // not an omission — it must fail closed rather than silently fall
+    // through to inference as if the field were absent.
+    if (channelTypeProvided && !channelType) {
+      throw new Error("Slack app_mention event has a malformed channel type.");
+    }
     const validAppMentionChannelId = /^[CDG][A-Za-z0-9-]{2,}$/.test(channel);
     if (!validAppMentionChannelId) {
       throw new Error("Slack app_mention event has an invalid conversation ID.");

@@ -1136,6 +1136,28 @@ describe("Slack provider durable ingress", () => {
     expect(queueState(store)).toBeUndefined();
   });
 
+  it("fails closed for an app_mention with a whitespace-only explicit channel_type, rather than inferring from the ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-whitespace-type", "hello", {
+      type: "app_mention",
+      channel_type: "   ",
+      channel: "C111",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
+  it("fails closed for an app_mention with a null explicit channel_type, rather than inferring from the ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-null-type", "hello", {
+      type: "app_mention",
+      channel_type: null,
+      channel: "C111",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
   it("fails closed for an app_mention with a malformed conversation ID", async () => {
     const { ctx, store } = makeCtx();
     await expect(handleSlackProviderWebhook(delivery("Ev-malformed", "hello", {

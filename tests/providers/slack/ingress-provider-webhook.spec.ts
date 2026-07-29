@@ -1416,6 +1416,51 @@ describe("Slack provider durable ingress", () => {
     expect(queueState(store).active).toBeUndefined();
   });
 
+  it("excludes host lifecycle chunks from ACPX reply output", async () => {
+    let callback!: (event: AgentSessionEvent) => void | Promise<void>;
+    const postReply = vi.fn(async () => undefined);
+    const { ctx, store } = makeCtx({
+      sendMessage: async (_sessionId, _companyId, options) => {
+        callback = options.onEvent!;
+        return { runId: "run-acpx" };
+      },
+    });
+    await handleSlackProviderWebhook(delivery("Ev-acpx"), ctx as never);
+    const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
+    await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime(postReply));
+
+    await callback({
+      sessionId: "session-1",
+      runId: "run-acpx",
+      seq: 1,
+      eventType: "chunk",
+      stream: "system",
+      message: "run started",
+      payload: { eventType: "lifecycle" },
+    });
+    await callback({
+      sessionId: "session-1",
+      runId: "run-acpx",
+      seq: 2,
+      eventType: "chunk",
+      stream: "stdout",
+      message: `${JSON.stringify({ type: "acpx.session", sessionId: "acpx-session" })}\n`,
+      payload: null,
+    });
+    await callback({
+      sessionId: "session-1",
+      runId: "run-acpx",
+      seq: 0,
+      eventType: "done",
+      stream: "system",
+      message: "Run completed",
+      payload: null,
+    });
+
+    expect(postReply).not.toHaveBeenCalled();
+    expect(queueState(store).active).toBeUndefined();
+  });
+
   it("ignores late callbacks after successful terminal completion", async () => {
     let callback!: (event: AgentSessionEvent) => void | Promise<void>;
     const postReply = vi.fn(async () => undefined);

@@ -100,11 +100,12 @@ overwritten. None of these recovery states requires reinstalling the Slack App.
 
 ## Tool availability in agent sessions
 
-This plugin registers its tools (`github_bot_whoami` and the other GitHub bot
-tools, plus the Slack tools) globally, once, when it is installed. That
-registration is necessary but not sufficient for an agent to actually see or
-call a tool inside a given run: the agent's adapter must also attach the
-per-run tool-gateway MCP server (built from a non-empty `ctx.runtimeMcp`) and
+This plugin declares its tools (`github_bot_whoami` and the other GitHub bot
+tools, plus the Slack tools) globally and registers their handlers whenever its
+worker starts. That registration is necessary but not sufficient for an agent
+to actually see or call a tool inside a given run: the agent's adapter must
+also attach the per-run tool-gateway MCP server (built from a non-empty
+`ctx.runtimeMcp`) and
 authenticate with the short-lived, run-scoped gateway credential Paperclip
 issues for that run. Global registration and per-session availability are
 different properties, and only the first is under this plugin's control.

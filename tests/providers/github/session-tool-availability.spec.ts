@@ -55,6 +55,9 @@ describe("global plugin registration vs per-session tool availability", () => {
       "github_bot_push_branch",
       "github_bot_submit_pull_request_review",
     ]);
+    expect(manifestToolNames).toEqual(
+      expect.arrayContaining([...incident.globallyRegisteredTools]),
+    );
     expect(registeredGitHubToolNames).toEqual(
       expect.arrayContaining(incidentRegisteredGitHubToolNames),
     );

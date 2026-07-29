@@ -105,43 +105,75 @@ export async function verifySlackToken(
     throw new Error("Slack token verification timeout is invalid.");
   }
 
+  // The AbortController/timeout must stay live across *both* the fetch()
+  // call and the response.json() body-read below — clearing it right after
+  // fetch() resolves would leave body parsing unbounded again (a slow/hung
+  // stream can still stall past the documented budget even once headers
+  // arrive promptly). Only clear it once both steps are done.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  let response: Response;
   try {
-    response = await fetchImpl("https://slack.com/api/auth.test", {
+    const response = await fetchImpl("https://slack.com/api/auth.test", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       signal: controller.signal,
     });
+
+    // response.json() does not itself observe an AbortSignal passed to
+    // fetch() — some runtimes/mocks abort the in-flight body read (which
+    // response.json().catch below handles), but others (e.g. a stream that
+    // simply never closes) leave json() hanging forever even after the
+    // controller aborts. Race the body read against the same abort signal so
+    // a hung body stream cannot outlive the documented timeout budget either.
+    const abortPromise = new Promise<never>((_resolve, reject) => {
+      if (controller.signal.aborted) {
+        reject(new DOMException("Slack token verification timed out.", "AbortError"));
+        return;
+      }
+      controller.signal.addEventListener(
+        "abort",
+        () => reject(new DOMException("Slack token verification timed out.", "AbortError")),
+        { once: true },
+      );
+    });
+
+    const body = await Promise.race([
+      response.json().catch((error: unknown) => {
+        // Let an abort (timeout) propagate as a real failure instead of being
+        // swallowed into an empty body that would then fail closed with a
+        // less specific "HTTP {status}" message.
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        return {};
+      }),
+      abortPromise,
+    ]) as {
+      ok?: unknown;
+      team_id?: unknown;
+      user_id?: unknown;
+      bot_id?: unknown;
+      error?: unknown;
+    };
+
+    if (
+      !response.ok ||
+      body.ok !== true ||
+      typeof body.team_id !== "string" ||
+      !body.team_id.trim() ||
+      typeof body.user_id !== "string" ||
+      !body.user_id.trim()
+    ) {
+      const reason = typeof body.error === "string" ? body.error : `HTTP ${response.status}`;
+      throw new Error(`Slack token verification failed: ${reason}`);
+    }
+
+    return {
+      teamId: body.team_id,
+      userId: body.user_id,
+      botId: typeof body.bot_id === "string" && body.bot_id.trim() ? body.bot_id : undefined,
+    };
   } finally {
     clearTimeout(timeout);
   }
-
-  const body = await response.json().catch(() => ({})) as {
-    ok?: unknown;
-    team_id?: unknown;
-    user_id?: unknown;
-    bot_id?: unknown;
-    error?: unknown;
-  };
-  if (
-    !response.ok ||
-    body.ok !== true ||
-    typeof body.team_id !== "string" ||
-    !body.team_id.trim() ||
-    typeof body.user_id !== "string" ||
-    !body.user_id.trim()
-  ) {
-    const reason = typeof body.error === "string" ? body.error : `HTTP ${response.status}`;
-    throw new Error(`Slack token verification failed: ${reason}`);
-  }
-
-  return {
-    teamId: body.team_id,
-    userId: body.user_id,
-    botId: typeof body.bot_id === "string" && body.bot_id.trim() ? body.bot_id : undefined,
-  };
 }
 
 /**

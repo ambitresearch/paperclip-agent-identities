@@ -1523,7 +1523,7 @@ async function startClaimedTurn(
         controller.invalidated = true;
         return;
       }
-      if (event.eventType === "chunk" && event.stream !== "stderr" && event.message) {
+      if (event.eventType === "chunk" && event.stream === "stdout" && event.message) {
         const delta = response.append(event.message);
         if (delta && replyStream) await replyStream.append(delta);
         return;

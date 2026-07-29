@@ -161,6 +161,9 @@ run ID, buffers callbacks received before `sendMessage` returns, and ignores sta
 run/session callbacks. Terminal handling awaits stream/post finalization, then marks
 the event completed, clears active state, and emits the successor kick. No detached
 timer calls host APIs. Structured adapter output is reduced to user-facing reply text;
+only session `chunk` events on `stdout` enter that reducer. Host `system` lifecycle
+events (including `run started`) and adapter `stderr` are excluded at the callback
+boundary, so they cannot contaminate a following JSONL record or become fallback text.
 ACPX `acpx.text_delta` records with channel `output` and tag `agent_message_chunk` are
 not accepted as Slack reply content (DRO-1162: as of today this type/channel/tag shape
 carries no provenance discriminator, so a transport/adapter diagnostic emitted in this

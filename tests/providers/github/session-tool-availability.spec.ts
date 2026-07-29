@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { githubManifestTools } from "../../../src/providers/github/manifest-tools.js";
+import manifest from "../../../src/manifest.js";
 import {
   loadSessionToolDiscoveryFixture,
   manifestToolsMissingFromDiscovery,
@@ -33,15 +33,21 @@ import {
  * being tautological.
  */
 describe("global plugin registration vs per-session tool availability", () => {
-  const manifestToolNames = githubManifestTools.map((tool) => tool.name);
+  const manifestToolNames = (manifest.tools as ReadonlyArray<{ name: string }>).map(
+    (tool) => tool.name,
+  );
+  const registeredGitHubToolNames = manifestToolNames.filter((name) =>
+    name.startsWith("github_bot_"),
+  );
 
-  it("registers all four GitHub tools in the plugin manifest (global registration)", () => {
-    expect(githubManifestTools.length).toBe(4);
-    for (const tool of githubManifestTools) {
-      expect(typeof tool.name).toBe("string");
-      expect(tool.name.length).toBeGreaterThan(0);
-    }
-    expect(manifestToolNames).toContain("github_bot_whoami");
+  it("composes the incident-era GitHub tools into the final plugin manifest", () => {
+    expect(registeredGitHubToolNames).toEqual(expect.arrayContaining([
+      "github_bot_whoami",
+      "github_bot_create_pull_request",
+      "github_bot_push_branch",
+      "github_bot_submit_pull_request_review",
+    ]));
+    expect(new Set(registeredGitHubToolNames).size).toBe(registeredGitHubToolNames.length);
   });
 
   it("reproduces the incident from a CAPTURED fixture: tools globally registered but absent from the session's actual tools/list when the gateway never attached", () => {
@@ -58,13 +64,13 @@ describe("global plugin registration vs per-session tool availability", () => {
     // any of these tool names.
     expect(incident.discoveredTools).not.toContain("github_bot_whoami");
 
-    const missing = manifestToolsMissingFromDiscovery(manifestToolNames, incident);
-    expect(missing.sort()).toEqual([...manifestToolNames].sort());
+    const missing = manifestToolsMissingFromDiscovery(registeredGitHubToolNames, incident);
+    expect(missing.sort()).toEqual([...registeredGitHubToolNames].sort());
 
     // Registration itself is unaffected -- this is the crux of the bug the
     // agent's report correctly identified: registration succeeding is not
     // evidence the session can see the tool.
-    expect(manifestToolNames).toContain("github_bot_whoami");
+    expect(registeredGitHubToolNames).toContain("github_bot_whoami");
   });
 
   it("documents (but does NOT verify) the target post-fix shape: the target-spec fixture is explicitly unverified", () => {
@@ -78,7 +84,7 @@ describe("global plugin registration vs per-session tool availability", () => {
     // The shape itself is still useful to keep aligned with the manifest so
     // the target spec doesn't silently drift, but this is NOT a claim that
     // any real codex_local session has ever produced this list.
-    const missing = manifestToolsMissingFromDiscovery(manifestToolNames, target);
+    const missing = manifestToolsMissingFromDiscovery(registeredGitHubToolNames, target);
     expect(missing).toEqual([]);
   });
 
@@ -90,16 +96,5 @@ describe("global plugin registration vs per-session tool availability", () => {
     expect(target.status).toBe("target-not-captured");
     expect(incident.gatewayAttached).not.toBe(target.gatewayAttached);
     expect(incident.discoveredTools).not.toEqual(target.discoveredTools);
-  });
-
-  it("documents the upstream ownership boundary for the real end-to-end attachment path", () => {
-    const claim =
-      "manifest registration proves global availability only; " +
-      "per-session availability requires adapter runtime-MCP attachment, " +
-      "which remains UNVERIFIED by this repo pending upstream fixes " +
-      "(tracked: paperclipai/paperclip#10346, paperclipai/paperclip#10144)";
-    expect(claim).toContain("paperclipai/paperclip#10346");
-    expect(claim).toContain("paperclipai/paperclip#10144");
-    expect(claim).toContain("UNVERIFIED");
   });
 });

@@ -1,11 +1,15 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Captured session tool-discovery fixture",
-  "description": "Schema for fixtures under tests/fixtures/session-tool-discovery/. Each fixture captures an adapter's tools/list result independently of this repo's manifest source, so compatibility checks can compare 'globally registered' against 'actually discoverable in a session' without deriving one from the other.",
+  "title": "Session tool-discovery fixture",
+  "description": "Schema for captured evidence and unverified target specifications under tests/fixtures/session-tool-discovery/. Fixture tool lists remain independent of this repo's manifest source, so compatibility checks can compare 'globally registered' against 'discoverable in a session' without deriving one from the other.",
   "type": "object",
-  "required": ["fixtureId", "adapter", "status", "provenance", "runtimeMcpPresent", "gatewayAttached", "discoveredTools"],
+  "required": ["$schema", "fixtureId", "adapter", "status", "provenance", "runtimeMcpPresent", "gatewayAttached", "discoveredTools"],
   "additionalProperties": false,
   "properties": {
+    "$schema": {
+      "type": "string",
+      "const": "./session-tool-discovery.schema.json"
+    },
     "fixtureId": { "type": "string", "minLength": 1 },
     "adapter": { "type": "string", "minLength": 1 },
     "status": {

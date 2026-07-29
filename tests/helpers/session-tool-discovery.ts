@@ -16,9 +16,9 @@
  * and schema-validates committed fixture files that record, for a given
  * adapter state, the literal tool names an agent session could observe via
  * `tools/list` -- one fixture for the reported incident state (registered
- * globally, gateway never attached) and one for the healthy state (gateway
- * attached). The fixtures are hand-authored/captured data (see each file's
- * `provenance` block), not computed from this repo's source, which is what
+ * globally, gateway never attached) and one unverified target specification
+ * (gateway attached). The fixtures are independently authored data (see each
+ * file's `provenance` block), not computed from this repo's source, which is what
  * lets a spec assert real disagreement between "registered" and
  * "discoverable" instead of a tautology.
  *
@@ -34,8 +34,14 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { Ajv, type AnySchema } from "ajv";
 
-const FIXTURES_DIR = path.dirname(fileURLToPath(new URL("../fixtures/session-tool-discovery/session-tool-discovery.schema.json", import.meta.url)));
+const FIXTURE_SCHEMA_FILE = "session-tool-discovery.schema.json";
+const FIXTURES_DIR = path.dirname(
+  fileURLToPath(
+    new URL(`../fixtures/session-tool-discovery/${FIXTURE_SCHEMA_FILE}`, import.meta.url),
+  ),
+);
 
 export interface SessionToolDiscoveryFixtureProvenance {
   readonly source: string;
@@ -56,78 +62,33 @@ export interface SessionToolDiscoveryFixture {
   readonly discoveredTools: readonly string[];
 }
 
-const REQUIRED_TOP_LEVEL_KEYS = [
-  "fixtureId",
-  "adapter",
-  "status",
-  "provenance",
-  "runtimeMcpPresent",
-  "gatewayAttached",
-  "discoveredTools",
-] as const;
+const ajv = new Ajv({ allErrors: true });
+const fixtureSchema = JSON.parse(
+  readFileSync(path.join(FIXTURES_DIR, FIXTURE_SCHEMA_FILE), "utf8"),
+) as AnySchema;
+const validateFixture = ajv.compile<SessionToolDiscoveryFixture>(fixtureSchema);
 
-const VALID_STATUSES: readonly SessionToolDiscoveryFixtureStatus[] = [
-  "captured-incident",
-  "target-not-captured",
-];
-
-const REQUIRED_PROVENANCE_KEYS = ["source", "capturedAt", "capturedBy", "note"] as const;
-
-function assertShape(fixtureId: string, raw: unknown): asserts raw is SessionToolDiscoveryFixture {
-  if (!raw || typeof raw !== "object") {
-    throw new Error(`Fixture ${fixtureId} is not an object`);
-  }
-  const record = raw as Record<string, unknown>;
-  for (const key of REQUIRED_TOP_LEVEL_KEYS) {
-    if (!(key in record)) {
-      throw new Error(`Fixture ${fixtureId} is missing required key "${key}"`);
-    }
-  }
-  if (typeof record.fixtureId !== "string" || record.fixtureId.length === 0) {
-    throw new Error(`Fixture ${fixtureId} has an invalid fixtureId`);
-  }
-  if (typeof record.adapter !== "string" || record.adapter.length === 0) {
-    throw new Error(`Fixture ${fixtureId} has an invalid adapter`);
-  }
-  if (
-    typeof record.status !== "string" ||
-    !VALID_STATUSES.includes(record.status as SessionToolDiscoveryFixtureStatus)
-  ) {
-    throw new Error(`Fixture ${fixtureId} has an invalid status (must be one of ${VALID_STATUSES.join(", ")})`);
-  }
-  if (typeof record.runtimeMcpPresent !== "boolean") {
-    throw new Error(`Fixture ${fixtureId} has a non-boolean runtimeMcpPresent`);
-  }
-  if (typeof record.gatewayAttached !== "boolean") {
-    throw new Error(`Fixture ${fixtureId} has a non-boolean gatewayAttached`);
-  }
-  if (
-    !Array.isArray(record.discoveredTools) ||
-    !record.discoveredTools.every((tool) => typeof tool === "string" && tool.length > 0)
-  ) {
-    throw new Error(`Fixture ${fixtureId} has an invalid discoveredTools array`);
-  }
-  const provenance = record.provenance;
-  if (!provenance || typeof provenance !== "object") {
-    throw new Error(`Fixture ${fixtureId} is missing a provenance object`);
-  }
-  const provenanceRecord = provenance as Record<string, unknown>;
-  for (const key of REQUIRED_PROVENANCE_KEYS) {
-    if (typeof provenanceRecord[key] !== "string" || (provenanceRecord[key] as string).length === 0) {
-      throw new Error(`Fixture ${fixtureId} provenance is missing/invalid key "${key}"`);
-    }
+function assertSchemaValid(
+  fixtureId: string,
+  raw: unknown,
+): asserts raw is SessionToolDiscoveryFixture {
+  if (!validateFixture(raw)) {
+    throw new Error(
+      `Fixture ${fixtureId} does not match ${FIXTURE_SCHEMA_FILE}: ` +
+        ajv.errorsText(validateFixture.errors, { separator: "; " }),
+    );
   }
 }
 
-/** Load and schema-validate a single captured fixture by file stem (no extension). */
+/** Load and schema-validate a single fixture by file stem (no extension). */
 export function loadSessionToolDiscoveryFixture(fixtureFile: string): SessionToolDiscoveryFixture {
   const filePath = path.join(FIXTURES_DIR, `${fixtureFile}.json`);
   const raw: unknown = JSON.parse(readFileSync(filePath, "utf8"));
-  assertShape(fixtureFile, raw);
+  assertSchemaValid(fixtureFile, raw);
   return raw;
 }
 
-/** Load every captured fixture in tests/fixtures/session-tool-discovery/. */
+/** Load every fixture in tests/fixtures/session-tool-discovery/. */
 export function loadAllSessionToolDiscoveryFixtures(): SessionToolDiscoveryFixture[] {
   return readdirSync(FIXTURES_DIR)
     .filter((file) => file.endsWith(".json") && !file.endsWith(".schema.json"))
@@ -135,7 +96,7 @@ export function loadAllSessionToolDiscoveryFixtures(): SessionToolDiscoveryFixtu
 }
 
 /**
- * Compare a captured fixture's session-visible tool list against a set of
+ * Compare a fixture's session-visible tool list against a set of
  * independently-sourced manifest tool names. Returns the manifest tools that
  * are registered but NOT present in the fixture's discovered set -- this is
  * the exact gap the incident hinged on.

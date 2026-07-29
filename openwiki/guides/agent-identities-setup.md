@@ -128,12 +128,16 @@ gaps as of this writing:
   MCP tools for these adapters. Tracked upstream at
   [paperclipai/paperclip#6707](https://github.com/paperclipai/paperclip/issues/6707).
 
-Do not work around a missing gateway attachment with direct `curl`/shell
-calls to provider APIs, or with the raw tool-gateway HTTP API in place of the
-managed MCP surface, in an agent's own instructions -- that bypasses the
+Do not work around a missing gateway attachment with direct `curl`/shell or
+`gh api` calls to provider APIs. Those direct provider calls bypass the
 managed tool gateway, identity policy, and audit path this plugin depends on.
-If an agent hits this gap, escalate it as an adapter bug rather than adding a
-workaround.
+The raw Paperclip tool-gateway HTTP API is different: calls authenticated with
+the run JWT and short-lived gateway token remain policy-checked and audited,
+as documented for the temporary `hermes_local` workaround in
+[paperclipai/paperclip#10144](https://github.com/paperclipai/paperclip/issues/10144).
+That adapter-specific HTTP flow is still not the native managed MCP surface
+and does not prove attachment works. Treat it as a temporary workaround while
+escalating the missing MCP attachment as an adapter bug, not as a core fix.
 
 This repo's own compatibility check
 (`tests/providers/github/session-tool-availability.spec.ts`) only proves that

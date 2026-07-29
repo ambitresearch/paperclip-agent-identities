@@ -1083,6 +1083,120 @@ describe("Slack provider durable ingress", () => {
     await drain;
   });
 
+  it("normalizes a production-shaped app_mention with no channel_type and a C… ID, and queues it exactly once", async () => {
+    const { ctx, store } = makeCtx();
+    const rootTs = "1719000000.123456";
+    await handleSlackProviderWebhook(delivery("Ev-no-type-c", "hello", {
+      type: "app_mention",
+      channel_type: undefined,
+      channel: "C111",
+      ts: rootTs,
+      // channel_type intentionally omitted, matching the real Slack payload.
+    }), ctx as never);
+
+    const queued = queueState(store).pending[0] as unknown as { event: { channelType?: string } };
+    expect(queued.event.channelType).toBe("channel");
+    expect(queueState(store).pending).toHaveLength(1);
+    expect(ctx.events.emit).toHaveBeenCalledTimes(1);
+
+    // A Slack retry of the same event_id must not enqueue a second turn.
+    await handleSlackProviderWebhook(delivery("Ev-no-type-c", "hello", {
+      type: "app_mention",
+      channel_type: undefined,
+      channel: "C111",
+      ts: rootTs,
+    }), ctx as never);
+    expect(queueState(store).pending).toHaveLength(1);
+  });
+
+  it("normalizes a production-shaped app_mention with no channel_type and a G… ID", async () => {
+    const { ctx, store } = makeCtx();
+    await handleSlackProviderWebhook(delivery("Ev-no-type-g", "hello", {
+      type: "app_mention",
+      channel_type: undefined,
+      channel: "G111",
+      ts: "1719000000.123456",
+    }), ctx as never);
+
+    const queued = queueState(store).pending[0] as unknown as { event: { channelType?: string } };
+    expect(queued.event.channelType).toBe("group");
+  });
+
+  it("fails closed for an app_mention targeting a direct-message ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-dm-mention", "hello", {
+      type: "app_mention",
+      channel: "D111",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
+  it("fails closed for an app_mention with an explicit im channel_type and a D… ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-dm-mention-explicit", "hello", {
+      type: "app_mention",
+      channel_type: "im",
+      channel: "D111",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
+  it("fails closed for an app_mention with an unknown-prefix conversation ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-bad-prefix", "hello", {
+      type: "app_mention",
+      channel: "X111",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
+  it("fails closed for an app_mention whose explicit channel_type contradicts its conversation ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-contradiction", "hello", {
+      type: "app_mention",
+      channel_type: "group",
+      channel: "C111",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
+  it("fails closed for an app_mention with a whitespace-only explicit channel_type, rather than inferring from the ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-whitespace-type", "hello", {
+      type: "app_mention",
+      channel_type: "   ",
+      channel: "C111",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
+  it("fails closed for an app_mention with a null explicit channel_type, rather than inferring from the ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-null-type", "hello", {
+      type: "app_mention",
+      channel_type: null,
+      channel: "C111",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
+  it("fails closed for an app_mention with a malformed conversation ID", async () => {
+    const { ctx, store } = makeCtx();
+    await expect(handleSlackProviderWebhook(delivery("Ev-malformed", "hello", {
+      type: "app_mention",
+      channel: "",
+      ts: "1719000000.123456",
+    }), ctx as never)).rejects.toThrow();
+    expect(queueState(store)).toBeUndefined();
+  });
+
+
   it("bounds oversized Slack text before persisting the queued turn", async () => {
     const { ctx, store } = makeCtx();
     await handleSlackProviderWebhook(delivery("Ev-large", "x".repeat(10_000)), ctx as never);

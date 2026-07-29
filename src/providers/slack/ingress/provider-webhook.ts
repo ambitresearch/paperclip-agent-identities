@@ -570,7 +570,49 @@ function projectQueuedTurnEvent(event: unknown): SlackQueuedTurnEvent {
   if (typeof rawEvent.text === "string" && rawEvent.text.length > 0 && !text) {
     throw new Error("Slack event text could not be bounded safely.");
   }
-  const channelType = boundedString(rawEvent.channel_type)?.trim();
+  const channelTypeProvided = rawEvent.channel_type !== undefined;
+  let channelType = boundedString(rawEvent.channel_type)?.trim();
+  if (type === "app_mention") {
+    // Slack's Events API app_mention payloads may omit channel_type entirely
+    // (observed in production). Normalize it here, at the ingress trust
+    // boundary, from the validated conversation ID prefix, before the
+    // downstream durable queue enforces its strict non-direct channelType
+    // invariant. Explicit values are still checked for internal consistency
+    // rather than trusted blindly. A channel_type field that IS present but
+    // fails to resolve to a non-empty, non-whitespace string (null, "",
+    // whitespace-only, or a non-string value) is a malformed explicit value,
+    // not an omission — it must fail closed rather than silently fall
+    // through to inference as if the field were absent.
+    if (channelTypeProvided && !channelType) {
+      throw new Error("Slack app_mention event has a malformed channel type.");
+    }
+    const validAppMentionChannelId = /^[CDG][A-Za-z0-9-]{2,}$/.test(channel);
+    if (!validAppMentionChannelId) {
+      throw new Error("Slack app_mention event has an invalid conversation ID.");
+    }
+    const prefix = channel.charAt(0);
+    if (prefix === "D" || channelType === "im") {
+      // app_mention is never valid for a direct-message conversation, even
+      // when an explicit channel_type: "im" is supplied alongside a D... ID
+      // (the two would otherwise "match" and slip through as a direct turn
+      // downstream, bypassing the non-direct invariant entirely).
+      throw new Error("Slack app_mention event cannot target a direct-message conversation.");
+    }
+    if (channelType) {
+      const matchesPrefix =
+        (channelType === "channel" && prefix === "C") ||
+        ((channelType === "group" || channelType === "mpim") && prefix === "G");
+      if (!matchesPrefix) {
+        throw new Error("Slack app_mention event channel type does not match its conversation ID.");
+      }
+    } else if (prefix === "C") {
+      channelType = "channel";
+    } else if (prefix === "G") {
+      channelType = "group";
+    } else {
+      throw new Error("Slack app_mention event is missing a valid non-direct channel type.");
+    }
+  }
   const user = boundedString(rawEvent.user)?.trim();
   const ts = boundedString(rawEvent.ts)?.trim();
   const threadTs = boundedString(rawEvent.thread_ts)?.trim();

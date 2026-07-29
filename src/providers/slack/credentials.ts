@@ -38,6 +38,18 @@ export interface VerifiedSlackTokenIdentity {
 export type VerifySlackToken = (token: string) => Promise<VerifiedSlackTokenIdentity>;
 type SlackApiFetch = (url: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * Upper bound (ms) for the `auth.test` credential-verification call in
+ * `verifySlackToken`. Matches the bounded-hydration budget enforced by
+ * `SLACK_THREAD_HISTORY_TIMEOUT_MS` (src/providers/slack/ingress/thread-history.ts)
+ * so a hung Slack response during credential resolution cannot itself stall
+ * the first-mention thread-hydration path past its documented budget. Kept
+ * as an independent constant (rather than importing the ingress module's
+ * constant) to avoid a credentials -> ingress dependency; call sites that
+ * want the two bounds to move together should update both.
+ */
+export const SLACK_AUTH_TEST_TIMEOUT_MS = 2_000;
+
 export async function discoverSlackAppId(
   token: string,
   botId: string,
@@ -86,37 +98,72 @@ export async function discoverSlackAppId(
  */
 export async function verifySlackToken(
   token: string,
-  fetchImpl: SlackApiFetch = fetch
+  fetchImpl: SlackApiFetch = fetch,
+  timeoutMs: number = SLACK_AUTH_TEST_TIMEOUT_MS
 ): Promise<VerifiedSlackTokenIdentity> {
-  const response = await fetchImpl("https://slack.com/api/auth.test", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  const body = await response.json().catch(() => ({})) as {
-    ok?: unknown;
-    team_id?: unknown;
-    user_id?: unknown;
-    bot_id?: unknown;
-    error?: unknown;
-  };
-  if (
-    !response.ok ||
-    body.ok !== true ||
-    typeof body.team_id !== "string" ||
-    !body.team_id.trim() ||
-    typeof body.user_id !== "string" ||
-    !body.user_id.trim()
-  ) {
-    const reason = typeof body.error === "string" ? body.error : `HTTP ${response.status}`;
-    throw new Error(`Slack token verification failed: ${reason}`);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > SLACK_AUTH_TEST_TIMEOUT_MS) {
+    throw new Error("Slack token verification timeout is invalid.");
   }
 
-  return {
-    teamId: body.team_id,
-    userId: body.user_id,
-    botId: typeof body.bot_id === "string" && body.bot_id.trim() ? body.bot_id : undefined,
-  };
+  // Keep one deadline across both the fetch and body read. Race locally as
+  // well as passing the signal because the host-proxied plugin fetch may not
+  // carry AbortSignal across its RPC boundary.
+  const controller = new AbortController();
+  const abortPromise = new Promise<never>((_resolve, reject) => {
+    controller.signal.addEventListener(
+      "abort",
+      () => reject(new DOMException("Slack token verification timed out.", "AbortError")),
+      { once: true },
+    );
+  });
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await Promise.race([
+      fetchImpl("https://slack.com/api/auth.test", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      }),
+      abortPromise,
+    ]);
+
+    const body = await Promise.race([
+      response.json().catch((error: unknown) => {
+        // Let an abort (timeout) propagate as a real failure instead of being
+        // swallowed into an empty body that would then fail closed with a
+        // less specific "HTTP {status}" message.
+        if (error instanceof Error && error.name === "AbortError") throw error;
+        return {};
+      }),
+      abortPromise,
+    ]) as {
+      ok?: unknown;
+      team_id?: unknown;
+      user_id?: unknown;
+      bot_id?: unknown;
+      error?: unknown;
+    };
+
+    if (
+      !response.ok ||
+      body.ok !== true ||
+      typeof body.team_id !== "string" ||
+      !body.team_id.trim() ||
+      typeof body.user_id !== "string" ||
+      !body.user_id.trim()
+    ) {
+      const reason = typeof body.error === "string" ? body.error : `HTTP ${response.status}`;
+      throw new Error(`Slack token verification failed: ${reason}`);
+    }
+
+    return {
+      teamId: body.team_id,
+      userId: body.user_id,
+      botId: typeof body.bot_id === "string" && body.bot_id.trim() ? body.bot_id : undefined,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /**

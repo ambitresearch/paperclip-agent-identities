@@ -111,6 +111,8 @@ Current test files:
   - released `v0.1.7`/`v0.1.8` Slack credential rebind, conflict, and cleanup-pending recovery
   - deterministic metadata-discovery marker serialization/ownership
   - deterministic Slack delete-rollback versus queued-save interleaving
+- `/tests/slack-credentials.spec.ts`
+  - bounded `auth.test` fetch and body-read timeouts, including the host-proxy case where fetch ignores `AbortSignal`
 - `/tests/process-local-mutation-queue.spec.ts`
   - failed mutations release their process-local queue key for later work
 - `/tests/providers/slack/ingress-conversation-queue.spec.ts`

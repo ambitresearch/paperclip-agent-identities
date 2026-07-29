@@ -421,8 +421,9 @@ company ID and exact config path into `ctx.secrets.resolve`. The path helper
 retains the flat legacy path while reading or updating a record written by an
 earlier build of this PR. Missing, malformed,
 revoked, or cross-bound refs fail closed. `verifySlackToken` calls `auth.test`
-and parses only the documented team, user, and bot identity fields without
-including the token or raw response in an error.
+under one two-second deadline spanning both the host fetch and response-body
+read, then parses only the documented team, user, and bot identity fields
+without including the token or raw response in an error.
 
 The `bot_id` check is mandatory and not redundant with `team_id`/`user_id`:
 Slack returns it only for bot tokens. Requiring it rejects a human user token

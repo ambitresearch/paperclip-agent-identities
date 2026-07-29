@@ -98,6 +98,69 @@ legacy sidecar entry failed; retry the same action. **Conflict** means an
 existing host Slack binding differs and must be reviewed rather than
 overwritten. None of these recovery states requires reinstalling the Slack App.
 
+## Tool availability in agent sessions
+
+This plugin declares its tools (`github_bot_whoami` and the other GitHub bot
+tools, plus the Slack tools) globally and registers their handlers whenever its
+worker starts. That registration is necessary but not sufficient for an agent
+to actually see or call a tool inside a given run: the agent's adapter must
+also attach the per-run tool-gateway MCP server (built from a non-empty
+`ctx.runtimeMcp`) and
+authenticate with the short-lived, run-scoped gateway credential Paperclip
+issues for that run. Global registration and per-session availability are
+different properties, and only the first is under this plugin's control.
+
+If an agent session reports a tool as "not available" even though the plugin
+is installed and the identity is configured, start from the Paperclip run ID.
+Inspect the named gateway's `heartbeat_run` token whose `subjectId` matches
+that run. A non-null `lastUsedAt` on that token proves that exact credential was
+used. A `tool_gateway.discovery` or tool-call event in
+`/api/tool-gateway/audit` is relevant only when its `gatewayId` and
+`gatewaySessionId` match the named gateway session; the same `runId` alone is
+not enough because the raw HTTP workaround can mint an independent session for
+the run. A null token `lastUsedAt` proves only that the named credential was not
+used; it does not distinguish a missing attachment from a request that omitted
+the header or never reached the gateway. Correlate adapter config, run output,
+gateway audit, and transport evidence before naming the failure mode. Do not use
+`/api/tool-gateway/sessions` as an inspection endpoint; that route only creates
+sessions (with a separate revoke route).
+
+- `codex_local`: the investigated run received a managed MCP config, but
+  Paperclip wrote the bearer map under unsupported `headers` instead of
+  Codex's `http_headers`, so Codex discarded the credential and
+  `github_bot_whoami` was unavailable. Tracked upstream at
+  [paperclipai/paperclip#10346](https://github.com/paperclipai/paperclip/issues/10346);
+  the narrow fork fix is
+  [roshangautam/paperclip#19](https://github.com/roshangautam/paperclip/pull/19).
+- `hermes_local`: does not wire `ctx.runtimeMcp` into the Hermes process at
+  all. Tracked upstream at
+  [paperclipai/paperclip#10144](https://github.com/paperclipai/paperclip/issues/10144).
+- Cursor / Claude Code adapters: plugin tools are not yet bridged as native
+  MCP tools for these adapters. Tracked upstream at
+  [paperclipai/paperclip#6707](https://github.com/paperclipai/paperclip/issues/6707).
+
+Do not work around a managed-tool availability failure with direct `curl`/shell or
+`gh api` calls to provider APIs. Those direct provider calls bypass the
+managed tool gateway, identity policy, and audit path this plugin depends on.
+The raw Paperclip tool-gateway HTTP API is different: calls authenticated with
+the run JWT and short-lived gateway token remain policy-checked and audited,
+as documented for the temporary `hermes_local` workaround in
+[paperclipai/paperclip#10144](https://github.com/paperclipai/paperclip/issues/10144).
+That adapter-specific HTTP flow is still not the native managed MCP surface
+and does not prove attachment works. Treat it as a temporary workaround while
+escalating the missing MCP attachment as an adapter bug, not as a core fix.
+
+This repo's compatibility check
+(`tests/providers/github/session-tool-availability.spec.ts`) compares the
+current manifest with the independently recorded incident fixture
+(`tests/fixtures/session-tool-discovery/incident-codex_local.json`). The
+fixture records only established facts: runtime MCP and managed config were
+present, the credential was not used, transport reachability was unknown, and
+`github_bot_whoami` was reported unavailable. It does not reconstruct a raw
+`tools/list` capture or prove a healthy path. Until a corrected Paperclip core
+build is running and an authenticated live session produces discovery/audit
+evidence, treat `codex_local` tool availability as unverified in production.
+
 ## Edit or remove an identity
 
 Use **Edit** on a configured identity to update its provider metadata or credential references. Use **Delete** to remove only that provider's mapping from Paperclip; deleting Slack also removes that identity's exact released legacy Slack sidecar entry after host/state deletion succeeds, while preserving all GitHub entries. Deleting an identity does not delete the GitHub App or Slack App from the provider, so remove the provider app separately if it is no longer needed.

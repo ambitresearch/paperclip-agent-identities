@@ -112,12 +112,15 @@ different properties, and only the first is under this plugin's control.
 If an agent session reports a tool as "not available" even though the plugin
 is installed and the identity is configured, start from the Paperclip run ID.
 Inspect the named gateway's `heartbeat_run` token whose `subjectId` matches
-that run. A non-null `lastUsedAt` or a `tool_gateway.discovery`/tool-call event
-with the same `runId` in `/api/tool-gateway/audit` proves the credential was
-used. A null `lastUsedAt` proves only that the credential was not used; it does
-not distinguish a missing attachment from a request that omitted the header or
-never reached the gateway. Correlate adapter config, run output, gateway audit,
-and transport evidence before naming the failure mode. Do not use
+that run. A non-null `lastUsedAt` on that token proves that exact credential was
+used. A `tool_gateway.discovery` or tool-call event in
+`/api/tool-gateway/audit` is relevant only when its `gatewayId` and
+`gatewaySessionId` match the named gateway session; the same `runId` alone is
+not enough because the raw HTTP workaround can mint an independent session for
+the run. A null token `lastUsedAt` proves only that the named credential was not
+used; it does not distinguish a missing attachment from a request that omitted
+the header or never reached the gateway. Correlate adapter config, run output,
+gateway audit, and transport evidence before naming the failure mode. Do not use
 `/api/tool-gateway/sessions` as an inspection endpoint; that route only creates
 sessions (with a separate revoke route).
 

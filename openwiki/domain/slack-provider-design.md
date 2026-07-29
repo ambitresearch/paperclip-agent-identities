@@ -161,22 +161,28 @@ run ID, buffers callbacks received before `sendMessage` returns, and ignores sta
 run/session callbacks. Terminal handling awaits stream/post finalization, then marks
 the event completed, clears active state, and emits the successor kick. No detached
 timer calls host APIs. Structured adapter output is reduced to user-facing reply text;
-ACPX `acpx.text_delta` records with channel `output` and tag `agent_message_chunk` are
-not accepted as Slack reply content (DRO-1162: as of today this type/channel/tag shape
-carries no provenance discriminator, so a transport/adapter diagnostic emitted in this
-exact shape before the real answer — e.g. a "Model metadata not found, defaulting to
-fallback metadata" warning, see core-contract follow-up `DRO-1183` and terminal-surface report `paperclipai/paperclip#1465` — is structurally
-indistinguishable from genuine assistant prose at this layer). Because of that gap, this
-ambiguous source is dropped rather than accumulated, streamed, or delivered at turn
-completion. Confirmed records (`result`, `item.completed`, a Claude
-`content_block_delta`, or a Gemini/assistant message) still preserve genuine assistant
-prose, including text that quotes or explains the same warning, while non-JSON adapter
-stdout remains available as the bounded compatibility fallback. The real fix is an
-upstream ACPX/core event-contract change adding a provenance/kind field (or moving
-diagnostics onto `acpx.status`/`acpx.error`) so diagnostics and assistant deltas can be
-classified independently. Until that lands, the plugin fails closed for this old
-ambiguous shape; a future provenance-bearing shape can be added as a separate accepted
-branch during a bounded transition without weakening the old-shape guard. The persisted
+ACPX `acpx.text_delta` records are accepted as Slack reply content only when they carry
+the DRO-1183 provenance discriminator `provenance: "assistant"` on channel `output`.
+That field is the stable contract separating assistant-authored prose from adapter,
+transport, status, warning, and stderr content (see
+`docs/adapters/acpx-event-provenance.md` in core); classification fails closed upstream,
+so a transport warning emitted before the first genuine assistant delta is never marked
+`assistant`. Records with `provenance` of `tool`, `transport`, `error`, or any
+unrecognized value are dropped, as are assistant-provenance deltas on the `thought`
+channel.
+
+Records with **no** `provenance` field at all are the pre-DRO-1183 ambiguous shape
+(type `acpx.text_delta` + channel `output` + tag `agent_message_chunk`), in which a
+transport/adapter diagnostic — e.g. a "Model metadata not found, defaulting to fallback
+metadata" warning, see terminal-surface report `paperclipai/paperclip#1465` — is
+structurally indistinguishable from genuine assistant prose. The DRO-1162 guard is
+retained for the bounded transition window: that ambiguous source is dropped rather than
+accumulated, streamed, or delivered at turn completion. Confirmed records (`result`,
+`item.completed`, a Claude `content_block_delta`, or a Gemini/assistant message) still
+preserve genuine assistant prose, including text that quotes or explains the same
+warning, while non-JSON adapter stdout remains available as the bounded compatibility
+fallback. The old-shape guard can be removed once no live surface replays pre-contract
+run logs. The persisted
 `retireAfter` is a
 30-minute durable accepted
 lease and is retired only when a

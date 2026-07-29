@@ -48,7 +48,8 @@ interface StructuredReply {
     | "codex"
     | "assistant"
     | "claude-delta"
-    | "gemini-delta";
+    | "gemini-delta"
+    | "acpx-delta";
 }
 
 /**
@@ -136,25 +137,22 @@ export class SlackSessionReplyAccumulator {
   }
 
   private consumeStructuredRecord(record: Record<string, unknown>): void {
-    if (
-      record.type === "acpx.text_delta" &&
-      record.channel === "output" &&
-      record.tag === "agent_message_chunk" &&
-      typeof record.text === "string"
-    ) {
-      // ACPX `acpx.text_delta`/`agent_message_chunk` records currently carry
-      // no provenance discriminator: a transport/adapter diagnostic (e.g. a
-      // "Model metadata not found, defaulting to fallback metadata" warning)
-      // and genuine assistant prose are structurally identical at this layer
-      // (same type/channel/tag). Upstream tracking: paperclipai/paperclip#1465
-      // covers the terminal surface only, not this downstream classification;
-      // a core fix needs a provenance/kind field on this event shape (or the
-      // diagnostic emitted as `acpx.status`/`acpx.error` instead of
-      // `agent_message_chunk`).
+    if (record.type === "acpx.text_delta" && typeof record.text === "string") {
+      // DRO-1183 shipped a `provenance` discriminator on ACPX records, so
+      // assistant prose and adapter/transport diagnostics are no longer
+      // structurally identical. Accept ONLY deltas explicitly marked as
+      // assistant-authored output.
       //
-      // Until that provenance exists, fail safely by dropping the ambiguous
-      // source entirely. Confirmed final records below still preserve genuine
-      // assistant prose, including answers that quote or explain diagnostics.
+      // `provenance` absent => pre-DRO-1183 ambiguous shape. During the bounded
+      // transition window (see docs/adapters/acpx-event-provenance.md) we keep
+      // the DRO-1162 guard and drop it: a transport warning and genuine prose
+      // are indistinguishable there, so failing closed is the only safe call.
+      // Confirmed final records below still preserve genuine assistant prose,
+      // including answers that quote or explain diagnostics.
+      if (record.provenance === "assistant" && record.channel === "output") {
+        const previous = this.structured?.source === "acpx-delta" ? this.structured.text : "";
+        this.setStructured(`${previous}${record.text}`, 2, "acpx-delta", true);
+      }
       return;
     }
 

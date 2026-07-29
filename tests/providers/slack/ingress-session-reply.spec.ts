@@ -10,12 +10,13 @@ const TRANSPORT_WARNING =
   "this can degrade performance and cause issues.";
 
 describe("SlackSessionReplyAccumulator", () => {
-  it("drops ambiguous ACPX agent_message_chunk deltas", () => {
-    // `acpx.text_delta` + channel=output + tag=agent_message_chunk is the same
-    // structural shape ACPX uses for transport diagnostics (see
-    // paperclipai/paperclip#1465) and for genuine assistant prose — there is
-    // no provenance field to tell them apart at this layer. Regression guard
-    // for DRO-1162: this source must never be streamed live to Slack.
+  it("drops ambiguous pre-provenance ACPX agent_message_chunk deltas", () => {
+    // Pre-DRO-1183 shape: `acpx.text_delta` + channel=output +
+    // tag=agent_message_chunk with NO `provenance` field is the same structural
+    // shape ACPX used for transport diagnostics (see paperclipai/paperclip#1465)
+    // and for genuine assistant prose. Regression guard for DRO-1162, retained
+    // for the bounded DRO-1183 transition window: this ambiguous source must
+    // never be streamed live to Slack.
     const response = new SlackSessionReplyAccumulator();
 
     expect(
@@ -38,6 +39,90 @@ describe("SlackSessionReplyAccumulator", () => {
         '{"type":"acpx.text_delta","text":" there","channel":"output","tag":"agent_message_chunk"}\n',
       ),
     ).toBe("");
+    expect(response.finish()).toBe("");
+  });
+
+  it("streams ACPX deltas explicitly marked as assistant-authored", () => {
+    // DRO-1183 contract: `provenance: "assistant"` is the stable discriminator
+    // for genuine model prose, so it is safe to stream live to Slack.
+    const response = new SlackSessionReplyAccumulator();
+
+    expect(
+      response.append(
+        `${JSON.stringify({
+          type: "acpx.text_delta",
+          text: "Hey",
+          channel: "output",
+          tag: "agent_message_chunk",
+          provenance: "assistant",
+        })}\n`,
+      ),
+    ).toBe("Hey");
+    expect(
+      response.append(
+        `${JSON.stringify({
+          type: "acpx.text_delta",
+          text: " there",
+          channel: "output",
+          tag: "agent_message_chunk",
+          provenance: "assistant",
+        })}\n`,
+      ),
+    ).toBe(" there");
+
+    expect(response.finish()).toBe("Hey there");
+  });
+
+  it("never classifies a provenance-marked transport warning preceding assistant prose as a reply", () => {
+    // The DRO-1183 acceptance case, end to end at the Slack boundary.
+    const response = new SlackSessionReplyAccumulator();
+
+    expect(
+      response.append(
+        `${JSON.stringify({
+          type: "acpx.text_delta",
+          text: TRANSPORT_WARNING,
+          channel: "output",
+          provenance: "transport",
+        })}\n`,
+      ),
+    ).toBe("");
+
+    expect(
+      response.append(
+        `${JSON.stringify({
+          type: "acpx.text_delta",
+          text: "The actual answer.",
+          channel: "output",
+          tag: "agent_message_chunk",
+          provenance: "assistant",
+        })}\n`,
+      ),
+    ).toBe("The actual answer.");
+
+    const reply = response.finish();
+    expect(reply).toBe("The actual answer.");
+    expect(reply).not.toContain("Model metadata");
+  });
+
+  it("rejects non-assistant provenance and assistant deltas off the output channel", () => {
+    const response = new SlackSessionReplyAccumulator();
+
+    for (const record of [
+      { type: "acpx.text_delta", text: "tool noise", channel: "output", provenance: "tool" },
+      { type: "acpx.text_delta", text: "boom", channel: "output", provenance: "error" },
+      { type: "acpx.text_delta", text: "unknown", channel: "output", provenance: "bogus" },
+      {
+        type: "acpx.text_delta",
+        text: "internal reasoning",
+        channel: "thought",
+        tag: "agent_thought_chunk",
+        provenance: "assistant",
+      },
+    ]) {
+      expect(response.append(`${JSON.stringify(record)}\n`)).toBe("");
+    }
+
     expect(response.finish()).toBe("");
   });
 

@@ -324,6 +324,59 @@ above, including `socket_mode_enabled` and `token_rotation_enabled`).
   can target the adapter during tests and can be disabled afterward.
 - Socket Mode, OAuth callback automation, and token rotation remain deferred.
 
+## DRO-1157 feasibility decision: auto-provisioning secrets is blocked on a host-core capability gap
+
+**Status: infeasible in this plugin today; blocked on Paperclip host-core, not this repo.**
+
+DRO-1157 asked for the plugin to *create* the two company-scoped Slack secrets (bot token,
+signing secret) automatically after install and bind their new IDs into the open identity dialog,
+removing the manual "create a secret, paste its UUID" operator step described above.
+
+Checked against the actual plugin SDK surface (`@paperclipai/plugin-sdk` `PluginConfigClient` /
+`PluginSecretsClient`, mirrored locally in `src/plugin-sdk-secure-config.d.ts`) and the host's
+capability table (`plugin-capability-validator`):
+
+- `ctx.config.patchSecretRefs` — **binds** an existing `{type: "secret_ref", secretId, version?}`
+  reference into plugin config. It does not create a secret or accept a raw value; it requires
+  `secrets.bind-ref` and the secret must already exist in the host secret store.
+- `ctx.secrets.resolve` — **reads** the current value of an existing secret reference at call
+  time. Requires `secrets.read-ref`. No write path.
+- There is no `secrets.create`/`secrets.write-value` (or equivalent) capability or client method
+  anywhere in the SDK types or the host capability table. A plugin has no supported way to mint a
+  new company-scoped secret record from a value it holds in memory (e.g., a freshly received
+  `oauth.v2.access` bot token) — only to bind/read secrets a human already created through the
+  host's own secret-management UI.
+
+(`secrets.bind-ref` is supported by the running host but absent from the published
+`PLUGIN_CAPABILITIES` union in `@paperclipai/shared` as of this writing — this repo's manifest
+declares it with an explicit "host supports this ahead of the published SDK type union" cast; see
+the `"secrets.bind-ref"` entry in the `capabilities` array in `src/manifest.ts`. `secrets.read-ref`
+is in the published union and needs no cast.)
+
+This matches the "feasibility boundary" called out in the issue body: the SDK "resolves existing
+secrets but does not appear to expose a host-supported company-secret write capability." That is
+confirmed, not just suspected. Building secret creation inside this plugin (writing directly to
+plugin state, a config field, or a sidecar file, and pointing an identity ref at it) is explicitly
+out of bounds per this repo's threat model and the issue's own constraints ("do not emulate secret
+storage in plugin state, config, sidecars, browser storage, or agent-visible tools").
+
+**Disposition:** the manual two-step ("operator creates the secret in company secrets UI, pastes
+its UUID into the identity dialog") described earlier in this section remains the correct and only
+compliant flow until Paperclip host-core ships a `secrets.create-value` (or similarly scoped)
+plugin capability that: accepts a raw value server-side only, returns an opaque secret ID, enforces
+company/agent scoping and idempotent-on-retry semantics, and never echoes the value back to the
+plugin or the browser. That capability does not exist in `@paperclipai/plugin-sdk` as of this
+writing and must be designed, reviewed, and shipped by whoever owns Paperclip host-core (outside
+this repository) before any of DRO-1157's OAuth-callback/manifest-automation/UX work can proceed.
+Filed as a host-core capability request: [DRO-1175](https://paperclip.roshangautam.com/DRO/issues/DRO-1175).
+
+**Outcome (2026-07-29): declined, won't-do.** Roshan answered option C ("don't") on the DRO-1175
+interaction, and both DRO-1175 and this stretch issue (DRO-1157) were closed won't-do the same day.
+The manual two-step flow above is the standing, permanent state — not an interim measure pending a
+capability that is now confirmed not to be coming. This section and the linked design spec
+([host-core-secrets-create-value-design](/domain/host-core-secrets-create-value-design)) are
+retained as a reference artifact only, in case the question is reopened in the future.
+
 ## Sources
 
 - [App manifests overview](https://api.slack.com/reference/manifests)

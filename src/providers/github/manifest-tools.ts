@@ -2,6 +2,7 @@ import { githubBotWhoamiManifestTool } from "../../shared/github-bot-whoami-tool
 import { githubBotCreatePullRequestManifestTool } from "../../shared/github-bot-create-pull-request-tool.js";
 import { githubBotPushBranchManifestTool } from "../../shared/github-bot-push-branch-tool-definition.js";
 import { githubBotSubmitPullRequestReviewManifestTool } from "../../shared/github-bot-submit-pull-request-review-tool.js";
+import { githubBotMergePullRequestManifestTool } from "../../shared/github-bot-merge-pull-request-tool.js";
 import { githubBotAddIssueCommentManifestTool } from "../../shared/github-bot-add-issue-comment-tool.js";
 import { githubBotListIssueCommentsManifestTool } from "../../shared/github-bot-list-issue-comments-tool.js";
 import { githubBotGetIssueManifestTool } from "../../shared/github-bot-get-issue-tool.js";
@@ -33,6 +34,7 @@ export const githubManifestTools = [
   githubBotCreatePullRequestManifestTool,
   githubBotPushBranchManifestTool,
   githubBotSubmitPullRequestReviewManifestTool,
+  githubBotMergePullRequestManifestTool,
   githubBotAddIssueCommentManifestTool,
   githubBotListIssueCommentsManifestTool,
   githubBotGetIssueManifestTool,

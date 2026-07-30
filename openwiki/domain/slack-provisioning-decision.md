@@ -350,7 +350,8 @@ capability table (`plugin-capability-validator`):
 (`secrets.bind-ref` is supported by the running host but absent from the published
 `PLUGIN_CAPABILITIES` union in `@paperclipai/shared` as of this writing — this repo's manifest
 declares it with an explicit "host supports this ahead of the published SDK type union" cast; see
-`src/manifest.ts:197`. `secrets.read-ref` is in the published union and needs no cast.)
+the `"secrets.bind-ref"` entry in the `capabilities` array in `src/manifest.ts`. `secrets.read-ref`
+is in the published union and needs no cast.)
 
 This matches the "feasibility boundary" called out in the issue body: the SDK "resolves existing
 secrets but does not appear to expose a host-supported company-secret write capability." That is

@@ -26,7 +26,8 @@ and the host's `plugin-capability-validator`:
 (`secrets.bind-ref` is supported by the running host but absent from the published
 `PLUGIN_CAPABILITIES` union in `@paperclipai/shared` as of this writing — this repo's manifest
 declares it with an explicit "host supports this ahead of the published SDK type union" cast; see
-`src/manifest.ts:197`. `secrets.read-ref` is in the published union and needs no cast.)
+the `"secrets.bind-ref"` entry in the `capabilities` array in `src/manifest.ts`. `secrets.read-ref`
+is in the published union and needs no cast.)
 
 No capability lets a plugin mint a brand-new company-scoped secret record from a value it holds in
 memory. DRO-1157 needs this for two Slack credentials that arrive through two *different*

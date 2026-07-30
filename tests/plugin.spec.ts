@@ -85,6 +85,8 @@ describe("plugin scaffold", () => {
     expect(manifest.capabilities).toContain("agent.tools.register");
     expect(manifest.capabilities).toContain("agents.read");
     expect(manifest.capabilities).toContain("companies.read");
+    expect(manifest.capabilities).toContain("issues.read");
+    expect(manifest.capabilities).toContain("execution.workspaces.read");
     expect(manifest.capabilities).toContain("instance.settings.register");
     expect(manifest.capabilities).toContain("secrets.bind-ref");
   });
@@ -657,7 +659,7 @@ describe("agent identity settings", () => {
 
     expect(config.providers).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "github", name: "GitHub", status: "enabled" }),
-      expect.objectContaining({ id: "slack", name: "Slack", status: "coming-soon" }),
+      expect.objectContaining({ id: "slack", name: "Slack", status: "enabled" }),
       expect.objectContaining({ id: "mattermost", name: "Mattermost", status: "coming-soon" }),
       expect.objectContaining({ id: "entra", name: "Microsoft Entra", status: "coming-soon" }),
       expect.objectContaining({ id: "gcp", name: "Google Cloud", status: "coming-soon" }),

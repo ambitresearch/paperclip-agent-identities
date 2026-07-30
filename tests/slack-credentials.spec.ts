@@ -4,6 +4,8 @@ import {
   resolveSlackBotToken,
   resolveSlackSigningSecret,
   assertSlackWorkspaceMatch,
+  verifySlackToken,
+  SLACK_AUTH_TEST_TIMEOUT_MS,
 } from "../src/providers/slack/credentials.js";
 import type { ResolvedAgentIdentity } from "../src/core/agent-identity.js";
 import type { SlackAgentIdentity, SlackSecretRef } from "../src/providers/slack/config.js";
@@ -61,6 +63,57 @@ describe("discoverSlackAppId", () => {
     await expect(discoverSlackAppId("xoxb-test", "B123", fetchImpl as never)).rejects.toThrow(
       /latest generated manifest.*reinstall.*users:read/i,
     );
+  });
+});
+
+describe("verifySlackToken", () => {
+  it("times out a hung auth.test call even when fetch ignores AbortSignal", async () => {
+    const fetchImpl = vi.fn(async () => new Promise<Response>(() => {}));
+
+    await expect(verifySlackToken("xoxb-test", fetchImpl as never, 10)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts a hung response body read (headers arrived, json() never resolves) instead of hanging indefinitely", async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const response = new Response(
+        new ReadableStream({
+          start() {
+            // Never enqueue/close — response.json() will hang forever on
+            // this stream unless the abort signal also bounds body parsing.
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+      init?.signal?.addEventListener("abort", () => {
+        // Simulate the underlying stream reacting to abort by erroring the
+        // in-flight json() read, the same way undici does.
+        (response.body as ReadableStream | null)?.cancel().catch(() => {});
+      }, { once: true });
+      return response;
+    });
+
+    await expect(verifySlackToken("xoxb-test", fetchImpl as never, 10)).rejects.toBeDefined();
+  });
+
+  it("rejects a timeout override greater than the documented bound (fails closed, no secret leak)", async () => {
+    const fetchImpl = vi.fn();
+    await expect(
+      verifySlackToken("xoxb-test", fetchImpl as never, SLACK_AUTH_TEST_TIMEOUT_MS + 1),
+    ).rejects.toThrow(/timeout is invalid/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("still verifies successfully within the timeout budget", async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ ok: true, team_id: "T123", user_id: "U123", bot_id: "B123" }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+
+    const identity = await verifySlackToken("xoxb-test", fetchImpl as never);
+    expect(identity).toEqual({ teamId: "T123", userId: "U123", botId: "B123" });
   });
 });
 

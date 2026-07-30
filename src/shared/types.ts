@@ -31,7 +31,11 @@ export const SUPPORTED_IDENTITY_PROVIDERS: readonly IdentityProviderDefinition[]
     id: "slack",
     name: "Slack",
     description: "Workspace identity for Slack messages and app-mediated actions.",
-    status: "coming-soon",
+    // Flipped to "enabled" alongside src/providers/slack/index.ts's
+    // `slackProviderDefinition.status`: slack_bot_lookup_channel
+    // (DRO-975/DRO-1160) was the last documented backlog item gating this
+    // (see openwiki/domain/slack-provider-mvp.md), and it has now landed.
+    status: "enabled",
   },
   {
     id: "mattermost",

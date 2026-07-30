@@ -47,9 +47,9 @@ interface StructuredReply {
     | "result"
     | "codex"
     | "assistant"
+    | "acpx-delta"
     | "claude-delta"
-    | "gemini-delta"
-    | "acpx-delta";
+    | "gemini-delta";
 }
 
 /**
@@ -63,6 +63,17 @@ interface StructuredReply {
  * for adapters that do not emit structured output.
  */
 export class SlackSessionReplyAccumulator {
+  /**
+   * DRO-1258: optional observer for every parsed structured record, so run
+   * liveness/completion evidence can be judged from the same stream without
+   * parsing the adapter's JSONL a second time. Reply extraction is unaffected:
+   * the observer cannot change what text is sent to Slack, and an observer
+   * that throws must never break reply delivery.
+   */
+  constructor(
+    private readonly onStructuredRecord?: (record: Record<string, unknown>) => void,
+  ) {}
+
   private pending = "";
   private discardingOversizedLine = false;
   private fallback = "";
@@ -137,12 +148,24 @@ export class SlackSessionReplyAccumulator {
   }
 
   private consumeStructuredRecord(record: Record<string, unknown>): void {
+    // Evidence observation runs before any reply-shaping early return, so
+    // tool/gateway/classification records that never become reply text are
+    // still seen. Failures here must not affect the reply.
+    if (this.onStructuredRecord) {
+      try {
+        this.onStructuredRecord(record);
+      } catch {
+        // Evidence tracking is diagnostic; reply delivery takes precedence.
+      }
+    }
+
     if (
       record.type === "acpx.text_delta" &&
       record.channel === "output" &&
       record.tag === "agent_message_chunk" &&
       typeof record.text === "string"
     ) {
+      if (record.origin !== "assistant" || record.kind !== "model") return;
       const previous = this.structured?.source === "acpx-delta" ? this.structured.text : "";
       this.setStructured(`${previous}${record.text}`, 2, "acpx-delta", true);
       return;

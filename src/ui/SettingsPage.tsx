@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { usePluginData, usePluginAction, type PluginSettingsPageProps } from "@paperclipai/plugin-sdk/ui";
 import { DEFAULT_BOT_IDENTITY_CONFIG, GITHUB_IDENTITY_PROVIDER_ID, REBIND_LEGACY_SLACK_CREDENTIALS_ACTION, SLACK_IDENTITY_PROVIDER_ID, isIdentityProviderId } from "../shared/types.js";
 import { slackBotWhoamiToolName } from "../shared/slack-bot-whoami-tool.js";
@@ -107,6 +107,14 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   // src/worker.ts), reusing the same pipeline handler. No separate hook is
   // needed from the client's perspective.
   const slackBotWhoami = usePluginAction(slackBotWhoamiToolName);
+  // DRO-1161: bounded live Slack "Connection" check (auth.test against the
+  // resolved bot credential) -- distinct from slackBotWhoami above, which
+  // only echoes already-stored, unverified metadata. See
+  // src/providers/slack/connection-status.ts.
+  const checkSlackConnection = usePluginAction("check-slack-connection");
+  // DRO-1187: read-only bounded Ingress/Delivery telemetry projection --
+  // see src/providers/slack/telemetry.ts.
+  const getSlackTelemetry = usePluginAction("get-slack-telemetry");
 
   const [formState, setFormState] = useState<IdentityFormState | null>(null);
   const [saving, setSaving] = useState(false);
@@ -116,44 +124,96 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   const [secretOptions, setSecretOptions] = useState<PaperclipSecretOption[]>([]);
   const [secretsLoading, setSecretsLoading] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
+  const [missingSecretIds, setMissingSecretIds] = useState<ReadonlySet<string>>(new Set());
   const [activeFormSection, setActiveFormSection] = useState<IdentityFormSection>("identity");
   const identities = data?.identities ?? [];
   const agentOptions = agentsData?.agents ?? [];
   const summary = summarizeIdentitySettings(identities);
 
-  useEffect(() => {
-    if (!companyId) {
-      setSecretOptions([]);
-      setSecretsError(null);
-      setSecretsLoading(false);
-      return;
-    }
+  // Guards duplicate concurrent fetches (DRO-1155's "Refresh secrets" action
+  // is a no-op while one is already in flight) and discards a stale
+  // response that resolves after a newer fetch has already started -- e.g.
+  // the operator clicks refresh twice in a row, or companyId changes while a
+  // refresh is still pending.
+  const secretsFetchGenerationRef = useRef(0);
+  const secretsFetchInFlightRef = useRef(false);
+  // Every secret id ever seen across a successful fetch for the current
+  // companyId. Used to tell "this secret id disappeared from the company's
+  // secrets" (a real deletion/rename -- flag as missing) apart from "this
+  // secret id hasn't shown up in secretOptions yet because it's still
+  // loading" (the existing "(saved)" fallback option already handles that
+  // case without an error).
+  const knownSecretIdsRef = useRef<Set<string>>(new Set());
 
-    let cancelled = false;
+  const fetchSecrets = useCallback((cid: string) => {
+    const generation = ++secretsFetchGenerationRef.current;
+    secretsFetchInFlightRef.current = true;
     setSecretsLoading(true);
     setSecretsError(null);
-    void loadSecretOptions(companyId)
+    let cancelled = false;
+    void loadSecretOptions(cid)
       .then((secrets) => {
-        if (!cancelled) {
-          setSecretOptions(secrets);
+        if (cancelled || secretsFetchGenerationRef.current !== generation) return;
+        const nextIds = new Set(secrets.map((secret) => secret.id));
+        const nextMissing = new Set<string>();
+        for (const id of knownSecretIdsRef.current) {
+          if (!nextIds.has(id)) nextMissing.add(id);
         }
+        for (const id of nextIds) knownSecretIdsRef.current.add(id);
+        setSecretOptions(secrets);
+        setMissingSecretIds(nextMissing);
       })
       .catch((err) => {
-        if (!cancelled) {
-          setSecretOptions([]);
-          setSecretsError(err instanceof Error ? err.message : "Could not load Paperclip secrets");
-        }
+        if (cancelled || secretsFetchGenerationRef.current !== generation) return;
+        // Deliberately do NOT clear secretOptions here (DRO-1155): a failed
+        // refresh must leave the last successful options -- and any
+        // unsaved selections made against them -- intact, with a retryable
+        // error instead of silently blanking the dropdowns.
+        setSecretsError(err instanceof Error ? err.message : "Could not load Paperclip secrets");
       })
       .finally(() => {
-        if (!cancelled) {
-          setSecretsLoading(false);
-        }
+        if (cancelled || secretsFetchGenerationRef.current !== generation) return;
+        setSecretsLoading(false);
+        secretsFetchInFlightRef.current = false;
       });
-
     return () => {
       cancelled = true;
     };
-  }, [companyId]);
+  }, []);
+
+  useEffect(() => {
+    // Company boundary: bump the fetch generation so any outstanding
+    // fetch/refresh for the previous company resolves as a no-op (both in
+    // fetchSecrets' generation check and in refreshSecrets' in-flight
+    // guard, which we also clear here), and reset the tracking state.
+    // Unlike a manual same-company refresh -- which deliberately preserves
+    // the last successful secretOptions on a failed fetch -- a company
+    // *change* always clears secretOptions/missingSecretIds up front:
+    // otherwise a failed load for the new company would leave the previous
+    // company's secret names/UUIDs on screen and selectable.
+    secretsFetchGenerationRef.current += 1;
+    secretsFetchInFlightRef.current = false;
+    knownSecretIdsRef.current = new Set();
+    setMissingSecretIds(new Set());
+    setSecretOptions([]);
+    setSecretsError(null);
+    setSecretsLoading(false);
+    if (!companyId) {
+      return;
+    }
+    return fetchSecrets(companyId);
+  }, [companyId, fetchSecrets]);
+
+  // DRO-1155: lets the credential step re-query only the active company's
+  // secrets without closing the identity dialog -- e.g. after the operator
+  // creates the Slack bot-token/signing-secret records in another tab while
+  // this dialog stays open. Reusable by any provider's credential step (and,
+  // per the issue, a future automatic-provisioning flow) via the same
+  // `refreshSecrets` threaded through ProviderSettingsUIHookInput.
+  const refreshSecrets = useCallback(() => {
+    if (!companyId || secretsFetchInFlightRef.current) return;
+    fetchSecrets(companyId);
+  }, [companyId, fetchSecrets]);
 
   const hasAgentOptions = agentOptions.length > 0;
   const config = formState;
@@ -184,12 +244,16 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     secretsLoading,
     secretsError,
     companyId,
+    refreshSecrets,
+    missingSecretIds,
     createSlackAppManifest,
     getSlackAppManifestFlow,
     discoverSlackInstallMetadata,
     saveSlackInstallMetadata,
     rebindLegacySlackCredentials,
     slackBotWhoami,
+    checkSlackConnection,
+    getSlackTelemetry,
   });
 
   const githubUIState = providerSettingsUIRegistry.get(GITHUB_IDENTITY_PROVIDER_ID)!.useCredentialStep({
@@ -213,6 +277,8 @@ export function SettingsPage(props: PluginSettingsPageProps) {
     secretsLoading,
     secretsError,
     companyId,
+    refreshSecrets,
+    missingSecretIds,
     createGitHubAppManifest,
     getGitHubAppManifestFlow,
     convertGitHubAppManifest,
@@ -250,7 +316,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
   );
   const duplicateIdentity = config ? identities.find((entry) => entry.agentId === config.agentId && entry.provider === config.provider && !(config.previousAgentId === entry.agentId && config.provider === entry.provider)) : undefined;
   const formValidation = config
-    ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy)
+    ? getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy, missingSecretIds)
     : null;
   const activeFormSteps = getFormSteps(config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
   const activeFormStepIndex = getFormStepIndex(activeFormSection, config?.provider ?? GITHUB_IDENTITY_PROVIDER_ID);
@@ -346,7 +412,7 @@ export function SettingsPage(props: PluginSettingsPageProps) {
 
   async function handleSave() {
     if (!config) return;
-    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy);
+    const validation = getIdentityFormValidation(config, Boolean(duplicateIdentity), slackUIState.slackSaveResult, slackUIState.slackSaveBusy, missingSecretIds);
     if (!validation.isComplete) {
       setSaveSuccess(false);
       setSaveError(validation.saveMessage);
@@ -874,9 +940,10 @@ export function getIdentityFormValidation(
   hasDuplicate = false,
   slackSaveResult: SaveSlackInstallMetadataResult | null = null,
   slackSaveBusy = false,
+  missingSecretIds: ReadonlySet<string> = new Set(),
 ): IdentityFormValidation {
   const adapter = providerSettingsRegistry.get(config.provider);
-  return adapter.getValidation(config, hasDuplicate, { slackSaveResult, slackSaveBusy });
+  return adapter.getValidation(config, hasDuplicate, { slackSaveResult, slackSaveBusy, missingSecretIds });
 }
 
 function getFormStepIndex(step: IdentityFormSection, provider: string): number {
@@ -925,6 +992,49 @@ export function formatSecretOption(secret: PaperclipSecretOption): string {
     .filter(Boolean)
     .join(" - ");
   return details ? `${label} (${details})` : label;
+}
+
+// DRO-1155: a small, reusable "Refresh secrets" action shared by every
+// provider's credential step (Slack's bot-token/signing-secret selectors
+// today; GitHub's private-key/fallback-token selectors, and any future
+// automatic-provisioning flow, via the same ProviderSettingsUIHookInput
+// surface). Disabled while a fetch is already in flight so a double-click
+// can't fire overlapping requests, and exposes progress via aria-live
+// without disabling anything else in the form.
+export function RefreshSecretsButton(props: {
+  onRefresh: () => void;
+  secretsLoading: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <div style={formActionsStyle}>
+      <button
+        type="button"
+        onClick={props.onRefresh}
+        disabled={props.secretsLoading || props.disabled}
+        style={secondaryButtonStyle}
+        aria-label="Refresh secrets"
+      >
+        {props.secretsLoading ? "Refreshing..." : "Refresh secrets"}
+      </button>
+      <span role="status" aria-live="polite" style={hintStyle}>
+        {props.secretsLoading ? "Refreshing Paperclip secrets..." : ""}
+      </span>
+    </div>
+  );
+}
+
+// DRO-1155: renders an explicit, retryable error for a select-backed
+// secret field whose previously selected id no longer appears in the most
+// recent successful secrets fetch, instead of the UI silently keeping (or
+// worse, switching away from) a reference that no longer resolves.
+export function getMissingSecretIdError(
+  secretId: string,
+  missingSecretIds: ReadonlySet<string>,
+  fieldLabel: string,
+): string | null {
+  if (!secretId || !missingSecretIds.has(secretId)) return null;
+  return `The saved ${fieldLabel} secret (${secretId}) no longer exists in this company's Paperclip secrets. Refresh secrets, then select a valid one.`;
 }
 
 export function getSecretFieldHint(input: {

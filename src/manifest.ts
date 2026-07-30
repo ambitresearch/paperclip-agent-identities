@@ -132,7 +132,7 @@ const manifest: PaperclipPluginManifestV1 = {
   // every derived Slack Events URL if the id ever changed.
   id: AGENT_IDENTITIES_PLUGIN_ID,
   apiVersion: 1,
-  version: "0.2.4",
+  version: "0.3.2",
   displayName: "Agent Identities",
   description: "Per-agent identity providers and contribution tools for Paperclip",
   author: "Roshan Gautam",
@@ -180,11 +180,14 @@ const manifest: PaperclipPluginManifestV1 = {
     // Slack webhook scope persists a turn, then awaits a company-scoped
     // provider self-event instead of invoking an agent session inline.
     "events.emit",
+    "jobs.schedule",
     "plugin.state.read",
     "plugin.state.write",
     "ui.dashboardWidget.register",
     "instance.settings.register",
     "project.workspaces.read",
+    "execution.workspaces.read",
+    "issues.read",
     "agent.tools.register",
     "agents.read",
     "agent.sessions.create",
@@ -192,6 +195,10 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.sessions.send",
     "agent.sessions.close",
     "companies.read",
+    // Required by github_bot_get_issue_interaction_summary, which reads a
+    // Paperclip issue and its comments only -- it never calls GitHub.
+    "issues.read",
+    "issue.comments.read",
     "http.outbound",
     // The local host supports this capability ahead of the published SDK type union.
     "secrets.bind-ref" as PaperclipPluginManifestV1["capabilities"][number],
@@ -199,6 +206,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "activity.log.write",
     "webhooks.receive"
   ],
+  jobs: [{
+    jobKey: "slack-queue-recovery",
+    displayName: "Slack queue recovery scan",
+    description: "Recovers durable Slack conversation queues after worker restarts or failed self-event kicks.",
+    schedule: "*/2 * * * *"
+  }],
   // Webhook endpoints contributed by any registered provider (e.g. Slack's
   // HTTP Events API ingress, DRO-975), composed generically via
   // `ProviderRegistry.webhooks()` -- no provider-specific branch here. See

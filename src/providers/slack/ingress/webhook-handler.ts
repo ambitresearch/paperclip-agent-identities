@@ -5,6 +5,7 @@ import {
   isWithinSlackUnauthenticatedRateLimit,
 } from "./rate-limit.js";
 import type { SlackAgentIdentity } from "../config.js";
+import type { SlackIngressEventTypeCategory, SlackIngressOutcome } from "../telemetry.js";
 
 export const SLACK_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
 const SIGNATURE_CHECK_CONCURRENCY = 8;
@@ -153,6 +154,14 @@ export interface HandleSlackWebhookDeps {
   resolveSigningSecret(agentId: string): Promise<string>;
   shouldProcessEvent(agentId: string, eventId: string): Promise<boolean>;
   onAgentEvent(dispatch: SlackAgentEventDispatch): Promise<void>;
+  // DRO-1187: optional bounded, secret-free ingress telemetry recording.
+  // Called only with an agentId whose signing secret has already
+  // authenticated this exact raw-body HMAC -- never with an unauthenticated,
+  // routing-hint-only identity. When no identity has verified (e.g. no
+  // signature match at all), nothing is recorded rather than attributing to
+  // an unauthenticated hint. Kept optional so existing callers (e.g. tests
+  // exercising handleSlackWebhook directly) are unaffected.
+  recordIngressOutcome?(agentId: string, outcome: SlackIngressOutcome): Promise<void>;
   logger: {
     info(message: string, meta?: Record<string, unknown>): void;
     warn(message: string, meta?: Record<string, unknown>): void;
@@ -299,6 +308,15 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
       throw new Error("Slack webhook authentication is temporarily unavailable");
     }
     logger.warn("Slack webhook: signature verification failed — no configured identity matched");
+    // Do not record ingress telemetry here: matchedAgentId is undefined,
+    // meaning the raw-body HMAC never verified against any configured
+    // identity's signing secret. The team_id/api_app_id routing hints used to
+    // narrow `candidateAgentIds` above are themselves unauthenticated
+    // attacker-controlled input at this point, so attributing a
+    // "signature_failed" outcome to those hinted identities would let anyone
+    // who merely knows (or guesses) a configured team/app pair poison that
+    // identity's ingress health without ever proving control of the
+    // workspace or app.
     return { status: 401, body: { error: "unauthorized" } };
   }
 
@@ -365,6 +383,15 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
     // state (or a delivery for an app/team this Paperclip instance does not
     // manage) that retrying will never fix.
     logger.warn("Slack webhook: routing failed", { reason: routeResult.error, teamId, appId });
+    // matchedAgentId already authenticated this raw body against exactly one
+    // configured identity's signing secret, so it is the correct (and only
+    // safe) scope to attribute a post-signature routing failure to.
+    if (deps.recordIngressOutcome) {
+      await deps.recordIngressOutcome(matchedAgentId, {
+        ok: false,
+        category: "routing_failed",
+      }).catch(() => undefined);
+    }
     return { status: 200, body: { ok: true, routed: false } };
   }
 
@@ -378,6 +405,12 @@ export async function handleSlackWebhook(deps: HandleSlackWebhookDeps): Promise<
       agentId,
     });
     return { status: 401, body: { error: "unauthorized" } };
+  }
+
+  if (deps.recordIngressOutcome) {
+    const eventType: SlackIngressEventTypeCategory =
+      event.type === "message" ? "message" : event.type === "app_mention" ? "app_mention" : "other";
+    await deps.recordIngressOutcome(agentId, { ok: true, eventType }).catch(() => undefined);
   }
 
   const botUserId = identities[agentId]?.botUserId ?? "";

@@ -108,7 +108,7 @@ describe("Slack Events API ingress - manifest + worker wiring", () => {
     expect(manifest.capabilities).toContain("agent.sessions.list");
     expect(manifest.capabilities).toContain("agent.sessions.send");
     expect(manifest.capabilities).toContain("agent.sessions.close");
-    expect(manifest.capabilities).not.toContain("jobs.schedule");
+    expect(manifest.capabilities).toContain("jobs.schedule");
     expect(manifest.capabilities).not.toContain("agents.invoke");
   });
 

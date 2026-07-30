@@ -109,6 +109,25 @@ including threaded replies. Private-group and channel threads use separate sessi
 keyed by their root `thread_ts`, and different channels or thread roots never share
 context. Only DMs may carry context across Slack threads.
 
+When the first routed turn is an `app_mention` inside an already-existing channel or
+private-group thread, the drain resolves the exactly routed identity's verified bot
+token and calls `conversations.replies` for only the inbound event's canonical
+`channel` and `thread_ts`. Hydration is skipped for root mentions and for any
+conversation that already has a Paperclip session, so successor turns rely on the
+session instead of repeatedly reloading Slack history. Retrieval is capped at three
+pages of 100 source rows, 20 projected messages, 8 KiB of serialized quoted history,
+2,048 UTF-8 bytes per message, and a two-second timeout. Rows are deduplicated by
+timestamp, filtered to messages before the current event, and sorted chronologically.
+The projection preserves only timestamp, root-thread timestamp, bounded user/bot ID,
+bounded text, and a deletion tombstone; attachments, blocks, `previous_message`,
+transport IDs, and other envelope metadata are discarded. Missing scope, rate limit,
+timeout, deletion races, malformed cross-channel/thread rows, and other Slack API
+failures degrade to the current-message prompt with a stable secret-free warning.
+
+The invocation prompt separates verified routing/privacy metadata, explicitly quoted
+untrusted thread history, and the current Slack user message. Quoted history never
+receives instruction authority, even when its text is shaped like a system prompt.
+
 The webhook never waits behind that session. After signature/routing checks, it
 persists a bounded safe turn in one version-2 per-conversation state record, awaits
 a company-scoped `slack-turn-drain` self-event emit, and acknowledges. The record
@@ -142,8 +161,21 @@ run ID, buffers callbacks received before `sendMessage` returns, and ignores sta
 run/session callbacks. Terminal handling awaits stream/post finalization, then marks
 the event completed, clears active state, and emits the successor kick. No detached
 timer calls host APIs. Structured adapter output is reduced to user-facing reply text;
-ACPX `acpx.text_delta` records stream only when their channel is `output` and their
-tag is `agent_message_chunk`. The persisted `retireAfter` is a 30-minute durable accepted
+only session `chunk` events on `stdout` enter that reducer. Host `system` lifecycle
+events (including `run started`) and adapter `stderr` are excluded at the callback
+boundary, so they cannot contaminate a following JSONL record or become fallback text.
+ACPX `acpx.text_delta` records with channel `output` and tag `agent_message_chunk` are
+accepted as Slack reply content only when they carry the exact model-provenance pair
+`origin: "assistant"` and `kind: "model"`. The Claude, Codex, and Gemini ACP adapters
+attach that pair only to top-level model-authored assistant output; ACPX allowlists those fields,
+and Paperclip copies only the exact pair onto the emitted transcript record. Missing,
+partial, unknown, malformed, and ID-only records remain fail-closed and cannot be
+accumulated, streamed, or delivered at turn completion. Confirmed records (`result`, `item.completed`, a Claude
+`content_block_delta`, or a Gemini/assistant message) still preserve genuine assistant
+prose, including text that quotes or explains the same warning, while non-JSON adapter
+stdout remains available as the bounded compatibility fallback. The persisted
+`retireAfter` is a
+30-minute durable accepted
 lease and is retired only when a
 later webhook/self-event supplies host scope; a fresh terminal session callback
 can finalize its own accepted run.
@@ -186,6 +218,52 @@ Each inbound turn includes a bounded Slack sender profile from `users.info`, cac
 for 24 hours. Email is excluded. DMs may use sender-specific context; private groups
 and public channels may use only their own conversation context and the sender's
 workspace-visible profile.
+
+### 1.1 Completion requires action evidence, not acknowledgement (DRO-1258)
+
+A run reaching the host's `done` terminal event is necessary but not sufficient
+for a Slack turn to be recorded as `completed`. A Slack-initiated *action*
+request that ends with only an acknowledgement ("on it", "I'll post that
+shortly") or a plan did not do what was asked, and recording it as a clean
+success hides the failure from both the operator and the recovery path.
+
+`src/providers/slack/ingress/run-outcome.ts` judges this from the same
+structured adapter records the reply accumulator already parses
+(`SlackSessionReplyAccumulator` takes an optional observer callback, so the
+JSONL stream is not parsed twice). It classifies a finished run as:
+
+- `acted` — durable action evidence was observed (a tool/command/file-change
+  invocation), or the reply is a substantive non-action answer.
+- `acknowledgment_only` — the reply consists solely of acknowledgement or
+  promise-of-future-work clauses and no tool ran.
+- `plan_only` — a terminal record carried the `plan_only` classification,
+  meaning runnable future work was described without execution evidence.
+
+Two signals are specifically *not* progress:
+
+- **`tool_gateway.session_created` is attachment telemetry, never productive
+  progress.** It proves a gateway session was established and nothing about
+  whether any tool was invoked through it. The evidence tracker is monotonic:
+  the event neither adds progress nor resets progress already earned by a real
+  invocation, so the positive case (gateway session followed by a genuine tool
+  call) still completes normally.
+- **`plan_only` is never terminal success.** It outranks incidental tool use
+  performed *while* planning, because grepping to write a plan is not the
+  requested action.
+
+Anything other than `acted` records the delivery phase as a
+`action_not_taken` failure rather than `completed`. The reply is still posted
+to Slack (suppressing it would lose the agent's output), the durable event
+claim still completes (so the turn is never silently re-sent), and the
+operator-facing `nextStep` names the required follow-up. The turn therefore
+lands on the explicit blocked/action-required surface and remains eligible for
+the ordinary bounded continuation path on the next inbound event, instead of
+reporting green.
+
+The action-evidence allowlists are deliberately closed: an unrecognised record
+type is *not* optimistically read as action evidence, since that is exactly the
+false-success mode this check exists to prevent. Agent prose (`agent_message`)
+is likewise never action evidence.
 
 ## 2. Identity shape
 
@@ -386,8 +464,9 @@ company ID and exact config path into `ctx.secrets.resolve`. The path helper
 retains the flat legacy path while reading or updating a record written by an
 earlier build of this PR. Missing, malformed,
 revoked, or cross-bound refs fail closed. `verifySlackToken` calls `auth.test`
-and parses only the documented team, user, and bot identity fields without
-including the token or raw response in an error.
+under one two-second deadline spanning both the host fetch and response-body
+read, then parses only the documented team, user, and bot identity fields
+without including the token or raw response in an error.
 
 The `bot_id` check is mandatory and not redundant with `team_id`/`user_id`:
 Slack returns it only for bot tokens. Requiring it rejects a human user token
@@ -729,6 +808,41 @@ the unchanged body and Slack headers to
 `/api/companies/<companyId>/plugins/ambitresearch.paperclip-agent-identities/webhooks/slack-events`.
 This adapter does not implement Socket Mode.
 
+**`channel_type` normalization for `app_mention` (DRO-1156):** production
+`app_mention` events may omit `event.channel_type` entirely; Slack does not
+guarantee it is present on that event type. The durable queue
+(`enqueueSlackConversationTurn`) still requires a concrete non-direct
+`channelType` (`channel`, `group`, or `mpim`) and never relaxes that
+invariant. Instead, `projectQueuedTurnEvent` in
+`src/providers/slack/ingress/provider-webhook.ts` normalizes the missing
+field once at the ingress trust boundary, after signature verification and
+before durable persistence: a validated `C…` conversation ID infers
+`channel`, a validated `G…` ID infers `group`. An explicit `channel_type` is
+still accepted, but only when it agrees with the conversation ID's prefix —
+a contradicting explicit type (e.g. `channel_type: "group"` with a `C…` ID)
+fails closed before any queue write, as do direct-message (`D…`), blank,
+malformed, and unknown-prefix conversation IDs for `app_mention`. This keeps
+the fix scoped to ingress normalization rather than weakening the queue's
+validation, and matches the regression fixtures in
+`tests/providers/slack/ingress-provider-webhook.spec.ts` that intentionally
+omit `channel_type` from a production-shaped `app_mention` payload.
+
+#### Thread-history hydration boundary
+**Risk:** a first mention in an existing thread could cause cross-channel disclosure,
+unbounded Slack reads, repeated history amplification, or prompt injection from an
+earlier participant.
+**Mitigation (implemented by DRO-1158):** history lookup is permitted only after
+signature verification, exact `(team_id, api_app_id)` identity routing, company-scoped
+config resolution, and verified bot-token binding. The request uses only the routed
+event's channel and root timestamp, never search or link traversal. Page, message,
+serialized-byte, per-message, and timeout limits are fixed constants. Response rows
+with a conflicting channel or thread fail closed; only messages preceding the current
+event are projected. Unsupported metadata is dropped, deleted messages become empty
+tombstones, and the prompt labels all retained history as quoted untrusted data below
+verified metadata and above the separately labeled current message. Failures are
+non-fatal and logged without Slack errors, message text, credentials, or transport
+metadata. Existing session mappings suppress later rehydration.
+
 ### T6 — Secret leakage through tool output or manifest-flow logs
 **Risk:** same class of risk the project constraints already name explicitly
 ("never place Slack config tokens... in agent config, workspaces, tool
@@ -740,6 +854,81 @@ both add and remove paths. Tests should assert no test
 fixture ever contains a real-shaped Slack token pattern (`xoxb-`, `xoxp-`)
 being written to a comment, log, or committed file — same discipline as
 existing credential tests for GitHub App keys.
+
+### T7 — Live connection-check triggers as a new caller path to the credential (DRO-1161)
+**Risk:** `check-slack-connection` (`src/providers/slack/connection-status.ts`)
+introduces a new, human-operator-triggered live call to Slack's `auth.test`
+using the resolved bot token — a second code path (alongside
+`resolveSlackCredential`/the tool pipeline) that touches the credential. A
+bug here could either leak the token to the Settings UI, or become an
+unbounded/uncapped way to hammer Slack's `auth.test` endpoint from a
+company's own settings page.
+**Mitigation:** `runSlackConnectionCheck` reuses `resolveSlackBotToken`
+itself (not a parallel re-implementation) so it inherits the exact same
+fail-closed checks as tool credential resolution (workspace match, bot- vs
+user-token rejection, `botUserId` match) — "Connection: ok" cannot mean
+anything looser than what a real tool call would also accept. The action's
+return value is a closed, bounded shape
+(`{ outcome: { ok, category?, reason? }, checkedAt, nextStep? }`) built by
+`categorizeConnectionError`, which maps thrown errors to one of seven fixed
+category strings — the resolved token, the raw Slack response body, and the
+original thrown `Error.message` are never included. The check is also
+capped at a fixed 8s timeout (`SLACK_CONNECTION_CHECK_TIMEOUT_MS`) via
+`withTimeout`, and the action itself is gated the same way every other
+settings action is (`context.companyId` is host-authorized, never a
+caller-supplied `params.companyId`); the operator UI additionally only
+allows one check at a time per identity (loading-gated button), so this
+does not add a new unbounded-retry surface against Slack's API. Test
+coverage (`tests/providers/slack/connection-status.spec.ts`) explicitly
+asserts the token never appears in the serialized result, including on a
+Slack error body engineered to echo the token back.
+
+### T8 — Ingress/Delivery telemetry storage and exposure (DRO-1187)
+
+**Risk:** unlike Connection (an on-demand call), Ingress/Delivery telemetry
+(`src/providers/slack/telemetry.ts`) is *recorded* continuously as real
+webhook/queue/session activity happens, and its read path
+(`get-slack-telemetry`) is a new, always-available settings action. Two
+distinct risks follow: (1) an unbounded or unredacted record could
+accumulate message content, tokens, or other sensitive operational detail
+over time in plugin state, turning a health signal into a secondary secret
+store; (2) a bug in the read action could leak one company/agent's telemetry
+to another's Settings view.
+**Mitigation:** the persisted `SlackTelemetryRecord` shape is a small, fixed,
+`structuredClone`-serializable record — only ISO/epoch-ms timestamps, closed
+enum categories (`SlackIngressEventTypeCategory`, `SlackIngressFailureCategory`,
+`SlackDeliveryFailureCategory`), and the same correlation-safe `teamId`/
+`appId`/`companyId` identifiers already treated as safe throughout this
+provider (never message text, prompts, model output, tokens, signing
+secrets, HTTP headers, or stack traces). There is no caller-supplied
+free-text `reason` field at all: every failure carries only its closed-enum
+`category` and that category's fixed, static `nextStep` guidance string, so
+there is no per-call text that could ever carry a raw thrown `Error.message`
+or Slack response body into storage. There is no historical log — each write
+replaces the single bounded record for that (companyId, agentId) scope, so
+there is no unbounded growth path. The read action
+(`contributeSlackTelemetryAction`/`get-slack-telemetry`) validates
+`agentId`/`companyId` from `params`/`context` exactly like
+`check-slack-connection` (`context.companyId` is host-authorized, never a
+caller-supplied `params.companyId`), and — because the underlying state key
+is scoped by `agentId` alone, not `companyId` — `getSlackTelemetry` also
+checks the stored record's own `companyId` against the caller's authorized
+`companyId` before returning it, so a known/guessed `agentId` alone can
+never disclose another company's telemetry for that agent. Test coverage
+(`tests/providers/slack/telemetry.spec.ts`) explicitly asserts per-agent
+scoping (one agent's record never leaks into another's projection), a
+dedicated cross-company case (a shared `agentId` recorded under one company
+never projects for a different caller `companyId`, at both the module and
+registered-action layers), and that
+the persisted record and its projection never contain secret-shaped content.
+
+The `action_not_taken` delivery category added in DRO-1258 (see §1.1) keeps
+this property: like every other category it is a closed enum value whose
+`nextStep` is a fixed static guidance string. The classification that produces
+it is computed from adapter record *shapes* and discarded — no reply text,
+prompt, tool argument, or tool output is ever persisted or logged, and the
+accompanying warn-level log carries only the `agentId`, the closed-enum
+outcome, and the boolean gateway-attachment flag.
 
 ## 10. Implementation notes and deferred questions
 

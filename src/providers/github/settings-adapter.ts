@@ -23,16 +23,29 @@ export const githubSettingsAdapter: ProviderSettingsAdapter = {
   credentialStepId: "github",
   savesViaSeparateAction: false,
   hasProviderAccountFieldsInIdentityStep: true,
-  getValidation(config, hasDuplicate): ProviderSettingsValidation {
+  getValidation(config, hasDuplicate, extra): ProviderSettingsValidation {
+    const missingSecretIds = extra?.missingSecretIds ?? new Set<string>();
     const hasIdentity =
       Boolean(config.agentId.trim() && config.provider.trim() && config.label.trim() && config.githubUsername.trim()) &&
       !hasDuplicate;
+    // A selected private-key/fallback-token secret ref that no longer
+    // resolves to a real secret (DRO-1155) must not count toward a
+    // complete credential -- otherwise the UI shows a missing-secret error
+    // next to the field while still letting that stale ref be saved.
+    const privateKeySecretMissing = Boolean(
+      config.privateKeySecretId.trim() && missingSecretIds.has(config.privateKeySecretId.trim()),
+    );
+    const fallbackTokenSecretMissing = Boolean(
+      config.fallbackTokenSecretId.trim() && missingSecretIds.has(config.fallbackTokenSecretId.trim()),
+    );
     const hasGitHubAppCredential = Boolean(
       config.githubAppId.trim() &&
         config.githubInstallationId.trim() &&
-        (config.privateKeySecretId.trim() || config.privateKeyFile.trim()),
+        ((config.privateKeySecretId.trim() && !privateKeySecretMissing) || config.privateKeyFile.trim()),
     );
-    const hasFallbackCredential = Boolean(config.fallbackTokenSecretId.trim() || config.tokenFile.trim());
+    const hasFallbackCredential = Boolean(
+      (config.fallbackTokenSecretId.trim() && !fallbackTokenSecretMissing) || config.tokenFile.trim(),
+    );
     const identityComplete = hasIdentity;
     const credentialComplete = hasGitHubAppCredential || hasFallbackCredential;
     const identityMessage = hasDuplicate
@@ -42,7 +55,9 @@ export const githubSettingsAdapter: ProviderSettingsAdapter = {
         : "Identity details are complete.";
     const credentialMessage = credentialComplete
       ? "Credential source is complete."
-      : "Add a complete GitHub App credential, or choose a fallback token source, before this identity can be saved.";
+      : privateKeySecretMissing || fallbackTokenSecretMissing
+        ? "The selected secret no longer exists. Choose another secret or refresh secrets before this identity can be saved."
+        : "Add a complete GitHub App credential, or choose a fallback token source, before this identity can be saved.";
     const saveMessage = !identityComplete
       ? identityMessage
       : !credentialComplete

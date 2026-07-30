@@ -107,9 +107,10 @@ interface SlackChannelRef extends ResourceReference {
 (`conversations.list`/`conversations.info`) is an authenticated API call, so it cannot run at this
 pipeline stage. `resolveResourceRef` therefore stays credential-free: it accepts and syntactically
 validates a caller-supplied channel **ID** (not a name), rejecting malformed/empty/wildcard values.
-Translating a human-readable channel *name* to an ID requires a token and is the deferred
-`slack_bot_lookup_channel` tool's job (§4). Callers currently need to supply a channel ID directly.
-A channel ID that doesn't validate
+Translating a human-readable channel *name* to an ID requires a token and is the credentialed
+`slack_bot_lookup_channel` tool's job (§4, DRO-975/DRO-1160 — now implemented). Callers that only
+have a channel name resolve it through that tool first and pass the returned ID into the other
+Slack tools. A channel ID that doesn't validate
 syntactically, or one outside an allow-list (if one is configured), is denied at this step; Slack's
 own membership/ACL check happens later, in the credentialed `perform` step, and is the actual
 authorization boundary (see §9, "Confused-deputy posting" mitigation).
@@ -122,7 +123,7 @@ authorization boundary (see §9, "Confused-deputy posting" mitigation).
 | `slack_bot_post_message` | `true` | `chat:write` (also handles threaded replies through `threadTs`) | `SlackChannelRef` |
 | `slack_bot_add_reaction` | `true` | `reactions:write` | `SlackChannelRef` |
 | `slack_bot_remove_reaction` | `true` | `reactions:write` | `SlackChannelRef` |
-| `slack_bot_lookup_channel` (deferred) | `true` | `channels:read`, `groups:read` | none (this tool produces a ref) |
+| `slack_bot_lookup_channel` | `true` | `channels:read`, `groups:read` | none (this tool produces a ref) |
 
 No `slack-join-channel` tool in MVP — `channels:join` is listed as optional/deferred in the
 decision record; omit until a concrete need surfaces (least-privilege: don't request or wire a
@@ -134,6 +135,61 @@ diverging from it as an earlier revision of this doc specified: `requiresCredent
 configured `SlackAgentIdentity` fields (`label`, `teamId`, `appId`, `botUserId`,
 `hasDefaultChannel`); a stale or misconfigured identity is not caught by this tool — only the
 credentialed tools' `auth.test` resolution step catches that.
+
+### `slack_bot_lookup_channel` (DRO-975 / DRO-1160)
+
+Resolves a human-readable Slack channel name (`"general"` or `"#general"`) to its canonical
+conversation ID and metadata via `conversations.list`, using the `channels:read`/`groups:read`
+scopes already listed above. This is the credentialed counterpart the §3 comment block
+anticipates: `resolveSlackChannelRef` cannot do name resolution because it runs before any
+credential is resolved.
+
+Security properties, mirroring the other Slack tools' pipeline discipline:
+
+- **Cross-workspace guard first.** `resolveResourceRef` performs the same `teamId`-matches-identity
+  check as `resolveSlackChannelRef` (§3, §9) — a mismatched `teamId` is denied before any credential
+  is resolved or API call made. It does not attempt the name lookup itself (that needs a
+  credential); it returns a `null` ref and defers the actual resolution to `perform`.
+- **ID passthrough, no extra call.** If `channel` already matches the conversation-ID pattern
+  (`^[CDG][A-Z0-9]{8,}$`), it is validated and returned as-is — no `conversations.list` call is
+  made. This keeps "already-resolved ID in, same ID out" cheap and satisfies the "ID input remains
+  supported" criterion without weakening the fail-closed ID/prefix validation used elsewhere.
+- **Narrow input grammar.** `channel` must match either the conversation-ID pattern above or
+  Slack's own channel-name grammar (`^#?[a-z0-9][a-z0-9._-]{0,79}$` — lowercase letters, digits,
+  `.`/`_`/`-`, optional leading `#`, max 80 characters, matching Slack's documented channel-name
+  rules). URLs (`https://…`, `slack://…`, anything containing `/`), whitespace-heavy free text, and
+  wildcard-like input are rejected by `validateParams` before any identity/credential work — never
+  treated as a trusted reference.
+- **Never auto-joins.** Only conversations already visible to the bot via `conversations.list`
+  (`types=public_channel,private_channel`, `exclude_archived=true`) are considered. Archived
+  channels are excluded from matches, and the tool never calls `conversations.join`.
+- **Bounded pagination, fails closed on truncation.** At most 10 pages of up to 1000 results each
+  are fetched (`conversations.list`'s documented per-page max). If the scan is truncated — a
+  `next_cursor` remains after the 10th page — the tool does NOT report success even if exactly one
+  match was seen so far: an unseen later page could contain another channel with the same name,
+  turning an apparent unique match into an undetected duplicate. A truncated scan always returns an
+  actionable "could not conclusively resolve" error asking the caller to disambiguate by ID, rather
+  than guessing at uniqueness from a partial view.
+- **Bounded rate-limit retries.** A `429` response or a `{ ok: false, error: "rate_limited" }` body
+  is retried up to 3 times with linear backoff, then fails closed with an actionable
+  "rate limit exceeded" error — never an unbounded retry loop.
+- **Ambiguity fails closed, and the response is bounded.** Multiple accessible channels sharing the
+  queried name return an explicit error naming conflicting IDs (capped at 20 IDs, with a count of any
+  further omitted matches), instructing the caller to disambiguate by passing a resolved ID
+  directly, rather than silently picking one match or returning an unbounded ID list.
+- **Secret-free errors.** Network failures are logged with a bare classification only (mirrors
+  `performReaction`'s catch block in `react.ts`) — the raw thrown error, which could embed request
+  details, is never logged or returned, since the bot token is already in the outgoing
+  `Authorization` header by the time any error could occur.
+
+Test coverage: `tests/providers/slack/lookup-channel-tool.spec.ts` — local param validation
+including rejection of URLs/free text, cross-workspace denial before any credential/API call, ID
+passthrough with zero API calls, exact single-match resolution, pagination across `cursor`, fail-
+closed truncation handling on an endless cursor chain (including when exactly one match was seen so
+far), a bounded/capped ambiguity-error payload, zero-match and ambiguous-match errors, archived-
+channel exclusion (and no `conversations.join` call), 429/`rate_limited` retry-then-recover and
+retry-then-fail-closed, network/API failure
+handling without leaking the token, and full-pipeline redaction.
 
 ## 5. Manifest fragments
 
@@ -251,6 +307,7 @@ which a Slack token could land in an agent's environment/logs.
 | **Cross-workspace IDs** (a `teamId`/`channel` ref from workspace X accidentally used against workspace Y's token) | `SlackChannelRef.teamId` is carried alongside `channel` through `resolveResourceRef`; the tool must assert `identity.slack.teamId === ref.teamId` before calling `perform`, the same "expectedRepository mismatch guard" pattern GitHub's push tool already uses for cross-repo mixups. |
 | **Revoked tokens** (bot token revoked/uninstalled mid-operation) | `resolveCredential` calls fail closed (matching `fail closed with stable error on credential resolution failure`, already implemented for GitHub in `f8baa63`) — a Slack API 401/`invalid_auth` response surfaces as a tool error, not a silent no-op or retry-with-stale-token. |
 | **Logging** (accidental token/signing-secret leakage into structured logs or error messages) | Errors from Slack API calls must be sanitized the same way GitHub App token errors already avoid returning secret values (see "GitHub App token minting" section of `agent-identities.md`) — never log full request/response bodies for Slack `oauth.v2.access`, `apps.manifest.*`, or Events API signature-verification failures. |
+| **Transport diagnostic misattributed as agent content** (DRO-1162: an ACPX/adapter transport warning, e.g. "Model metadata not found, defaulting to fallback metadata", streamed to Slack as if the agent authored it) | Slack ingress admits only session `stdout` chunks to `SlackSessionReplyAccumulator`; host `system` lifecycle chunks (including `run started`) and adapter `stderr` are rejected before reduction. The accumulator (`src/providers/slack/ingress/session-reply.ts`) accepts `acpx.text_delta` + `channel: "output"` + `tag: "agent_message_chunk"` only with the exact pair `origin: "assistant"` and `kind: "model"`. Claude, Codex, and Gemini ACP attach that pair only to top-level model-authored assistant output; ACPX allowlists the two fields and Paperclip emits only the exact pair. Missing, partial, unknown, malformed, and ID-only records remain fail-closed. Filtering never uses warning text, message IDs, or model names. Confirmed final records and non-JSON adapter fallback still preserve legitimate answers, including prose that discusses or quotes a warning. Lifecycle JSONL, `acpx.status`/`acpx.error`, tool-call records, reasoning/thought-channel deltas, host lifecycle messages, and raw stderr never reach Slack reply content. |
 
 ## 10. Inbound events — HTTP receiver shipped (DRO-1005)
 
@@ -305,7 +362,7 @@ Implementation (`src/providers/slack/ingress/`):
   `ctx.agents.sessions.sendMessage` or waits for a previous terminal event. Slack's provider setup contribution
   registers one `plugin.ambitresearch.paperclip-agent-identities.slack-turn-drain` handler. Under that
   fresh event scope it drains one turn, resolves sender profile/session state, sends the bounded
-  prompt, accumulates non-stderr output, and relays only filtered user-facing text. Threaded replies
+  prompt, accumulates only stdout output, and relays only filtered user-facing text. Threaded replies
   use Slack streaming; top-level/fallback replies use the provider post-message pipeline. Callbacks
   bind to the persisted accepted run ID, buffer pre-send-result events, ignore stale callbacks, and
   await reply finalization before completing/clearing/kicking the successor. Non-terminal callbacks
@@ -368,8 +425,7 @@ these apps. There should be one Request URL, one dedup owner, and one reply owne
 | Capability | MVP | Deferred |
 | --- | --- | --- |
 | One app/bot per agent, manifest copy/paste install | ✅ | |
-| `slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, `slack_bot_remove_reaction` tools | ✅ | |
-| `slack_bot_lookup_channel` tool | | ✅ |
+| `slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, `slack_bot_remove_reaction`, `slack_bot_lookup_channel` tools | ✅ | |
 | HTTP Events API receiver, routing, and dedup (DRO-1005) | ✅ (§10) | |
 | Generated app Request URL and `message.im` subscription | ✅ (§5, §10) | |
 | `app_mention` subscription and `app_mentions:read` scope | ✅ (§5, §10) | |
@@ -426,12 +482,12 @@ runtime resolution never consumes them. Two boundaries remain unchanged:
   renewal scheduler. `resolveSlackBotToken` resolves a single long-lived Paperclip-secret-backed
   bot token and fails closed with no fallback; enabling rotation is out of scope until a future
   task lands the full refresh lifecycle as one unit.
-- **Four Slack tools are live**: `slack_bot_whoami`, `slack_bot_post_message`,
-  `slack_bot_add_reaction`, and `slack_bot_remove_reaction`. The post-message tool covers both
-  top-level messages and threaded replies. They register through `toolsStatus: "enabled"` even
-  though `slackProvider.definition.status` remains `"coming-soon"`. The deferred
-  `slack_bot_lookup_channel` tool is the remaining gap; the provider status stays unchanged until
-  that full tool surface lands.
+- **Five Slack tools are live**: `slack_bot_whoami`, `slack_bot_post_message`,
+  `slack_bot_add_reaction`, `slack_bot_remove_reaction`, and `slack_bot_lookup_channel`. The
+  post-message tool covers both top-level messages and threaded replies. With
+  `slack_bot_lookup_channel` (DRO-975/DRO-1160) landed, `slackProvider.definition.status` has
+  flipped to `"enabled"` (see the DRO-975 implementation-status section below) — `toolsStatus:
+  "enabled"` is kept alongside it, now redundant but harmless.
 
 ## Implementation status (DRO-971: manifest-assisted app setup actions)
 
@@ -465,15 +521,15 @@ error carrying the `Retry-After` header value rather than throwing. On success, 
 best-effort `chat.getPermalink` (a permalink lookup failure never fails the post itself) and returns
 `{ team, conversation, messageTs, threadTs, permalink }`.
 
-`slackProvider.definition.status` stays `"coming-soon"` purely because the *full* Slack tool
-surface isn't finished yet — the manifest-assisted Slack settings UI (DRO-1025/#73) is already live
-in Settings and already surfaces Slack in the provider picker. `toolsStatus` is set to `"enabled"`
-independently, which is what actually gates live tool registration
-(`registry.toolsEnabled()`/`liveTools()`, consumed by `worker.ts`/`manifest.ts`), so
+`slackProvider.definition.status` stayed `"coming-soon"` at the time this DRO-971 slice merged,
+purely because the *full* Slack tool surface wasn't finished yet — the manifest-assisted Slack
+settings UI (DRO-1025/#73) was already live in Settings and already surfaced Slack in the provider
+picker. `toolsStatus` was set to `"enabled"` independently, which is what actually gates live tool
+registration (`registry.toolsEnabled()`/`liveTools()`, consumed by `worker.ts`/`manifest.ts`), so
 `slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, and
-`slack_bot_remove_reaction` are reachable now even though `status` has not flipped. Only
-`slack_bot_lookup_channel` remains backlog work; once it lands, `status` flips to `"enabled"` too
-and `toolsStatus` becomes redundant but harmless to keep.
+`slack_bot_remove_reaction` were reachable even before `status` flipped. `slack_bot_lookup_channel`
+(DRO-975/DRO-1160) has since landed — see that section below — and `status` now reads `"enabled"`;
+`toolsStatus` is kept set as well, redundant but harmless.
 
 This slice implements §6's `contributeActions` for Slack, wired through `slackProvider` in
 `src/providers/slack/index.ts` exactly like `contributeGitHubAppManifestActions` is wired for
@@ -532,10 +588,10 @@ gap has since been closed: the Slack settings-UI flow (manifest display + copy/p
 mirroring the GitHub pattern) is now implemented as a provider-owned adapter in
 `src/providers/slack/settings-adapter-ui.tsx` (see `ProviderSettingsUIAdapter` in
 `src/core/provider-settings-ui-contract.ts`), giving operators an end-to-end create/install path
-for a Slack app from the UI. `slackProvider.definition.status` intentionally still stays
-`"coming-soon"`. That flag now gates strictly on the full Slack tool surface, not on setup-UI
-availability. With DRO-972/973/974 landed, only `slack_bot_lookup_channel` (DRO-975) remains before
-`status` flips to `"enabled"`.
+for a Slack app from the UI. At the time this DRO-1025 slice merged,
+`slackProvider.definition.status` still stayed `"coming-soon"`, gating strictly on the full Slack
+tool surface rather than setup-UI availability; with DRO-972/973/974/975 (the latter DRO-1160) all
+landed, `status` has since flipped to `"enabled"` — see the DRO-975 section below.
 
 ## Implementation status (DRO-974: reaction tools)
 
@@ -582,17 +638,18 @@ branch was added to `src/worker.ts` or `src/manifest.ts`.
   classification only — the raw thrown error message is never logged, since
   an HTTP adapter error can embed request details and the bot token is
   already in the outgoing `Authorization` header by that point.
-- `slackProvider.definition.status` stays `"coming-soon"`: with
+- At the time of this DRO-974 slice, `slackProvider.definition.status` stayed `"coming-soon"`: with
   `slack_bot_whoami` (DRO-972/#59) and `slack_bot_post_message` (DRO-973/#60)
-  now also landed alongside this slice's two reaction tools. Only
-  `slack_bot_lookup_channel` (DRO-975) remains
-  still-backlog, so the identity isn't surfaced as fully ready yet.
-  `slackProvider.definition.toolsStatus` is set to `"enabled"` independently
+  also landed alongside this slice's two reaction tools, only
+  `slack_bot_lookup_channel` (DRO-975) remained still-backlog. With that tool
+  now landed (DRO-1160), `status` has since flipped to `"enabled"` — see the
+  DRO-975 implementation-status section above.
+  `slackProvider.definition.toolsStatus` was (and remains) set to `"enabled"` independently
   of `status`: this is the provider-neutral gate
   `registry.toolsEnabled()`/`registry.liveTools()` use (consumed by
   `src/worker.ts`'s registration loop and `src/manifest.ts`'s tool list)
-  instead of `.enabled()`, so all four already-implemented tools are
-  reachable now even though `status` hasn't flipped to `"enabled"`.
+  instead of `.enabled()`, so all four already-implemented tools were
+  reachable even before `status` flipped to `"enabled"`.
 - Test coverage: `tests/providers/slack/react-tool.spec.ts` — local
   validation (valid/invalid messageTs, reaction, channelId, teamId, unknown
   fields), resource-ref resolution (default-channel fallback, missing default
@@ -601,3 +658,235 @@ branch was added to `src/worker.ts` or `src/manifest.ts`.
   token-redaction on a thrown network error), and two full pipeline
   round-trips through `createProviderTool` covering both the happy path and
   the wrong-team-denies-before-credential path end-to-end.
+
+## Implementation status (DRO-975 / DRO-1160: slack_bot_lookup_channel)
+
+This slice implements the fifth and final MVP Slack tool described in §4:
+`slack_bot_lookup_channel` (`src/providers/slack/tools/lookup-channel.ts`), wired through
+`slackProvider.tools` in `src/providers/slack/index.ts` and `slackProvider.manifestTools` via
+`src/providers/slack/manifest-tools.ts` — no `if (provider === "slack")` branch was added to
+`src/worker.ts` or `src/manifest.ts`. Its shared manifest metadata lives in
+`src/shared/slack-bot-lookup-channel-tool.ts`, mirroring the other Slack tools' shared-definition
+modules.
+
+- `validateParams` accepts a required `channel` string (max 80 chars, matching either Slack's own
+  channel-name grammar `^#?[a-z0-9][a-z0-9._-]{0,79}$` — a human-readable name like
+  `"general"`/`"#general"` — or an already-resolved conversation ID) and an optional `teamId`,
+  rejecting unknown fields, URLs, and free text, entirely locally.
+- `resolveResourceRef` performs only the credential-free cross-workspace `teamId` guard (mirrors
+  `resolveSlackChannelRef`'s check in `channel-ref.ts`) and always resolves to a `null` ref — the
+  actual name-to-ID lookup needs a credential and happens in `perform`.
+- `perform` first checks whether `channel` is already a valid conversation ID
+  (`normalizeSlackChannelId` from `channel-ref.ts`) and, if so, returns it unchanged with zero API
+  calls. Otherwise it calls `conversations.list` (`types=public_channel,private_channel`,
+  `exclude_archived=true`), paginating via `cursor` up to 10 pages of 1000 results each, matching
+  channel names case-insensitively. If the scan is truncated (a `next_cursor` remains after the
+  10th page), the tool fails closed with a "could not conclusively resolve" error regardless of how
+  many matches were seen — a full scan is required before uniqueness can be asserted. Zero matches
+  and multiple (ambiguous) matches both return an explicit, actionable `{ error }` rather than
+  guessing — the ambiguous case names conflicting IDs, capped at 20 with a count of any further
+  omitted matches. A `429`/`rate_limited` response is retried up to 3 times with linear backoff
+  before failing closed. Network failures and non-ok API responses are logged with a bare
+  classification only, never the raw thrown error or response body, matching `performReaction`'s
+  posture in `react.ts`. The result and every `ctx.activity.log` call are free of the resolved
+  token; the shared pipeline's redact step is defense-in-depth on top of that.
+- With this tool landed, `slackProvider.definition.status` (`src/providers/slack/index.ts`) and the
+  `slack` entry in `SUPPORTED_IDENTITY_PROVIDERS` (`src/shared/types.ts`) both flip from
+  `"coming-soon"` to `"enabled"` — the full MVP tool surface (§4/§12) is now complete. No other
+  backlog criterion for the provider-level `status` flag is documented anywhere in this codebase
+  (searched for "backlog" near the Slack provider); the identity-creation gate in
+  `src/worker.ts#normalizeIdentityInput` independently hardcodes `provider !== "github"`, so this
+  flip does not newly permit creating Slack agent identities — that remains a separate, still-gated
+  capability, unaffected by `status`.
+- Test coverage: `tests/providers/slack/lookup-channel-tool.spec.ts` — local param validation
+  (valid name, `#`-prefixed name, already-resolved ID, empty/oversized channel, URL/free-text
+  rejection, unknown fields, malformed/valid teamId); cross-workspace denial in `resolveResourceRef`
+  before any credential/API call, and the matching-teamId success path; ID passthrough with zero API
+  calls; exact single-match resolution; pagination across `cursor` pages; fail-closed truncation
+  handling on an endless cursor chain, including when exactly one match was seen before truncation;
+  zero-match and ambiguous-match (naming conflicting IDs, capped at 20) errors; archived-
+  channel exclusion with no `conversations.join` call ever made; 429 retry-then-recover,
+  retry-then-fail-closed, and Slack's `{ok:false, error:"rate_limited"}` shape; network/API failure
+  handling that never leaks the token; and credential/redaction posture (missing-token internal
+  error, no token in results or logs).
+## Implementation status (DRO-1161: live Slack connection health in Settings)
+
+`slack_bot_whoami` (§ "Implementation status (DRO-969...)" above) was always a
+credential-free echo of stored public metadata — it has never made a live
+Slack call. During an incident, that let the Settings UI report an identity
+as effectively "Ready" while every inbound mention was actually failing
+before it ever reached the queue: Configured, Connection, Ingress, and
+Delivery had all collapsed into a single undifferentiated state.
+
+DRO-1161 adds a **second, separate** live check —
+`src/providers/slack/connection-status.ts` — that performs a bounded,
+server-side Slack `auth.test` against the *resolved* bot credential and
+reuses `resolveSlackBotToken`'s existing fail-closed checks (workspace match,
+bot-vs-user-token rejection, configured `botUserId` match). "Connection: ok"
+therefore means exactly what tool/reply credential resolution would also
+accept — not a separately-defined, weaker notion of "connected".
+
+- **New settings action**: `check-slack-connection`, registered by
+  `contributeSlackConnectionStatusAction` (called from
+  `contributeSlackActionsAndIngress` in `src/providers/slack/index.ts`
+  alongside the existing manifest-flow actions). Human-actor-gated
+  (`requireHumanSettingsActor` is implicit via the same
+  `PluginPerformActionContext`), company-scoped (`context.companyId`, never
+  a caller-supplied `params.companyId`), and bounded by an 8s internal
+  timeout (`SLACK_CONNECTION_CHECK_TIMEOUT_MS`) so a hanging Slack API call
+  cannot hang the settings action indefinitely.
+- **Bounded, secret-free response shape**: `{ outcome: { ok: true } |
+  { ok: false, category, reason }, checkedAt, nextStep? }`. `category` is one
+  of a small closed set (`credential_missing`, `credential_resolution_failed`,
+  `auth_test_failed`, `workspace_mismatch`, `identity_mismatch`,
+  `network_failed`, `timeout`, `unknown`) — never a raw Slack error string,
+  response body, header, or stack trace. The check tags each stage
+  (secret resolution vs. `auth.test` verification) so only a genuine secret
+  resolution rejection maps to `credential_resolution_failed`; a
+  transport/DNS throw while reaching Slack maps to `network_failed`, and
+  anything else falls through to `unknown` rather than blaming the secret
+  reference. `nextStep` is a fixed, per-category guidance string (see
+  `CONNECTION_FAILURE_GUIDANCE`), satisfying the "next-step guidance for
+  credential ... failures" acceptance criterion for the credential/routing
+  half of DRO-1161's scope.
+- **UI**: `src/providers/slack/settings-adapter-ui.tsx` renders a new
+  `SlackConnectionStatusPanel`, separate from the existing `SlackStatusPanel`
+  (which still only reflects saved/configured metadata and is now annotated
+  as such). The Connection panel has its own loading/error/result state
+  (`slackConnectionStatus*`), an explicit "never tested" state before the
+  first check, an operator-triggered "Check Slack connection" button
+  (`handleCheckSlackConnection`), and marks a previously-successful result
+  **stale** once it is older than `SLACK_CONNECTION_STATUS_STALE_AFTER_MS`
+  (5 minutes) rather than implying continuous health from an old success. A
+  refresh failure (the action itself erroring, e.g. a network blip reaching
+  the plugin action bridge) preserves the last known result and shows it
+  alongside the error, per "UI preserves the last known state on refresh
+  failure and marks it stale."
+- **Scope of this increment**: this lands the full
+  **Configured / Connection / Ingress / Delivery** split described in
+  DRO-1161's "Required states". Configured and Connection are implemented as
+  described above; **Ingress** (most recent verified event time/type and
+  routing result) and **Delivery** (enqueue/drain/session-start/completion/
+  failure phase) are implemented alongside them in
+  `src/providers/slack/telemetry.ts`, recorded from
+  `src/providers/slack/ingress/provider-webhook.ts` against
+  `src/providers/slack/ingress/conversation-session.ts`'s existing
+  queue/session state rather than adding a new live network call — see
+  "Implementation status (DRO-1187)" below. **Durable queue recovery remains
+  out of scope** here and is tracked as the separate recovery issue.
+- Test coverage: `tests/providers/slack/connection-status.spec.ts` — healthy
+  `auth.test` round trip (asserts the response never contains the token),
+  auth-rejected credential, workspace mismatch, user-token
+  (missing `bot_id`) rejection, missing secret reference
+  (`credential_missing`, no network call attempted), a secret-resolution
+  rejection (`credential_resolution_failed`, no network call attempted), a
+  bounded timeout on a hung `fetch` (via `vi.useFakeTimers`), token-redaction
+  on a Slack error body that happens to echo the token back, and the
+  registered `check-slack-connection` action itself (missing `agentId`,
+  missing `companyId`, no configured identity, and a full round trip
+  asserting the returned payload never contains a token-shaped string).
+
+## Implementation status (DRO-1187: deferred Ingress and Delivery telemetry in Settings)
+
+Completes the Configured/Connection/Ingress/Delivery split named in DRO-1161's
+"Required states" and left as a follow-up above. Unlike Connection (a live,
+on-demand `auth.test` call), Ingress and Delivery are **recorded**, not
+checked on demand: `src/providers/slack/telemetry.ts` persists one small
+bounded record per (companyId, agentId) as real webhook/queue/session
+activity happens, and Settings only *projects* the most recent record back.
+
+- **Storage**: one bounded, `structuredClone`-serializable record per agent,
+  keyed the same way `conversation-session.ts` scopes its durable queue
+  state (`scopeKind: "agent"`), under a dedicated `slack-telemetry` plugin
+  state namespace (never mixed into `SLACK_CONVERSATION_STATE_NAMESPACE`, so
+  telemetry recording can never contend with or corrupt queue ownership).
+  Fields are strictly bounded: ISO-shaped/epoch-ms timestamps, closed enum
+  categories, and the same correlation-safe `teamId`/`appId` identifiers
+  already treated as safe elsewhere in this provider — **never** message
+  text, prompts, model output, tokens, signing secrets, HTTP headers, or
+  stack traces. There is deliberately no caller-supplied free-text `reason`
+  field anywhere in the persisted record: every failure carries only a
+  closed-enum `category` and that category's fixed, static `nextStep`
+  guidance string (`SLACK_INGRESS_FAILURE_GUIDANCE` /
+  `SLACK_DELIVERY_FAILURE_GUIDANCE`), so there is no per-call text a caller
+  could ever need to bound, redact, or accidentally leak operational detail
+  through. Reads are additionally scoped by the caller's authorized
+  `companyId`: because the state key is keyed by `agentId` alone, a stored
+  record's own `companyId` is checked against the caller's before it is ever
+  returned, so knowing (or guessing) a valid `agentId` can never disclose
+  another company's ingress/delivery telemetry for that agent.
+- **Ingress** (pre-queue, recorded via an optional `recordIngressOutcome` dep
+  threaded through `handleSlackWebhook` in `webhook-handler.ts` — kept a pure
+  callback seam, exactly like `onAgentEvent`/`shouldProcessEvent`, so the
+  handler itself never touches state/db directly): records the most recent
+  verified event's timestamp and a bounded event-type category (`message` |
+  `app_mention` | `other` — never raw event/text content) plus routing result
+  (`routed` | `routing_failed`) on success, and a bounded failure (category
+  `signature_failed` | `routing_failed`, fixed operator guidance, timestamp)
+  on failure. A post-signature routing failure is attributed to the one
+  identity whose secret already matched — the only safe scope, since the
+  request is by then authenticated. A pre-signature failure (no identity has
+  authenticated this raw body yet) is **never** attributed to any identity,
+  including a routing-hint-named candidate: `team_id`/`api_app_id` are
+  attacker-controlled input at that point, and attributing to them would let
+  anyone who merely knows or guesses a configured team/app pair poison that
+  identity's ingress health without ever proving control of the signing
+  secret.
+- **Delivery** (post-queue, recorded from `provider-webhook.ts`, which is the
+  only ingress module that already touches `ctx.state`/`ctx.agents.sessions`):
+  records enqueue, drain/session-start, completion, and failure phase
+  transitions at the existing call sites — `enqueueSlackConversationTurn`
+  success/failure, `kickSlackConversation` success/failure, and
+  `finishAcceptedRun`'s/`finalizeAmbiguousSend`'s/`retireBlockingTurn`'s
+  terminal outcomes. `drain_started` is recorded from `startClaimedTurn` once
+  a session has actually been claimed/resolved for the turn — not at the
+  point a queue-drain self-event kick is merely scheduled, which proves only
+  that an event was enqueued, not that draining ever began. Failure
+  categories are `queue_failed` (durable queue full or conflicted),
+  `session_failed` (session create/resume/kick/lifecycle failure), and
+  `reply_failed` (an ambiguous or failed reply send, classified the same way
+  `classifySlackSendFailure` already does for retry safety). All telemetry
+  writes are wrapped to never throw — a telemetry write failure must never
+  affect queue ownership, session lifecycle, or webhook acknowledgement.
+- **New read-only settings action**: `get-slack-telemetry`, registered by
+  `contributeSlackTelemetryAction` alongside `check-slack-connection` in
+  `contributeSlackActionsAndIngress`. Company-scoped and `agentId`-validated
+  identically to `check-slack-connection` — the resolved `context.companyId`
+  is passed through to `getSlackTelemetry` and enforced against the stored
+  record's own `companyId` (see Storage above); returns
+  `{ ingress: SlackIngressTelemetry | null, delivery: SlackDeliveryTelemetry
+  | null }`, with `null` (rendered as "Never observed") rather than an error
+  when nothing has ever been recorded for that agent, or when a record
+  exists but belongs to a different company.
+- **UI**: `src/providers/slack/settings-adapter-ui.tsx` adds
+  `SlackIngressStatusPanel` and `SlackDeliveryStatusPanel`, rendered next to
+  `SlackConnectionStatusPanel`. Unlike Connection, neither has a manual
+  "check" button — there is no live check to trigger, only a projection of
+  already-recorded activity — so both are fetched via
+  `handleRefreshSlackTelemetry` (`get-slack-telemetry`) automatically
+  whenever the viewed identity changes, mirroring how `refresh()` is already
+  used elsewhere in this hook. On a refresh failure, the last-known
+  telemetry is preserved (not cleared) and marked stale once older than
+  `SLACK_TELEMETRY_STALE_AFTER_MS` (5 minutes, the same window as
+  Connection's `SLACK_CONNECTION_STATUS_STALE_AFTER_MS`) — identical pattern
+  to `SlackConnectionStatusPanel`'s staleness handling. `SettingsPage.tsx`
+  wires the new `get-slack-telemetry` plugin action through the same
+  `usePluginAction` seam as `check-slack-connection`.
+- Test coverage: `tests/providers/slack/telemetry.spec.ts` (healthy record,
+  never-observed projection, routing/signature/queue/session/reply failure
+  categories with their guidance strings, the full
+  enqueue-drain-completed delivery lifecycle, per-agent scoping, a
+  cross-company scoping test proving a shared `agentId` never leaks another
+  company's record, and the registered `get-slack-telemetry` action's
+  validation including its own cross-company case); plus focused wiring
+  regressions in `tests/providers/slack/ingress-webhook-handler.spec.ts` (a
+  healthy verified event, a post-signature routing failure, and a
+  pre-auth signature failure that asserts no ingress outcome is recorded at
+  all) and `tests/providers/slack/ingress-provider-webhook.spec.ts` (a
+  routed ingress event through the real webhook path, a queue-full delivery
+  failure under a enqueue burst, delivery completion through a full
+  webhook -> enqueue -> drain -> completion round trip, and a regression
+  proving `lastDrainStartedAt` is absent immediately after enqueue and only
+  appears once the drain worker actually claims/starts the turn) reusing
+  this suite's existing `makeCtx`/`delivery`/`runtime` fixtures rather than
+  duplicating route/service setup.

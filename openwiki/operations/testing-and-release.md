@@ -45,6 +45,39 @@ The package metadata points Paperclip at:
 
 `/rollup.config.mjs` exists as an alternate Rollup build path via `pnpm build:rollup`.
 
+## Slack queue recovery operations
+
+Slack ingress uses the host-backed scheduled-job support shipped by
+[`@paperclipai/plugin-sdk@2026.707.0`](https://www.npmjs.com/package/@paperclipai/plugin-sdk/v/2026.707.0).
+The manifest requests `jobs.schedule` and declares `slack-queue-recovery` on a
+two-minute schedule. The worker registers the matching handler through
+`ctx.jobs.register`, so Paperclip re-runs the bounded scan after worker or host
+restarts without waiting for another Slack webhook.
+
+Each scan enumerates at most 1,000 companies, at most 10,000 agents per company,
+and only the durable conversation keys indexed for each non-terminated agent.
+Failures are isolated per conversation and logged with company, agent, and
+conversation identifiers only; Slack payload text and credentials are never
+included.
+
+Recovery preserves the durable queue state machine rather than replaying every
+non-terminal turn:
+
+- queued, undispatched work may be claimed and dispatched in FIFO order;
+- rejected sends release the claim with exponential backoff and jitter;
+- accepted work keeps its durable lease and is not resent while the lease is live;
+- ambiguous sends become `uncertain` and are retired without automatic replay;
+- expired accepted leases and exhausted attempts become dead letters after the
+  configured limit, preventing poison work from hot-looping.
+
+The recovery job and webhook/self-event drains share write/read-back claim
+tokens plus process-local serialization. This makes duplicate schedulers and
+stale callbacks idempotent within the host state contract while preserving one
+active turn per conversation. Because plugin state does not expose a
+compare-and-set transaction, cross-process exactly-once claiming is not
+promised; operators should inspect dead-letter diagnostics before manually
+requeueing uncertain work.
+
 ## Test suite
 
 Tests run with Vitest. `/vitest.config.ts` includes both `tests/**/*.spec.ts` (plain Node-environment tests, the default) and `tests/**/*.spec.tsx` (React/DOM interaction tests, e.g. `tests/ui/settings-page-interactions.spec.tsx`, which opt into jsdom per-file via a `// @vitest-environment jsdom` comment at the top of the file).
@@ -66,25 +99,50 @@ Current test files:
 - `/tests/settings-action-authorization.spec.ts`
   - table-driven agent/system denial for every protected settings/setup action before state, config, secret, agent-list, or HTTP access
   - malformed actor rejection and local implicit-user (`userId: null`) success
+- `/tests/ui/settings-page-refresh-secrets.spec.tsx`
+  - manual "Refresh secrets" re-fetches only the active company's secret options without closing the identity dialog
+  - loading disables duplicate refresh clicks and shows progress without disabling unrelated fields
+  - a failed refresh keeps the last successful options and any unsaved fields intact, with a retryable error
+  - a selected secret id that disappears from a refreshed fetch shows an explicit validation error instead of silently switching
+  - agent/provider/unsaved fields/active step survive a refresh
+  - initial page load still fetches secrets exactly once (no polling)
 - `/tests/providers/slack/app-manifest.integration.spec.ts`
   - strict `config.patchSecretRefs` coverage proving Slack setup writes only typed credential refs while public metadata remains in plugin state
   - released `v0.1.7`/`v0.1.8` Slack credential rebind, conflict, and cleanup-pending recovery
   - deterministic metadata-discovery marker serialization/ownership
   - deterministic Slack delete-rollback versus queued-save interleaving
+- `/tests/slack-credentials.spec.ts`
+  - bounded `auth.test` fetch and body-read timeouts, including the host-proxy case where fetch ignores `AbortSignal`
 - `/tests/process-local-mutation-queue.spec.ts`
   - failed mutations release their process-local queue key for later work
 - `/tests/providers/slack/ingress-conversation-queue.spec.ts`
   - bounded persisted turns, pending/active/completed dedup, 24-hour completion retention, v1 ledger/run migration beyond minute 10, and unowned-thread fail-closed behavior
 - `/tests/providers/slack/ingress-provider-webhook.spec.ts`
   - persist-before-ack and no session send in webhook scope
+  - first-mention existing-thread hydration, root-mention and existing-session no-fetch behavior, prompt section ordering, current-message deduplication, and secret-free unavailable-history fallback
   - deferred self-event draining, duplicate-drain coalescing, cross-conversation concurrency, FIFO successor kicks, accepted-run callback binding, stale callback rejection, host terminal sequence resets, and terminal reply-finalization ordering
+  - restart between persistence and dispatch, restart after accepted dispatch, failed successor emit recovery, duplicate schedulers, stale leases, FIFO queue ordering, attempt backoff/dead-letter behavior, and ambiguous-send uncertain retirement without replay
   - kick failure retention, ambiguous-send uncertain retirement/no replay, expired-lease retirement only under fresh scope, and restart plus webhook recovery
+  - (DRO-1258) false-success liveness end to end through the real drain path: an acknowledgment-only response and a `plan_only` invocation each record `action_not_taken` rather than `completed`, `tool_gateway.session_created` alone does not satisfy liveness progress, and a positive control proves a gateway session followed by a genuine tool invocation still completes successfully
+- `/tests/providers/slack/ingress-thread-history.spec.ts`
+  - canonical channel/thread request parameters, deterministic pagination bounds, chronological timestamp deduplication, and recent-message count/byte selection
+  - prompt-injection-shaped text projection, oversized UTF-8 text, deletion tombstones, unsupported attachment/transport-field exclusion, timeout, missing-scope/rate-limit failures, and cross-channel/thread fail-closed behavior
 - `/tests/providers/slack/ingress-session-reply.spec.ts`
   - structured adapter-output reduction and bounded Slack reply truncation
+- `/tests/providers/slack/ingress-run-outcome.spec.ts` (DRO-1258)
+  - `SlackRunEvidenceTracker`/`isAcknowledgmentOnlyReply` unit boundaries: acknowledgment- and promise-only replies, substantive answers that merely contain a promise clause, past-tense action reports, `tool_gateway.session_created` as attachment telemetry that neither grants nor resets progress (in both `type` and `event` field positions), `plan_only` outranking incidental planning-time tool use across each terminal-record classification key, the durable action-evidence allowlists, and fail-closed handling of unknown record types and agent prose
 - `/tests/providers/slack/ingress-worker-integration.spec.ts`
-  - manifest `events.emit` capability and provider-owned self-event registration/draining through the real worker composition seam
+  - manifest `events.emit` and `jobs.schedule` capabilities plus provider-owned self-event and scheduled recovery-job registration through the real worker composition seam
 - `/tests/providers/slack/ingress-response-stream.spec.ts`, `ingress-webhook-handler.spec.ts`, `ingress-routing.spec.ts`, `ingress-signature.spec.ts`, and `ingress-rate-limit.spec.ts`
   - native Slack stream behavior plus the unchanged authentication, filtering, routing, and ingress-rate boundaries around durable enqueue
+- `/tests/providers/slack/connection-status.spec.ts` (DRO-1161)
+  - `runSlackConnectionCheck`/`check-slack-connection` action: healthy, auth-rejected, workspace-mismatch, user-token, missing-secret, resolution-failure, and timeout outcomes, plus token/response-body redaction and the registered action's own validation and error paths
+- `/tests/ui/settings-page-slack-status.spec.tsx` (DRO-1161)
+  - Connection panel lifecycle: never-tested, successful check, refresh-failure preserving and immediately marking the last known result stale (not just after the 5-minute freshness window), and a result aging past that window without a refresh
+  - identity-switch regression: closing/reopening the edit dialog on a different Slack identity clears the previous identity's Connection result instead of leaking it under the new identity's label
+- `/tests/providers/slack/telemetry.spec.ts` (DRO-1187)
+  - `recordSlackIngressOutcome`/`recordSlackDeliveryOutcome`/`getSlackTelemetry`/`get-slack-telemetry` action: never-observed projection, healthy verified ingress event, routing-failed and signature-failed ingress categories with their guidance strings, queue/session/reply-failed and (DRO-1258) action-not-taken delivery categories with their guidance strings, the full enqueue-drain-completed delivery lifecycle, per-agent scoping (no cross-agent leak), a cross-company scoping case (a shared agentId recorded under one company never projects for a different caller companyId), and the registered action's validation, plus a secret-shape assertion on the persisted record and its projection
+  - focused wiring regressions live alongside the modules they touch rather than duplicating fixtures: `ingress-webhook-handler.spec.ts` covers a healthy verified event, a post-signature routing failure, and a pre-auth signature failure (asserting no ingress outcome is recorded at all, since routing hints are unauthenticated before signature verification) via `handleSlackWebhook`'s optional `recordIngressOutcome` dep; `ingress-provider-webhook.spec.ts` covers a routed ingress event, a queue-full delivery failure under an enqueue burst, delivery completion through a full webhook-enqueue-drain-completion round trip, and a regression proving `lastDrainStartedAt` only appears once the drain worker actually claims/starts the turn (not merely when a queue kick was scheduled), reusing that file's existing `makeCtx`/`delivery`/`runtime` fixtures
 - `/tests/identity-policy.spec.ts`
   - config parsing and missing-agent fail-closed behavior
   - GitHub repo normalization from HTTPS/SSH/git URL forms

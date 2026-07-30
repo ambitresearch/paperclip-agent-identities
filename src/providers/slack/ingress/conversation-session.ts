@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { PluginStateClient } from "@paperclipai/plugin-sdk";
+import type { PluginEntitiesClient, PluginStateClient } from "@paperclipai/plugin-sdk";
+import { registerSlackConversationKey } from "./conversation-registry.js";
 
 const SLACK_CONVERSATION_STATE_NAMESPACE = "slack-conversations" as const;
 const SLACK_CONVERSATION_STATE_KEY_PREFIX = "session:" as const;
@@ -16,6 +17,7 @@ export const SLACK_COMPLETED_EVENT_RETENTION_MS = 24 * 60 * 60 * 1_000;
 export const SLACK_TURN_FIELD_MAX_LENGTH = 256;
 export const SLACK_TURN_TEXT_MAX_LENGTH = 4_096;
 export const SLACK_EVENT_ID_MAX_LENGTH = 128;
+export const SLACK_TURN_MAX_ATTEMPTS = 5;
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SLACK_MESSAGE_TS_PATTERN = /^[0-9]{10,}\.[0-9]{6}$/;
 export const SLACK_TURN_TEXT_MAX_BYTES = 65_536;
@@ -47,6 +49,7 @@ export interface SlackQueuedTurn {
   readonly eventId: string;
   readonly eventHash: string;
   readonly enqueuedAt: number;
+  readonly attemptCount: number;
   readonly event: SlackQueuedTurnEvent;
 }
 
@@ -84,6 +87,14 @@ interface SlackCompletedEventClaim {
   readonly claimId: string;
 }
 
+export interface SlackDeadLetterClaim {
+  readonly eventHash: string;
+  readonly deadLetteredAt: number;
+  readonly claimId: string;
+  readonly attemptCount: number;
+  readonly reason: "attempt-limit" | "ambiguous-send" | "lease-expired" | "ownership-lost";
+}
+
 interface SlackLegacyAcceptedRun {
   readonly sessionId: string;
   readonly runId: string;
@@ -104,6 +115,7 @@ export interface SlackConversationState {
   pending: SlackQueuedTurn[];
   active?: SlackActiveTurn;
   completed: SlackCompletedEventClaim[];
+  deadLetters: SlackDeadLetterClaim[];
   legacyAcceptedRun?: SlackLegacyAcceptedRun;
   legacyClaims?: SlackLegacyEventClaim[];
 }
@@ -122,10 +134,11 @@ export interface SlackConversationQueueSummary {
   readonly pendingCount: number;
   readonly hasSession: boolean;
   readonly completedCount: number;
+  readonly deadLetterCount: number;
   readonly atCapacity: boolean;
 }
 
-type SlackConversationQueueStatus = "idle" | "queued" | "active" | "accepted" | "uncertain";
+type SlackConversationQueueStatus = "idle" | "queued" | "active" | "accepted" | "uncertain" | "dead-letter";
 
 export interface SlackConversationReference {
   readonly state: PluginStateClient;
@@ -138,6 +151,8 @@ export interface SlackConversationReference {
 /** Safe, already-routed Slack fields accepted by the durable enqueue boundary. */
 export interface EnqueueSlackConversationTurnInput {
   readonly state: PluginStateClient;
+  /** Durable recovery registry; see `conversation-registry.ts`. */
+  readonly entities: PluginEntitiesClient;
   readonly agentId: string;
   readonly companyId: string;
   readonly conversation: SlackConversationTarget;
@@ -217,6 +232,7 @@ function emptyConversationState(
     owned: false,
     pending: [],
     completed: [],
+    deadLetters: [],
   };
 }
 
@@ -310,10 +326,11 @@ function parseTurnEvent(value: unknown): SlackQueuedTurnEvent | null {
 function parseTurn(value: unknown): SlackQueuedTurn | null {
   if (!isRecord(value)) return null;
   if (Object.keys(value).some((key) =>
-    !["claimId", "eventId", "eventHash", "enqueuedAt", "event"].includes(key))) {
+    !["claimId", "eventId", "eventHash", "enqueuedAt", "attemptCount", "event"].includes(key))) {
     return null;
   }
   const event = parseTurnEvent(value.event);
+  const attemptCount = value.attemptCount === undefined ? 0 : value.attemptCount;
   if (
     !isBoundedString(value.claimId) ||
     !UUID_V4_PATTERN.test(value.claimId) ||
@@ -321,6 +338,10 @@ function parseTurn(value: unknown): SlackQueuedTurn | null {
     typeof value.eventHash !== "string" ||
     !/^[a-f0-9]{64}$/.test(value.eventHash) ||
     !isFiniteTimestamp(value.enqueuedAt) ||
+    typeof attemptCount !== "number" ||
+    !Number.isSafeInteger(attemptCount) ||
+    attemptCount < 0 ||
+    attemptCount > SLACK_TURN_MAX_ATTEMPTS ||
     !event
   ) {
     return null;
@@ -339,6 +360,7 @@ function parseTurn(value: unknown): SlackQueuedTurn | null {
     eventId: value.eventId,
     eventHash: value.eventHash,
     enqueuedAt: value.enqueuedAt,
+    attemptCount,
     event,
   };
 }
@@ -437,6 +459,45 @@ function parseCompletedClaims(value: unknown): SlackCompletedEventClaim[] | null
     });
   }
   claims.sort((left, right) => left.completedAt - right.completedAt || left.eventHash.localeCompare(right.eventHash));
+  return claims;
+}
+
+function parseDeadLetterClaims(value: unknown): SlackDeadLetterClaim[] | null {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > SLACK_EVENT_CLAIM_LIMIT) return null;
+  const claims: SlackDeadLetterClaim[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const attemptCount = isRecord(item) ? item.attemptCount : undefined;
+    if (
+      !isRecord(item) ||
+      typeof item.eventHash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(item.eventHash) ||
+      !isFiniteTimestamp(item.deadLetteredAt) ||
+      !isBoundedString(item.claimId) ||
+      !UUID_V4_PATTERN.test(item.claimId) ||
+      typeof attemptCount !== "number" ||
+      !Number.isSafeInteger(attemptCount) ||
+      attemptCount < 0 ||
+      attemptCount > SLACK_TURN_MAX_ATTEMPTS ||
+      !["attempt-limit", "ambiguous-send", "lease-expired", "ownership-lost"].includes(String(item.reason))
+    ) {
+      return null;
+    }
+    if (Object.keys(item).some((key) =>
+      !["eventHash", "deadLetteredAt", "claimId", "attemptCount", "reason"].includes(key))) return null;
+    if (item.claimId !== item.claimId.trim() || seen.has(item.eventHash)) return null;
+    seen.add(item.eventHash);
+    claims.push({
+      eventHash: item.eventHash,
+      deadLetteredAt: item.deadLetteredAt,
+      claimId: item.claimId,
+      attemptCount,
+      reason: item.reason as SlackDeadLetterClaim["reason"],
+    });
+  }
+  claims.sort((left, right) =>
+    left.deadLetteredAt - right.deadLetteredAt || left.eventHash.localeCompare(right.eventHash));
   return claims;
 }
 
@@ -584,6 +645,7 @@ function parseState(
       ...(!legacy.retired ? { sessionId: legacy.sessionId } : {}),
       pending: [],
       completed: [],
+      deadLetters: [],
       ...(legacy.acceptedRun
         ? {
             legacyAcceptedRun: {
@@ -608,6 +670,7 @@ function parseState(
       "pending",
       "active",
       "completed",
+      "deadLetters",
       "legacyAcceptedRun",
       "legacyClaims",
     ].includes(key))) return null;
@@ -615,6 +678,7 @@ function parseState(
   const pending = Array.isArray(value.pending) ? value.pending.map(parseTurn) : null;
   const active = value.active === undefined ? undefined : parseActiveTurn(value.active);
   const completed = parseCompletedClaims(value.completed);
+  const deadLetters = parseDeadLetterClaims(value.deadLetters);
   const legacyAcceptedRun = parseLegacyAcceptedRun(value.legacyAcceptedRun);
   const legacyClaims = parseLegacyClaims(value.legacyClaims);
   const sessionId = value.sessionId === undefined
@@ -630,6 +694,7 @@ function parseState(
     pending.length + (active ? 1 : 0) > SLACK_PENDING_TURN_LIMIT ||
     (value.active !== undefined && !active) ||
     !completed ||
+    !deadLetters ||
     legacyAcceptedRun === null ||
     legacyClaims === null ||
     sessionId === null
@@ -645,6 +710,7 @@ function parseState(
     pending: pending as SlackQueuedTurn[],
     ...(active ? { active } : {}),
     completed,
+    deadLetters,
     ...(legacyAcceptedRun ? { legacyAcceptedRun } : {}),
     ...(legacyClaims ? { legacyClaims } : {}),
   };
@@ -790,15 +856,24 @@ async function withConversationMutation<T>(
   }
 }
 
-function pruneCompletedClaims(state: SlackConversationState, nowMs: number): boolean {
+function pruneTerminalClaims(state: SlackConversationState, nowMs: number): boolean {
   const cutoff = nowMs - SLACK_COMPLETED_EVENT_RETENTION_MS;
   const retained = state.completed.filter((claim) => claim.completedAt >= cutoff);
   retained.sort((left, right) => left.completedAt - right.completedAt || left.eventHash.localeCompare(right.eventHash));
   const reordered = retained.some((claim, index) =>
     claim.eventHash !== state.completed[index]?.eventHash ||
     claim.completedAt !== state.completed[index]?.completedAt);
-  if (retained.length === state.completed.length && !reordered) return false;
+  const retainedDeadLetters = state.deadLetters.filter((claim) => claim.deadLetteredAt >= cutoff);
+  retainedDeadLetters.sort((left, right) =>
+    left.deadLetteredAt - right.deadLetteredAt || left.eventHash.localeCompare(right.eventHash));
+  const deadLettersReordered = retainedDeadLetters.some((claim, index) =>
+    claim.eventHash !== state.deadLetters[index]?.eventHash ||
+    claim.deadLetteredAt !== state.deadLetters[index]?.deadLetteredAt);
+  const changed = retained.length !== state.completed.length || reordered ||
+    retainedDeadLetters.length !== state.deadLetters.length || deadLettersReordered;
+  if (!changed) return false;
   state.completed = retained;
+  state.deadLetters = retainedDeadLetters;
   return true;
 }
 
@@ -809,6 +884,7 @@ function hasSlackConversationEventHash(
   return state.active?.turn.eventHash === eventHash ||
     state.pending.some((turn) => turn.eventHash === eventHash) ||
     state.completed.some((claim) => claim.eventHash === eventHash) ||
+    state.deadLetters.some((claim) => claim.eventHash === eventHash) ||
     Boolean(state.legacyClaims?.some((claim) => claim.eventHash === eventHash));
 }
 
@@ -817,6 +893,7 @@ function uniqueClaimCount(state: SlackConversationState): number {
     ...state.pending.map((turn) => turn.eventHash),
     ...(state.active ? [state.active.turn.eventHash] : []),
     ...state.completed.map((claim) => claim.eventHash),
+    ...state.deadLetters.map((claim) => claim.eventHash),
     ...(state.legacyClaims?.map((claim) => claim.eventHash) ?? []),
   ]).size;
 }
@@ -852,6 +929,9 @@ function assertStateBounds(state: SlackConversationState): void {
   if (!parseCompletedClaims(state.completed)) {
     throw new Error("Slack conversation queue state contains invalid completed claims.");
   }
+  if (!parseDeadLetterClaims(state.deadLetters)) {
+    throw new Error("Slack conversation queue state contains invalid dead-letter claims.");
+  }
   if (state.legacyClaims && !parseLegacyClaims(state.legacyClaims)) {
     throw new Error("Slack conversation queue state contains invalid legacy claims.");
   }
@@ -865,6 +945,7 @@ function assertStateBounds(state: SlackConversationState): void {
     ...state.pending.map((turn) => turn.eventHash),
     ...(state.active ? [state.active.turn.eventHash] : []),
     ...state.completed.map((claim) => claim.eventHash),
+    ...state.deadLetters.map((claim) => claim.eventHash),
   ];
   if (new Set(runtimeHashes).size !== runtimeHashes.length) {
     throw new Error("Slack conversation queue state contains duplicate event claims.");
@@ -931,13 +1012,15 @@ export async function getSlackConversationQueueSummary(
   const state = await readSlackConversationState(input);
   const activePhase: SlackConversationQueueStatus | undefined = state.active?.phase ??
     (state.legacyAcceptedRun ? state.legacyAcceptedRun.phase : undefined);
-  const status: SlackConversationQueueStatus = activePhase ?? (state.pending.length > 0 ? "queued" : "idle");
+  const status: SlackConversationQueueStatus = activePhase ??
+    (state.pending.length > 0 ? "queued" : state.deadLetters.length > 0 ? "dead-letter" : "idle");
   return {
     version: SLACK_CONVERSATION_STATE_VERSION,
     status,
     pendingCount: state.pending.length,
     hasSession: Boolean(state.sessionId),
     completedCount: state.completed.length,
+    deadLetterCount: state.deadLetters.length,
     atCapacity: activePendingCount(state) >= SLACK_PENDING_TURN_LIMIT ||
       uniqueClaimCount(state) >= SLACK_EVENT_CLAIM_LIMIT,
   };
@@ -958,7 +1041,7 @@ export async function mutateSlackConversationState<T>(
   if (!isFiniteTimestamp(nowMs)) throw new Error("Slack queue mutation timestamp is invalid.");
   return withConversationMutation(input, async () => {
     const state = await loadState(input);
-    const pruned = pruneCompletedClaims(state, nowMs);
+    const pruned = pruneTerminalClaims(state, nowMs);
     const mutation = operation(state);
     if (pruned || mutation.changed) await persistState(input, state);
     return mutation.result;
@@ -974,6 +1057,29 @@ export function completeSlackTurnClaim(
   if (!state.completed.some((claim) => claim.eventHash === turn.eventHash)) {
     state.completed.push({ eventHash: turn.eventHash, completedAt, claimId: turn.claimId });
   }
+}
+
+export function deadLetterSlackTurnClaim(
+  state: SlackConversationState,
+  turn: SlackQueuedTurn,
+  reason: SlackDeadLetterClaim["reason"],
+  deadLetteredAt = queueNowMs(),
+): void {
+  if (!isFiniteTimestamp(deadLetteredAt)) throw new Error("Slack dead-letter timestamp is invalid.");
+  if (!state.deadLetters.some((claim) => claim.eventHash === turn.eventHash)) {
+    state.deadLetters.push({
+      eventHash: turn.eventHash,
+      deadLetteredAt,
+      claimId: turn.claimId,
+      attemptCount: turn.attemptCount,
+      reason,
+    });
+  }
+}
+
+export function incrementSlackTurnAttempt(turn: SlackQueuedTurn): SlackQueuedTurn {
+  if (turn.attemptCount >= SLACK_TURN_MAX_ATTEMPTS) return turn;
+  return { ...turn, attemptCount: turn.attemptCount + 1 };
 }
 
 export function createSlackActiveTurn(turn: SlackQueuedTurn, retireAfter: number, nowMs = queueNowMs()): SlackStartingTurn {
@@ -1132,6 +1238,7 @@ export async function enqueueSlackConversationTurn(
     eventId: normalizedEventId,
     eventHash,
     enqueuedAt: nowMs,
+    attemptCount: 0,
     event,
   };
   const reference: SlackConversationReference = {
@@ -1141,6 +1248,7 @@ export async function enqueueSlackConversationTurn(
     conversationKey,
     conversation,
   };
+  await registerSlackConversationKey(input.entities, normalizedAgentId, normalizedCompanyId, conversationKey);
   const rawConversationState = await input.state.get(slackConversationStateKey(normalizedAgentId, conversationKey));
   const legacyConversation = rawConversationState !== null &&
     rawConversationState !== undefined &&

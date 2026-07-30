@@ -1,0 +1,29 @@
+{
+  "$schema": "./session-tool-discovery.schema.json",
+  "fixtureId": "incident-codex_local",
+  "adapter": "codex_local",
+  "status": "captured-incident",
+  "provenance": {
+    "source": "DRO-1163 incident report (Slack-created Voss run)",
+    "capturedAt": "2026-07-24T00:00:00Z",
+    "capturedBy": "hand-transcribed from the incident writeup in DRO-1163; not an automated capture",
+    "note": "Live evidence showed eight globally registered plugin tools, non-empty ctx.runtimeMcp, an injected managed gateway config, an unused run-scoped credential, and github_bot_whoami reported unavailable. The core follow-up found the generated Codex config used unsupported headers instead of http_headers, so Codex discarded the credential. No raw tools/list or transport capture was preserved; whether an unauthenticated request reached the gateway is unknown."
+  },
+  "runtimeMcpPresent": true,
+  "managedGatewayConfigInjected": true,
+  "gatewayTransportReached": "unknown",
+  "gatewayCredentialUsed": false,
+  "globallyRegisteredTools": [
+    "github_bot_whoami",
+    "github_bot_create_pull_request",
+    "github_bot_push_branch",
+    "github_bot_submit_pull_request_review",
+    "slack_bot_post_message",
+    "slack_bot_add_reaction",
+    "slack_bot_remove_reaction",
+    "slack_bot_whoami"
+  ],
+  "reportedUnavailableTools": [
+    "github_bot_whoami"
+  ]
+}

@@ -5,7 +5,7 @@ Per-agent identity providers and contribution tools for Paperclip. GitHub is the
 ## Features
 
 - Configure one identity per Paperclip agent and provider pair.
-- Choose from a provider registry: GitHub is enabled now; Slack, Mattermost, Microsoft Entra, Google Cloud, and AWS are tracked as coming soon.
+- Choose from a provider registry: GitHub and Slack are enabled now; Mattermost, Microsoft Entra, Google Cloud, and AWS are tracked as coming soon.
 - Prevent duplicate identities for the same agent/provider pair.
 - Leave repository/resource access decisions to provider permissions such as GitHub App installations and scopes.
 - Create GitHub Apps with GitHub's App Manifest flow from the settings page.
@@ -84,24 +84,28 @@ This path is designed to fit Slack's three-second acknowledgement window, but
 the actual latency still includes host config/secret/state RPCs and the awaited
 event emit. Those host operations must themselves remain available and timely.
 
-The self-event drains one turn under fresh company scope. Accepted runs carry a
-durable 30-minute lease; only a later fresh webhook/self-event or a terminal
-session callback may finalize its accepted run; expired-run retirement and
-session close happen only under a later fresh webhook/self-event scope. Generic
-`sendMessage` failures are ambiguous because the host has no request-key API:
-the provider marks the turn uncertain, retires the session, completes the event
-claim, and never auto-resends. Only the host's definitive `Session not found`
-response is safe to retry on a replacement session. This prevents duplicate
-runs but cannot provide exactly-once delivery beyond that host boundary.
+The self-event drains one turn under fresh company scope. The manifest also
+declares a host-backed `slack-queue-recovery` scheduled job that runs every two
+minutes. Each enqueue durably registers its conversation in an agent-scoped
+index, so the job can enumerate companies, agents, and known queues after a
+worker restart without waiting for another Slack webhook. It uses the same
+claim/drain path as the self-event, preserving per-conversation FIFO ordering;
+a failed successor emit therefore leaves a queued turn that the next scan can
+recover.
 
-A worker restart is recoverable when a duplicate or new webhook arrives and
-re-kicks the persisted queue. If the worker restarts after acknowledgement and
-no later webhook/event arrives, queued work has no trigger; closing that gap
-requires host-backed durable event scheduling or a request-key/idempotency API.
-Likewise, a failed successor emit after terminal finalization leaves that
-successor durable but waiting for the next duplicate/new webhook trigger.
-Plugin state also has no compare-and-set primitive, so claim-token read-back
-detects observable write races but does not make multi-worker execution atomic.
+Accepted runs carry a durable 30-minute lease. A live lease remains owned and
+is not replayed; an expired accepted or uncertain claim is retired and retained
+as a terminal dead letter rather than resent blindly. Generic `sendMessage`
+failures remain ambiguous because the host has no request-key API: the provider
+marks the turn uncertain, retires the session, and never auto-resends. Only the
+host's definitive `Session not found` response is safe to retry on a replacement
+session. Queued turns track bounded dispatch attempts and move to a secret-free
+dead-letter record after five attempts, preventing poison work from hot-looping.
+
+Recovery still cannot provide exactly-once delivery beyond the host boundary.
+Plugin state has no compare-and-set primitive, so process-local coalescing plus
+claim-token write/read-back detects observable races but does not make
+multi-worker execution atomic.
 
 Slack public install metadata lives in plugin state and is authoritative at runtime. Current
 company-config records contain only typed refs under
@@ -161,7 +165,7 @@ Each provider projects its own version 5 identity records into runtime config by
 | Provider | Status | Notes |
 | --- | --- | --- |
 | GitHub | Enabled | GitHub App identity for repositories, pull requests, branch pushes, and commit attribution. |
-| Slack | Coming soon | Workspace identity for Slack messages and app-mediated actions. |
+| Slack | Enabled | Workspace identity for Slack messages and app-mediated actions. |
 | Mattermost | Coming soon | Team identity for posts and channel operations. |
 | Microsoft Entra | Coming soon | Directory identity for Microsoft Graph and Azure-backed workflows. |
 | Google Cloud | Coming soon | Service account identity for Google Cloud APIs. |
@@ -210,6 +214,27 @@ Saving a GitHub identity patches the selected agent environment with the GitHub 
 ```
 
 Deleting an identity removes only matching GitHub App env bindings for that identity, preserving unrelated environment variables. `secretId`/`tokenFile` token fallback is still accepted, but GitHub App mode is the durable path.
+
+### Slack bot tools
+
+Slack is a fully `enabled` provider with five agent-callable tools, each requiring only the minimum bot scope for its action (see [`openwiki/domain/slack-provider-mvp.md`](openwiki/domain/slack-provider-mvp.md) for the full design record):
+
+| Tool | Required scope | Notes |
+| --- | --- | --- |
+| `slack_bot_whoami` | none | Credential-free; echoes the configured identity's `label`, `teamId`, `appId`, and `botUserId`. |
+| `slack_bot_post_message` | `chat:write` | Posts a message to a channel; also handles threaded replies via `threadTs`. |
+| `slack_bot_add_reaction` | `reactions:write` | Adds an emoji reaction to an existing message. |
+| `slack_bot_remove_reaction` | `reactions:write` | Removes an emoji reaction the bot previously added. |
+| `slack_bot_lookup_channel` | `channels:read`, `groups:read` | Resolves a human-readable channel name (`"general"` or `"#general"`) to its canonical conversation ID via `conversations.list`; already-resolved conversation IDs pass through unchanged with no extra API call. |
+
+`slack_bot_lookup_channel` exists because the other Slack tools' resource-ref resolution runs before any credential is available and therefore only accepts an already-resolved conversation ID (see the large comment block in `src/providers/slack/channel-ref.ts`). Callers that only have a channel name should call `slack_bot_lookup_channel` first and pass the returned ID into the other Slack tools.
+
+Failure modes every credentialed Slack tool shares:
+
+- **Rate limiting**: a Slack `429`/`rate_limited` response is retried a bounded number of times, honoring the Slack `Retry-After` response header when present (clamped to a 30s ceiling so an extreme value cannot stall the call) and falling back to a fixed backoff schedule otherwise, then fails closed with an actionable error rather than retrying forever.
+- **Network failures**: a request that fails before a response is received returns a generic "request failed" error; the raw thrown error is never logged or returned, since the bot token is already attached to the request by that point.
+- **Non-ok Slack responses**: an `ok: false` Slack API response surfaces the Slack error code and a human-readable message, never the raw response body.
+- **Ambiguous name lookups**: `slack_bot_lookup_channel` fails closed with an explicit error listing the conflicting conversation IDs (bounded to at most 20) when more than one accessible channel shares the requested name, rather than silently picking one.
 
 ## Documentation site
 

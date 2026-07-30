@@ -29,8 +29,14 @@ manifest declares them with an explicit "host supports this ahead of the publish
 cast; see `src/manifest.ts:197`.)
 
 No capability lets a plugin mint a brand-new company-scoped secret record from a value it holds in
-memory (e.g. a Slack `oauth.v2.access` bot token or signing secret received in an OAuth callback
-handler). That is the gap DRO-1157 is blocked on.
+memory. DRO-1157 needs this for two Slack credentials that arrive through two *different*
+channels, not one: a bot token a server-side OAuth callback receives from `oauth.v2.access`, and a
+signing secret that `oauth.v2.access` does not return at all — Slack only ever exposes it on the
+app's Basic Information page (App Credentials), the same manual source
+[slack-provisioning-decision.md](/domain/slack-provisioning-decision) already documents. That is
+the gap DRO-1157 is blocked on: `secrets.create-value` would let a plugin mint a secret from
+whichever of these two values it holds, but it does not by itself give a plugin the signing secret
+to mint from — see the Consumer section below for what a caller would still need to do about that.
 
 ## Proposed capability: `secrets.create-value`
 
@@ -92,33 +98,52 @@ mint new secrets" separately from "this plugin can read/bind secrets you already
 
 ## Consumer: how DRO-1157 would use this once shipped
 
-In the Slack OAuth callback handler (`src/providers/slack/...`), after receiving
-`oauth.v2.access`:
+This capability only mints a secret from a value the plugin already holds — it does not give the
+plugin either value. The two Slack credentials still arrive through two unrelated channels, so a
+consumer needs both wired up separately:
 
-```ts
-const botTokenRef = await ctx.secrets.createValue({
-  value: oauthResponse.access_token,
-  label: `Slack bot token — ${agentId}`,
-  idempotencyKey: `${agentId}:slack:bot-token`,
-});
-const signingSecretRef = await ctx.secrets.createValue({
-  value: appConfig.signingSecret,
-  label: `Slack signing secret — ${agentId}`,
-  idempotencyKey: `${agentId}:slack:signing-secret`,
-});
-await ctx.config.patchSecretRefs({
-  path: ["identities", agentId, "slack", "credentials", "botToken"],
-  value: botTokenRef,
-});
-await ctx.config.patchSecretRefs({
-  path: ["identities", agentId, "slack", "credentials", "signingSecret"],
-  value: signingSecretRef,
-});
-```
+1. **Bot token**, in the server-side Slack OAuth callback handler (`src/providers/slack/...`),
+   after `oauth.v2.access` returns:
 
-This removes the manual "operator creates two company secrets, pastes two UUIDs" step from
-`slack-provisioning-decision.md`'s MVP flow, and lets the plugin signal completion + select the new
-refs in the open identity dialog per DRO-1157's goal.
+   ```ts
+   const botTokenRef = await ctx.secrets.createValue({
+     value: oauthResponse.access_token,
+     label: `Slack bot token — ${agentId}`,
+     idempotencyKey: `${agentId}:slack:bot-token`,
+   });
+   await ctx.config.patchSecretRefs({
+     path: ["identities", agentId, "slack", "credentials", "botToken"],
+     value: botTokenRef,
+   });
+   ```
+
+2. **Signing secret**, which `oauth.v2.access` never returns — Slack only ever surfaces it on the
+   app's Basic Information page. `secrets.create-value` removes the "paste it into a *Paperclip*
+   company secret" half of that step, but the operator still has to copy the value out of Slack's
+   UI and submit it once, through some plugin-owned intake (e.g. a one-time paste field in the
+   identity dialog itself) that calls `createValue` on the operator's behalf:
+
+   ```ts
+   const signingSecretRef = await ctx.secrets.createValue({
+     value: operatorSuppliedSigningSecret,
+     label: `Slack signing secret — ${agentId}`,
+     idempotencyKey: `${agentId}:slack:signing-secret`,
+   });
+   await ctx.config.patchSecretRefs({
+     path: ["identities", agentId, "slack", "credentials", "signingSecret"],
+     value: signingSecretRef,
+   });
+   ```
+
+   The App Manifest API's `apps.manifest.export` does not return secrets either, so there is no
+   Slack API path today that would let step 2 run without a human copying the value out of Slack's
+   UI at least once — `secrets.create-value` shortens what happens to that value after the
+   operator supplies it, not how the operator obtains it.
+
+Even with both wired up, this removes the "operator creates two *Paperclip* company secrets and
+pastes two UUIDs into the identity dialog" step from `slack-provisioning-decision.md`'s MVP flow,
+and lets the plugin signal completion + select the new refs in the open identity dialog per
+DRO-1157's goal — it does not remove the one Slack-side copy/paste for the signing secret.
 
 ## Ownership and next step
 

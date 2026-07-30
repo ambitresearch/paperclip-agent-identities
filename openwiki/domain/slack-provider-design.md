@@ -165,21 +165,15 @@ only session `chunk` events on `stdout` enter that reducer. Host `system` lifecy
 events (including `run started`) and adapter `stderr` are excluded at the callback
 boundary, so they cannot contaminate a following JSONL record or become fallback text.
 ACPX `acpx.text_delta` records with channel `output` and tag `agent_message_chunk` are
-not accepted as Slack reply content (DRO-1162: as of today this type/channel/tag shape
-carries no provenance discriminator, so a transport/adapter diagnostic emitted in this
-exact shape before the real answer — e.g. a "Model metadata not found, defaulting to
-fallback metadata" warning, see core-contract follow-up `DRO-1183` and terminal-surface report `paperclipai/paperclip#1465` — is structurally
-indistinguishable from genuine assistant prose at this layer). Because of that gap, this
-ambiguous source is dropped rather than accumulated, streamed, or delivered at turn
-completion. Confirmed records (`result`, `item.completed`, a Claude
+accepted as Slack reply content only when they carry the exact model-provenance pair
+`origin: "assistant"` and `kind: "model"`. The Claude, Codex, and Gemini ACP adapters
+attach that pair only to top-level model-authored assistant output; ACPX allowlists those fields,
+and Paperclip copies only the exact pair onto the emitted transcript record. Missing,
+partial, unknown, malformed, and ID-only records remain fail-closed and cannot be
+accumulated, streamed, or delivered at turn completion. Confirmed records (`result`, `item.completed`, a Claude
 `content_block_delta`, or a Gemini/assistant message) still preserve genuine assistant
 prose, including text that quotes or explains the same warning, while non-JSON adapter
-stdout remains available as the bounded compatibility fallback. The real fix is an
-upstream ACPX/core event-contract change adding a provenance/kind field (or moving
-diagnostics onto `acpx.status`/`acpx.error`) so diagnostics and assistant deltas can be
-classified independently. Until that lands, the plugin fails closed for this old
-ambiguous shape; a future provenance-bearing shape can be added as a separate accepted
-branch during a bounded transition without weakening the old-shape guard. The persisted
+stdout remains available as the bounded compatibility fallback. The persisted
 `retireAfter` is a
 30-minute durable accepted
 lease and is retired only when a

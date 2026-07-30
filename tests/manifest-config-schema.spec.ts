@@ -3,6 +3,7 @@ import addFormatsModule from "ajv-formats";
 import { describe, expect, it } from "vitest";
 import manifest from "../src/manifest.js";
 import { AGENT_IDENTITIES_PLUGIN_ID } from "../src/shared/webhook-endpoints.js";
+import packageJson from "../package.json" with { type: "json" };
 
 const BOT_TOKEN_SECRET_ID = "00000000-0000-4000-8000-000000000001";
 const SIGNING_SECRET_ID = "00000000-0000-4000-8000-000000000002";
@@ -68,7 +69,7 @@ describe("manifest instance config schema", () => {
     // Slack Events URLs keep pointing at the old id and the ingress guard in
     // src/providers/slack/ingress/provider-webhook.ts rejects every delivery.
     expect(manifest.id).toBe(AGENT_IDENTITIES_PLUGIN_ID);
-    expect(manifest.version).toBe("0.3.1");
+    expect(manifest.version).toBe(packageJson.version);
   });
 
   it("accepts GitHub and strict Slack config for the same agent", () => {

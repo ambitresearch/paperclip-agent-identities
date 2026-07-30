@@ -1416,7 +1416,7 @@ describe("Slack provider durable ingress", () => {
     expect(queueState(store).active).toBeUndefined();
   });
 
-  it("excludes host lifecycle chunks from ACPX reply output", async () => {
+  it("posts only model-provenance ACPX reply chunks after lifecycle and diagnostic records", async () => {
     let callback!: (event: AgentSessionEvent) => void | Promise<void>;
     const postReply = vi.fn(async () => undefined);
     const { ctx, store } = makeCtx({
@@ -1450,6 +1450,53 @@ describe("Slack provider durable ingress", () => {
     await callback({
       sessionId: "session-1",
       runId: "run-acpx",
+      seq: 3,
+      eventType: "chunk",
+      stream: "stdout",
+      message: `${JSON.stringify({
+        type: "acpx.text_delta",
+        text: "Warning: Model metadata not found. Defaulting to fallback metadata.",
+        channel: "output",
+        tag: "agent_message_chunk",
+        messageId: "diagnostic-1",
+      })}\n`,
+      payload: null,
+    });
+    await callback({
+      sessionId: "session-1",
+      runId: "run-acpx",
+      seq: 4,
+      eventType: "chunk",
+      stream: "stdout",
+      message: `${JSON.stringify({
+        type: "acpx.text_delta",
+        text: "The actual ",
+        channel: "output",
+        tag: "agent_message_chunk",
+        origin: "assistant",
+        kind: "model",
+      })}\n`,
+      payload: null,
+    });
+    await callback({
+      sessionId: "session-1",
+      runId: "run-acpx",
+      seq: 5,
+      eventType: "chunk",
+      stream: "stdout",
+      message: `${JSON.stringify({
+        type: "acpx.text_delta",
+        text: "answer.",
+        channel: "output",
+        tag: "agent_message_chunk",
+        origin: "assistant",
+        kind: "model",
+      })}\n`,
+      payload: null,
+    });
+    await callback({
+      sessionId: "session-1",
+      runId: "run-acpx",
       seq: 0,
       eventType: "done",
       stream: "system",
@@ -1457,7 +1504,8 @@ describe("Slack provider durable ingress", () => {
       payload: null,
     });
 
-    expect(postReply).not.toHaveBeenCalled();
+    expect(postReply).toHaveBeenCalledOnce();
+    expect(postReply).toHaveBeenCalledWith(expect.objectContaining({ text: "The actual answer." }));
     expect(queueState(store).active).toBeUndefined();
   });
 

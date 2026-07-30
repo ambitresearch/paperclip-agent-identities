@@ -10,12 +10,7 @@ const TRANSPORT_WARNING =
   "this can degrade performance and cause issues.";
 
 describe("SlackSessionReplyAccumulator", () => {
-  it("drops ambiguous ACPX agent_message_chunk deltas", () => {
-    // `acpx.text_delta` + channel=output + tag=agent_message_chunk is the same
-    // structural shape ACPX uses for transport diagnostics (see
-    // paperclipai/paperclip#1465) and for genuine assistant prose — there is
-    // no provenance field to tell them apart at this layer. Regression guard
-    // for DRO-1162: this source must never be streamed live to Slack.
+  it("accepts only ACPX agent_message_chunk deltas with exact model provenance", () => {
     const response = new SlackSessionReplyAccumulator();
 
     expect(
@@ -35,10 +30,30 @@ describe("SlackSessionReplyAccumulator", () => {
     ).toBe("");
     expect(
       response.append(
-        '{"type":"acpx.text_delta","text":" there","channel":"output","tag":"agent_message_chunk"}\n',
+        '{"type":"acpx.text_delta","text":"ignored","channel":"output","tag":"agent_message_chunk","messageId":"reply-1"}\n',
       ),
     ).toBe("");
-    expect(response.finish()).toBe("");
+    expect(
+      response.append(
+        '{"type":"acpx.text_delta","text":"ignored","channel":"output","tag":"agent_message_chunk","origin":"assistant"}\n',
+      ),
+    ).toBe("");
+    expect(
+      response.append(
+        '{"type":"acpx.text_delta","text":"ignored","channel":"output","tag":"agent_message_chunk","origin":"assistant","kind":"diagnostic"}\n',
+      ),
+    ).toBe("");
+    expect(
+      response.append(
+        '{"type":"acpx.text_delta","text":"Hey","channel":"output","tag":"agent_message_chunk","origin":"assistant","kind":"model"}\n',
+      ),
+    ).toBe("Hey");
+    expect(
+      response.append(
+        '{"type":"acpx.text_delta","text":" there","channel":"output","tag":"agent_message_chunk","origin":"assistant","kind":"model"}\n',
+      ),
+    ).toBe(" there");
+    expect(response.finish()).toBe("Hey there");
   });
 
   it("extracts structured final output and truncates oversized plain output", () => {
@@ -68,9 +83,16 @@ describe("SlackSessionReplyAccumulator", () => {
       ),
     ).toBe("");
 
-    // Real assistant answer follows as a higher-priority structured result.
+    // Real assistant answer follows with exact model provenance.
     expect(
-      response.append(`${JSON.stringify({ type: "result", result: "The actual answer." })}\n`),
+      response.append(`${JSON.stringify({
+        type: "acpx.text_delta",
+        text: "The actual answer.",
+        channel: "output",
+        tag: "agent_message_chunk",
+        origin: "assistant",
+        kind: "model",
+      })}\n`),
     ).toBe("The actual answer.");
 
     expect(response.finish()).toBe("The actual answer.");

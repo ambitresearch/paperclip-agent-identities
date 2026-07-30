@@ -178,7 +178,7 @@ export interface SlackConnectionCheckResult {
 // consistent with the existing SlackBotWhoamiData/SlackConnectionCheckResult
 // pattern above).
 export type SlackIngressFailureCategory = "signature_failed" | "routing_failed";
-export type SlackDeliveryFailureCategory = "queue_failed" | "session_failed" | "reply_failed";
+export type SlackDeliveryFailureCategory = "queue_failed" | "session_failed" | "reply_failed" | "action_not_taken";
 
 export interface SlackTelemetryFailure {
   category: SlackIngressFailureCategory | SlackDeliveryFailureCategory;

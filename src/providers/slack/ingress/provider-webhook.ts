@@ -54,6 +54,7 @@ import {
   type SlackQueuedTurnEvent,
 } from "./conversation-session.js";
 import { SlackSessionReplyAccumulator } from "./session-reply.js";
+import { SlackRunEvidenceTracker } from "./run-outcome.js";
 import { contributeSlackQueueRecoveryJob } from "./recovery-job.js";
 import { unregisterSlackConversationKey } from "./conversation-registry.js";
 import {
@@ -1255,6 +1256,7 @@ async function finishAcceptedRun(
   replyStream: SlackAgentReplyStream | undefined,
   event: AgentSessionEvent,
   runtime: SlackIngressRuntime,
+  evidence: SlackRunEvidenceTracker,
 ): Promise<void> {
   if (controller.invalidated || controller.finalizing) return;
   if (event.eventType !== "done" && event.eventType !== "error") return;
@@ -1268,9 +1270,25 @@ async function finishAcceptedRun(
   // and re-sent), but Slack never received the reply -- so the recorded
   // delivery phase below must be `reply_failed`, not `completed`.
   let replyFailed = false;
+  // DRO-1258: set when a `done` run produced no durable action evidence --
+  // an acknowledgment/promise-only reply, or a `plan_only` terminal
+  // classification. Such a run is not a terminal success; it is recorded as
+  // an `action_not_taken` delivery failure so the bounded recovery path
+  // (operator re-prompt / next inbound event) still applies and the health
+  // panel surfaces an explicit action-required outcome.
+  let actionNotTaken = false;
   try {
     if (event.eventType === "done") {
       const text = response.finish();
+      const outcome = evidence.classify(text);
+      actionNotTaken = outcome !== "acted";
+      if (actionNotTaken) {
+        safeLog(ctx.logger, "warn", "Slack ingress: routed agent run ended without durable action evidence", {
+          agentId: reference.agentId,
+          outcome,
+          gatewayAttached: evidence.evidence().gatewayAttached,
+        });
+      }
       if (text && active.turn.event.channel) {
         let streamed = false;
         if (replyStream) {
@@ -1341,7 +1359,11 @@ async function finishAcceptedRun(
       reference.agentId,
       { teamId: reference.conversation?.teamId ?? "", appId: reference.conversation?.appId ?? "" },
       event.eventType === "done"
-        ? (replyFailed ? { phase: "failed", category: "reply_failed" } : { phase: "completed" })
+        ? (replyFailed
+            ? { phase: "failed", category: "reply_failed" }
+            : actionNotTaken
+              ? { phase: "failed", category: "action_not_taken" }
+              : { phase: "completed" })
         : { phase: "failed", category: "session_failed" },
     );
     deleteController(ctx.state, reference.companyId, reference.agentId, reference.conversationKey, active.attemptId);
@@ -1484,7 +1506,11 @@ async function startClaimedTurn(
     }
     if (controller.invalidated) return;
 
-    const response = new SlackSessionReplyAccumulator();
+    // DRO-1258: judge run liveness from the same structured stream the reply
+    // accumulator already parses, so an acknowledgment-only, plan_only, or
+    // gateway-attachment-only run cannot be recorded as a clean completion.
+    const evidence = new SlackRunEvidenceTracker();
+    const response = new SlackSessionReplyAccumulator((record) => evidence.observeRecord(record));
     const bufferedEvents: AgentSessionEvent[] = [];
     let bufferOverflowed = false;
     let readyForEvents = false;
@@ -1540,6 +1566,7 @@ async function startClaimedTurn(
           replyStream,
           event,
           runtime,
+          evidence,
         );
       }
     };

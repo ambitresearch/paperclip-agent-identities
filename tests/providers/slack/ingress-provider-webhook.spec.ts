@@ -2356,4 +2356,109 @@ describe("Slack provider durable ingress", () => {
       expect(afterDrain.delivery?.lastDrainStartedAt).toBeTruthy();
     });
   });
+
+  /**
+   * DRO-1258: an acknowledgment or a plan is not the requested action. These
+   * drive the real drain path end to end and assert on recorded delivery
+   * health, not on the classifier in isolation.
+   */
+  describe("false-success liveness for Slack action runs (DRO-1258)", () => {
+    const runWithStdout = async (lines: readonly string[]) => {
+      const { ctx } = makeCtx({
+        sendMessage: async (sessionId, _companyId, options) => {
+          const callback = options.onEvent!;
+          let seq = 1;
+          for (const line of lines) {
+            await callback({
+              sessionId,
+              runId: "run-1",
+              seq: seq++,
+              eventType: "chunk",
+              stream: "stdout",
+              message: line,
+              payload: null,
+            });
+          }
+          const terminalSeq = seq;
+          queueMicrotask(() => void callback({
+            sessionId,
+            runId: "run-1",
+            seq: terminalSeq,
+            eventType: "done",
+            stream: "system",
+            message: null,
+            payload: null,
+          }));
+          return { runId: "run-1" };
+        },
+      });
+      await handleSlackProviderWebhook(delivery("Ev001"), ctx as never);
+      const payload = ctx.events.emit.mock.calls[0][2] as SlackTurnDrainPayload;
+      const postReply = vi.fn(async () => undefined);
+      await drainSlackConversationQueue(ctx as never, "co-1", payload, runtime(postReply));
+      return { ctx, postReply };
+    };
+
+    const readTelemetry = (ctx: { state: unknown }) =>
+      getSlackTelemetry(ctx.state as never, "agent-1", "co-1", { teamId: "T111", appId: "A111" });
+
+    it("does not mark an acknowledgment-only response successful", async () => {
+      const { ctx, postReply } = await runWithStdout([
+        JSON.stringify({ type: "result", result: "Sure thing, I'll post that shortly." }) + "\n",
+      ]);
+
+      await vi.waitFor(async () => {
+        expect((await readTelemetry(ctx)).delivery?.lastFailure?.category).toBe("action_not_taken");
+      });
+      const telemetry = await readTelemetry(ctx);
+      expect(telemetry.delivery?.lastCompletedAt).toBeFalsy();
+      expect(telemetry.delivery?.lastFailedAt).toBeTruthy();
+      // The bounded continuation path stays available: the reply is still
+      // delivered and the failure carries an operator next step.
+      expect(postReply).toHaveBeenCalledOnce();
+      expect(telemetry.delivery?.lastFailure?.nextStep).toBeTruthy();
+    });
+
+    it("does not let tool_gateway.session_created alone satisfy liveness progress", async () => {
+      const { ctx } = await runWithStdout([
+        JSON.stringify({ type: "tool_gateway.session_created", gatewaySessionId: "gs-1" }) + "\n",
+        JSON.stringify({ type: "result", result: "On it, I'll get started now." }) + "\n",
+      ]);
+
+      await vi.waitFor(async () => {
+        expect((await readTelemetry(ctx)).delivery?.lastFailure?.category).toBe("action_not_taken");
+      });
+      expect((await readTelemetry(ctx)).delivery?.lastCompletedAt).toBeFalsy();
+    });
+
+    it("does not record a plan_only invocation as completed", async () => {
+      const { ctx } = await runWithStdout([
+        JSON.stringify({
+          type: "invocation.completed",
+          classification: "plan_only",
+          result: "Plan: rename the channel, then notify the team.",
+        }) + "\n",
+      ]);
+
+      await vi.waitFor(async () => {
+        expect((await readTelemetry(ctx)).delivery?.lastFailure?.category).toBe("action_not_taken");
+      });
+      expect((await readTelemetry(ctx)).delivery?.lastCompletedAt).toBeFalsy();
+    });
+
+    it("positive control: a gateway session plus a real tool invocation completes successfully", async () => {
+      const { ctx, postReply } = await runWithStdout([
+        JSON.stringify({ type: "tool_gateway.session_created", gatewaySessionId: "gs-1" }) + "\n",
+        JSON.stringify({ type: "acpx.tool_call", name: "slack_bot_post_message" }) + "\n",
+        JSON.stringify({ type: "result", result: "Posted the release notes." }) + "\n",
+      ]);
+
+      await vi.waitFor(async () => {
+        expect((await readTelemetry(ctx)).delivery?.lastCompletedAt).toBeTruthy();
+      });
+      const telemetry = await readTelemetry(ctx);
+      expect(telemetry.delivery?.lastFailure).toBeFalsy();
+      expect(postReply).toHaveBeenCalledOnce();
+    });
+  });
 });

@@ -225,6 +225,52 @@ for 24 hours. Email is excluded. DMs may use sender-specific context; private gr
 and public channels may use only their own conversation context and the sender's
 workspace-visible profile.
 
+### 1.1 Completion requires action evidence, not acknowledgement (DRO-1258)
+
+A run reaching the host's `done` terminal event is necessary but not sufficient
+for a Slack turn to be recorded as `completed`. A Slack-initiated *action*
+request that ends with only an acknowledgement ("on it", "I'll post that
+shortly") or a plan did not do what was asked, and recording it as a clean
+success hides the failure from both the operator and the recovery path.
+
+`src/providers/slack/ingress/run-outcome.ts` judges this from the same
+structured adapter records the reply accumulator already parses
+(`SlackSessionReplyAccumulator` takes an optional observer callback, so the
+JSONL stream is not parsed twice). It classifies a finished run as:
+
+- `acted` — durable action evidence was observed (a tool/command/file-change
+  invocation), or the reply is a substantive non-action answer.
+- `acknowledgment_only` — the reply consists solely of acknowledgement or
+  promise-of-future-work clauses and no tool ran.
+- `plan_only` — a terminal record carried the `plan_only` classification,
+  meaning runnable future work was described without execution evidence.
+
+Two signals are specifically *not* progress:
+
+- **`tool_gateway.session_created` is attachment telemetry, never productive
+  progress.** It proves a gateway session was established and nothing about
+  whether any tool was invoked through it. The evidence tracker is monotonic:
+  the event neither adds progress nor resets progress already earned by a real
+  invocation, so the positive case (gateway session followed by a genuine tool
+  call) still completes normally.
+- **`plan_only` is never terminal success.** It outranks incidental tool use
+  performed *while* planning, because grepping to write a plan is not the
+  requested action.
+
+Anything other than `acted` records the delivery phase as a
+`action_not_taken` failure rather than `completed`. The reply is still posted
+to Slack (suppressing it would lose the agent's output), the durable event
+claim still completes (so the turn is never silently re-sent), and the
+operator-facing `nextStep` names the required follow-up. The turn therefore
+lands on the explicit blocked/action-required surface and remains eligible for
+the ordinary bounded continuation path on the next inbound event, instead of
+reporting green.
+
+The action-evidence allowlists are deliberately closed: an unrecognised record
+type is *not* optimistically read as action evidence, since that is exactly the
+false-success mode this check exists to prevent. Agent prose (`agent_message`)
+is likewise never action evidence.
+
 ## 2. Identity shape
 
 Following the GitHub precedent (`src/providers/github/config.ts`), the Slack
@@ -881,6 +927,14 @@ dedicated cross-company case (a shared `agentId` recorded under one company
 never projects for a different caller `companyId`, at both the module and
 registered-action layers), and that
 the persisted record and its projection never contain secret-shaped content.
+
+The `action_not_taken` delivery category added in DRO-1258 (see §1.1) keeps
+this property: like every other category it is a closed enum value whose
+`nextStep` is a fixed static guidance string. The classification that produces
+it is computed from adapter record *shapes* and discarded — no reply text,
+prompt, tool argument, or tool output is ever persisted or logged, and the
+accompanying warn-level log carries only the `agentId`, the closed-enum
+outcome, and the boolean gateway-attachment flag.
 
 ## 10. Implementation notes and deferred questions
 

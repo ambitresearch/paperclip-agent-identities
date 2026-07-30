@@ -31,3 +31,10 @@ export type {
 export { createSlackTurnDrainPayload } from "./provider-webhook.js";
 export { SLACK_ACCEPTED_RUN_LEASE_MS } from "./provider-webhook.js";
 export type { SlackTurnDrainPayload } from "./provider-webhook.js";
+export {
+  SlackRunEvidenceTracker,
+  isAcknowledgmentOnlyReply,
+  GATEWAY_ATTACHMENT_EVENT,
+  PLAN_ONLY_CLASSIFICATION,
+} from "./run-outcome.js";
+export type { SlackRunEvidence, SlackRunOutcome } from "./run-outcome.js";

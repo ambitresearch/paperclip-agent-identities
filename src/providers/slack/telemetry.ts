@@ -33,7 +33,8 @@ export type SlackIngressFailureCategory =
 export type SlackDeliveryFailureCategory =
   | "queue_failed"
   | "session_failed"
-  | "reply_failed";
+  | "reply_failed"
+  | "action_not_taken";
 
 export interface SlackTelemetryFailure {
   readonly category: SlackIngressFailureCategory | SlackDeliveryFailureCategory;
@@ -78,6 +79,8 @@ export const SLACK_DELIVERY_FAILURE_GUIDANCE: Record<SlackDeliveryFailureCategor
     "The durable conversation queue was full or in conflict when this event arrived. Slack will retry the delivery; if this persists, a conversation may be stuck -- check for a long-running or stalled session.",
   session_failed:
     "Starting or resuming the agent session for this conversation failed. Retry is automatic on the next inbound event; if it persists, check the agent's session health directly.",
+  action_not_taken:
+    "The run reached a terminal state without durable action evidence: the reply only acknowledged or promised the work, or the invocation ended classified `plan_only`. A gateway session alone does not count as progress. Re-prompt the agent in Slack with the concrete action required, or inspect the run for a blocked/action-required outcome.",
   reply_failed:
     "Sending the agent's reply back to Slack failed or was ambiguous, so it was not retried automatically to avoid a duplicate reply. The operator may need to re-prompt the agent in Slack.",
 };
@@ -156,7 +159,7 @@ function parseDelivery(value: unknown): SlackDeliveryTelemetry | undefined {
     return undefined;
   }
   const timestamp = (field: unknown) => (field === undefined ? undefined : isFiniteTimestamp(field) ? field : undefined);
-  const lastFailure = parseFailure(value.lastFailure, ["queue_failed", "session_failed", "reply_failed"]);
+  const lastFailure = parseFailure(value.lastFailure, ["queue_failed", "session_failed", "reply_failed", "action_not_taken"]);
   return {
     lastEnqueuedAt: timestamp(value.lastEnqueuedAt),
     lastDrainStartedAt: timestamp(value.lastDrainStartedAt),

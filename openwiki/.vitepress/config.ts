@@ -39,6 +39,7 @@ export default defineConfig({
         items: [
           { text: "Agent Identities", link: "/domain/agent-identities" },
           { text: "Slack Provisioning Decision Record", link: "/domain/slack-provisioning-decision" },
+          { text: "Host-Core secrets.create-value Design (declined)", link: "/domain/host-core-secrets-create-value-design" },
         ],
       },
       {

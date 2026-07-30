@@ -347,6 +347,11 @@ capability table (`plugin-capability-validator`):
   `oauth.v2.access` bot token) — only to bind/read secrets a human already created through the
   host's own secret-management UI.
 
+(Both `secrets.bind-ref` and `secrets.read-ref` are supported by the running host but absent from
+the published `PLUGIN_CAPABILITIES` union in `@paperclipai/shared` as of this writing — this repo's
+manifest declares them with an explicit "host supports this ahead of the published SDK type union"
+cast; see `src/manifest.ts:197`.)
+
 This matches the "feasibility boundary" called out in the issue body: the SDK "resolves existing
 secrets but does not appear to expose a host-supported company-secret write capability." That is
 confirmed, not just suspected. Building secret creation inside this plugin (writing directly to
@@ -362,7 +367,14 @@ company/agent scoping and idempotent-on-retry semantics, and never echoes the va
 plugin or the browser. That capability does not exist in `@paperclipai/plugin-sdk` as of this
 writing and must be designed, reviewed, and shipped by whoever owns Paperclip host-core (outside
 this repository) before any of DRO-1157's OAuth-callback/manifest-automation/UX work can proceed.
-Filed as a host-core capability request; see the linked follow-up issue.
+Filed as a host-core capability request: [DRO-1175](https://paperclip.roshangautam.com/DRO/issues/DRO-1175).
+
+**Outcome (2026-07-29): declined, won't-do.** Roshan answered option C ("don't") on the DRO-1175
+interaction, and both DRO-1175 and this stretch issue (DRO-1157) were closed won't-do the same day.
+The manual two-step flow above is the standing, permanent state — not an interim measure pending a
+capability that is now confirmed not to be coming. This section and the linked design spec
+([host-core-secrets-create-value-design](/domain/host-core-secrets-create-value-design)) are
+retained as a reference artifact only, in case the question is reopened in the future.
 
 ## Sources
 

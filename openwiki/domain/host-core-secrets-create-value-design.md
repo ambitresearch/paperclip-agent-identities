@@ -1,6 +1,12 @@
 # Host-core capability design: `secrets.create-value` (DRO-1175)
 
-Status: **design proposal, not yet implemented.** This capability lives in Paperclip host-core
+Status: **declined, won't-do (2026-07-29).** Roshan answered option C ("don't") on the DRO-1175
+interaction; DRO-1175 and its parent, DRO-1157, were both closed won't-do the same day. This
+capability will not be built. The manual two-step operator flow (create the company secret, paste
+its UUID into the identity dialog — see
+[Slack Provisioning Decision Record](/domain/slack-provisioning-decision)) is the standing,
+permanent state. The design below is retained as a reference artifact only, in case the question
+is reopened in the future. This capability lives in Paperclip host-core
 (`paperclipai/paperclip`, `server/` package — `PluginSecretsClient` / `plugin-capability-validator`
 / `plugin-secrets-handler`), not in this plugin repo. This repo (`paperclip-agent-identities`) has
 no write access to host-core source; this document is the technical spec to hand to whoever owns
@@ -16,6 +22,11 @@ and the host's `plugin-capability-validator`:
   into plugin config. Requires `secrets.bind-ref`. No raw-value intake.
 - `ctx.secrets.resolve` — reads an **existing** secret's value. Requires `secrets.read-ref`. No
   write path.
+
+(Both `secrets.bind-ref` and `secrets.read-ref` are supported by the running host but absent from
+the published `PLUGIN_CAPABILITIES` union in `@paperclipai/shared` as of this writing — this repo's
+manifest declares them with an explicit "host supports this ahead of the published SDK type union"
+cast; see `src/manifest.ts:197`.)
 
 No capability lets a plugin mint a brand-new company-scoped secret record from a value it holds in
 memory (e.g. a Slack `oauth.v2.access` bot token or signing secret received in an OAuth callback
@@ -57,7 +68,7 @@ mint new secrets" separately from "this plugin can read/bind secrets you already
    `{secretId, version}`. The value must not be logged, echoed in error messages, or included in
    any audit record body (audit the *action* and *secretId*, not the value).
 2. **Company/agent scoping enforced server-side**, not by trusting the plugin's `companyId` param
-   blindeley — same scoping model as `patchSecretRefs`/`resolve` (derive from the bound
+   blindly — same scoping model as `patchSecretRefs`/`resolve` (derive from the bound
    installation/session, not attacker-controlled input).
 3. **Idempotent under retry.** Plugin-supplied `idempotencyKey` (e.g. derived from
    `{agentId}:{provider}:{credentialKind}` such as `slack-bot-token` /
@@ -113,7 +124,10 @@ refs in the open identity dialog per DRO-1157's goal.
 
 This repo (`paperclip-agent-identities`) cannot implement or ship this — it lives in
 `paperclipai/paperclip` host-core, a repository this plugin team does not own or have write
-access to. Publishing any change there (even a draft PR) requires the operator's explicit,
-per-action go-ahead — this document is the artifact to hand over for that decision, not an
-implementation. See interaction on [DRO-1175](https://paperclip.roshangautam.com/DRO/issues/DRO-1175)
-for the specific question being asked.
+access to.
+
+**Resolved 2026-07-29:** the question this section originally posed was asked and answered.
+Roshan chose option C ("don't") on the [DRO-1175](https://paperclip.roshangautam.com/DRO/issues/DRO-1175)
+interaction — this capability will not be built, and there is no further action or decision
+pending here. This document stops being a live handoff artifact and becomes a reference spec only,
+kept in case the question is reopened.

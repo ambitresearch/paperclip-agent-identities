@@ -347,10 +347,10 @@ capability table (`plugin-capability-validator`):
   `oauth.v2.access` bot token) — only to bind/read secrets a human already created through the
   host's own secret-management UI.
 
-(Both `secrets.bind-ref` and `secrets.read-ref` are supported by the running host but absent from
-the published `PLUGIN_CAPABILITIES` union in `@paperclipai/shared` as of this writing — this repo's
-manifest declares them with an explicit "host supports this ahead of the published SDK type union"
-cast; see `src/manifest.ts:197`.)
+(`secrets.bind-ref` is supported by the running host but absent from the published
+`PLUGIN_CAPABILITIES` union in `@paperclipai/shared` as of this writing — this repo's manifest
+declares it with an explicit "host supports this ahead of the published SDK type union" cast; see
+`src/manifest.ts:197`. `secrets.read-ref` is in the published union and needs no cast.)
 
 This matches the "feasibility boundary" called out in the issue body: the SDK "resolves existing
 secrets but does not appear to expose a host-supported company-secret write capability." That is

@@ -23,10 +23,10 @@ and the host's `plugin-capability-validator`:
 - `ctx.secrets.resolve` — reads an **existing** secret's value. Requires `secrets.read-ref`. No
   write path.
 
-(Both `secrets.bind-ref` and `secrets.read-ref` are supported by the running host but absent from
-the published `PLUGIN_CAPABILITIES` union in `@paperclipai/shared` as of this writing — this repo's
-manifest declares them with an explicit "host supports this ahead of the published SDK type union"
-cast; see `src/manifest.ts:197`.)
+(`secrets.bind-ref` is supported by the running host but absent from the published
+`PLUGIN_CAPABILITIES` union in `@paperclipai/shared` as of this writing — this repo's manifest
+declares it with an explicit "host supports this ahead of the published SDK type union" cast; see
+`src/manifest.ts:197`. `secrets.read-ref` is in the published union and needs no cast.)
 
 No capability lets a plugin mint a brand-new company-scoped secret record from a value it holds in
 memory. DRO-1157 needs this for two Slack credentials that arrive through two *different*

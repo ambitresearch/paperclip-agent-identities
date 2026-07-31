@@ -503,7 +503,7 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
       if (truncatedReads.length > 0) {
         return {
           error:
-            `GitHub returned more checks for commit ${headSha.slice(0, 7)} than one page carries: ` +
+            `Could not confirm a complete read of CI for commit ${headSha.slice(0, 7)}: ` +
             `${truncatedReads.join(", ")}. Refusing to judge the merge gate from a partial read of CI.`
         };
       }

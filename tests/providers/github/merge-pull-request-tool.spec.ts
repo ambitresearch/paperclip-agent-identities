@@ -309,6 +309,12 @@ interface FakeGitHubOptions {
   checkRuns?: Array<{ status: string; conclusion: string | null }>;
   /** Overrides `total_count` so a truncated page — GitHub's real failure mode — is representable. */
   checkRunsTotalCount?: number;
+  /**
+   * Replaces the `/check-runs` body wholesale, so a `total_count` that is
+   * absent or of the wrong type — neither expressible via `checkRunsTotalCount`
+   * — can be handed to the gate.
+   */
+  checkRunsBodyOverride?: Record<string, unknown>;
   workflowRuns?: Array<{ id?: number; workflow_id?: number; status: string; conclusion: string | null }>;
   workflowRunsTotalCount?: number;
   /**
@@ -372,6 +378,7 @@ function fakeGitHub(options: FakeGitHubOptions = {}) {
     if (url.includes("/pulls/7/reviews")) return json(reviews);
     if (url.endsWith("/pulls/7")) return json(pr);
     if (url.includes("/check-runs")) {
+      if (options.checkRunsBodyOverride) return json(options.checkRunsBodyOverride);
       return json({ total_count: options.checkRunsTotalCount ?? checkRuns.length, check_runs: checkRuns });
     }
     if (url.includes("/status")) return json({ state: "pending", statuses: [] });
@@ -501,6 +508,51 @@ describe("githubMergePullRequestToolSpec.perform", () => {
     const { fetchImpl } = fakeGitHub({
       checkRuns: Array.from({ length: 42 }, () => ({ status: "completed", conclusion: "success" })),
       checkRunsTotalCount: 42
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { data: { merged: boolean } };
+    expect(result.data.merged).toBe(true);
+  });
+
+  it("refuses on a full page whose total_count is missing", async () => {
+    // A page filled exactly to the cap looks identical whether it is complete or
+    // truncated. Without a total there is no evidence it was complete, and an
+    // unproven read is not a green light.
+    const { fetchImpl } = fakeGitHub({
+      checkRunsBodyOverride: {
+        check_runs: Array.from({ length: 100 }, () => ({ status: "completed", conclusion: "success" }))
+      }
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("check runs (read 100; GitHub reported no usable total)");
+  });
+
+  it("refuses on a full page whose total_count is not a number", async () => {
+    const { fetchImpl } = fakeGitHub({
+      checkRunsBodyOverride: {
+        total_count: "142",
+        check_runs: Array.from({ length: 100 }, () => ({ status: "completed", conclusion: "success" }))
+      }
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("check runs (read 100; GitHub reported no usable total)");
+  });
+
+  it("still merges on a short page whose total_count is missing", async () => {
+    // The counterpart to the two above: a page under the cap carried everything
+    // GitHub had regardless of what it reported, so absence of a total is not
+    // itself a reason to refuse.
+    const { fetchImpl } = fakeGitHub({
+      checkRunsBodyOverride: {
+        check_runs: Array.from({ length: 99 }, () => ({ status: "completed", conclusion: "success" }))
+      }
     });
     const result = (await githubMergePullRequestToolSpec.perform(
       execution("tok", buildCtx(fetchImpl as never))

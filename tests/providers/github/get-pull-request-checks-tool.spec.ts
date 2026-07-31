@@ -158,6 +158,38 @@ describe("githubGetPullRequestChecksToolSpec.perform", () => {
     expect(result.content).toContain("Incomplete read of check runs (read 1 of 142)");
   });
 
+  it("never reports success from a full page that reported no usable total", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/pulls/7")) {
+        return new Response(JSON.stringify({ head: { sha: "deadbeef" } }), { status: 200 });
+      }
+      if (url.includes("/check-runs")) {
+        // 100 green runs — exactly the page cap — with `total_count` absent.
+        // Indistinguishable from a truncated read, so it cannot report green.
+        return new Response(JSON.stringify({
+          check_runs: Array.from({ length: 100 }, (_unused, index) => ({
+            id: index, name: `build-${index}`, status: "completed", conclusion: "success",
+            started_at: null, completed_at: null, html_url: `u${index}`
+          }))
+        }), { status: 200 });
+      }
+      if (url.includes("/status")) {
+        return new Response(JSON.stringify({ state: "success", statuses: [] }), { status: 200 });
+      }
+      if (url.includes("/actions/runs")) {
+        return new Response(JSON.stringify({ total_count: 0, workflow_runs: [] }), { status: 200 });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const exec = execution("tok");
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+    const result = (await githubGetPullRequestChecksToolSpec.perform(exec)) as {
+      data: { overallState: string; truncated?: string[] };
+    };
+    expect(result.data.overallState).toBe("pending");
+    expect(result.data.truncated).toEqual(["check runs (read 100; GitHub reported no usable total)"]);
+  });
+
   it("still reports failure from a truncated page — a red run we did read is still red", async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (url.endsWith("/pulls/7")) {

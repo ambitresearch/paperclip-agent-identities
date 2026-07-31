@@ -69,17 +69,29 @@ const GITHUB_API_HEADERS = (token: string) => ({
 export const CHECK_RUNS_PER_PAGE = 100;
 
 /**
- * Describe an incomplete read, or `null` when the page carried everything.
- * A caller that judges CI from a truncated slice can call a red commit green,
- * so every consumer of these endpoints has to notice the gap rather than
- * silently treat page one as the whole story.
+ * Describe a read that cannot be proven complete, or `null` when the page
+ * demonstrably carried everything. A caller that judges CI from a truncated
+ * slice can call a red commit green, so every consumer of these endpoints has
+ * to notice the gap rather than silently treat page one as the whole story.
  */
 export function describeTruncatedRead(
   label: string,
   totalCount: unknown,
   receivedCount: number
 ): string | null {
-  if (typeof totalCount !== "number" || !Number.isFinite(totalCount)) return null;
+  // A page filled exactly to the cap has the same shape whether it is complete
+  // or truncated; only `total_count` tells the two apart. GitHub documents that
+  // field on both endpoints, so an unusable one is not a case the real API
+  // produces — but the cost of guessing wrong is a red commit judged green, and
+  // this module already refuses to act on missing evidence elsewhere
+  // (`dropSupersededWorkflowRuns` keeps a run whose displacement it cannot
+  // prove). So an absent or type-drifted total means "unproven", not "complete":
+  // a short page still carried everything, a full one is treated as suspect.
+  if (typeof totalCount !== "number" || !Number.isFinite(totalCount)) {
+    return receivedCount >= CHECK_RUNS_PER_PAGE
+      ? `${label} (read ${receivedCount}; GitHub reported no usable total)`
+      : null;
+  }
   if (totalCount <= receivedCount) return null;
   return `${label} (read ${receivedCount} of ${totalCount})`;
 }

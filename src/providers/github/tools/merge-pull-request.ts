@@ -527,11 +527,59 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
       };
     };
 
+    // Who is actually merging. This has to come from the credential
+    // authenticating the request, not from `identity.githubUsername`: that value
+    // is operator-editable config, and on the `plugin-secret` / `token-file`
+    // credential paths nothing binds it to the token. A fallback token owned by
+    // the pull request author, paired with some other configured username, would
+    // otherwise clear the caller-is-author gate while GitHub performed the merge
+    // as the author — the one identity the gate exists to exclude.
+    //
+    // `GET /user` resolves a user token to its real login. A GitHub App
+    // installation token cannot act as a user, so GitHub answers it with 403
+    // `Resource not accessible by integration`; only that case falls back to the
+    // configured username, which the App provisioning path derives from the app
+    // slug (`${appSlug}[bot]`) rather than from free-form input. Anything else —
+    // 401 on a bad token, a 5xx, a 200 without a login — leaves the acting
+    // principal unproven, and an unproven principal is refused rather than
+    // assumed to be someone other than the author.
+    const resolveCallerLogin = async (): Promise<{ login: string } | { error: string }> => {
+      const response = await ctx.http.fetch("https://api.github.com/user", { method: "GET", headers });
+      if (response.status === 403) {
+        const configured = execution.identity.identity.githubUsername.trim();
+        if (!configured) {
+          return {
+            error:
+              "Cannot determine the merging identity: the credential is a GitHub App installation token " +
+              "and no githubUsername is configured for this agent identity."
+          };
+        }
+        return { login: configured };
+      }
+      if (!response.ok) {
+        const details = await readErrorDetails(response);
+        return {
+          error:
+            `GitHub API returned ${response.status} resolving the identity behind the merge credential. ` +
+            `Refusing to merge without a verified caller. ${details}`.trim()
+        };
+      }
+      const body = (await response.json()) as { login?: unknown };
+      if (typeof body.login !== "string" || !body.login.trim()) {
+        return {
+          error: "GitHub returned no login for the merge credential. Refusing to merge without a verified caller."
+        };
+      }
+      return { login: body.login.trim() };
+    };
+
+    let callerResult: Awaited<ReturnType<typeof resolveCallerLogin>>;
     let reviewsError: string | null;
     let threadsResult: Awaited<ReturnType<typeof collectUnresolvedThreads>>;
     let checksResult: Awaited<ReturnType<typeof collectChecks>>;
     try {
-      [reviewsError, threadsResult, checksResult] = await Promise.all([
+      [callerResult, reviewsError, threadsResult, checksResult] = await Promise.all([
+        resolveCallerLogin(),
         collectReviews(),
         collectUnresolvedThreads(),
         collectChecks()
@@ -539,13 +587,14 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
     } catch {
       return networkFailure("reading the merge gate signals");
     }
+    if ("error" in callerResult) return { error: callerResult.error };
     if (reviewsError) return { error: reviewsError };
     if ("error" in threadsResult) return { error: threadsResult.error };
     if ("error" in checksResult) return { error: checksResult.error };
 
     // Step 3: the gate. Nothing is mutated until every condition holds.
     const gate = evaluateMergeGate({
-      callerLogin: execution.identity.identity.githubUsername,
+      callerLogin: callerResult.login,
       authorLogin: pr.user?.login ?? null,
       state: pr.state,
       draft: Boolean(pr.draft),

@@ -311,6 +311,12 @@ interface FakeGitHubOptions {
   checkRunsTotalCount?: number;
   workflowRuns?: Array<{ id?: number; workflow_id?: number; status: string; conclusion: string | null }>;
   workflowRunsTotalCount?: number;
+  /**
+   * `GET /user` response for the merge credential. Defaults to the configured
+   * username, i.e. a token whose real owner matches its config. `403` emulates a
+   * GitHub App installation token, which cannot act as a user.
+   */
+  callerUser?: { status?: number; body?: unknown };
   mergeResponse?: Response;
 }
 
@@ -355,6 +361,10 @@ function fakeGitHub(options: FakeGitHubOptions = {}) {
           }
         }
       });
+    }
+    if (url === "https://api.github.com/user") {
+      const caller = options.callerUser ?? {};
+      return json(caller.body ?? { login: "reviewer-bot" }, caller.status ?? 200);
     }
     if (url.includes("/pulls/7/merge")) {
       return options.mergeResponse ?? json({ sha: "c".repeat(40), merged: true, message: "Pull Request successfully merged" });
@@ -570,6 +580,65 @@ describe("githubMergePullRequestToolSpec.perform", () => {
     )) as { error: string };
     expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
     expect(result.error).toContain("merge must be performed by a different agent identity");
+  });
+
+  it("refuses when the credential's real owner authored the pull request, even though config names someone else", async () => {
+    // The configured identity is `reviewer-bot`, and the author is `author-bot`,
+    // so the old config-trusting comparison passed. The token actually belongs to
+    // `author-bot`, which is who GitHub would have performed the merge as.
+    const { fetchImpl } = fakeGitHub({ callerUser: { body: { login: "author-bot" } } });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("merge must be performed by a different agent identity");
+  });
+
+  it("merges when config names the author but the credential's real owner does not", async () => {
+    // The mirror image: config is stale/wrong in the blocking direction. The gate
+    // judges the principal that acts, so this is a legitimate merge.
+    const { fetchImpl } = fakeGitHub({
+      pr: { user: { login: "reviewer-bot" } },
+      callerUser: { body: { login: "third-bot" } },
+      reviews: [
+        { user: { login: "other-bot" }, state: "APPROVED", commit_id: HEAD },
+        { user: { login: "fourth-bot" }, state: "APPROVED", commit_id: HEAD }
+      ]
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { data?: { merged?: boolean }; error?: string };
+    expect(result.error).toBeUndefined();
+    expect(result.data?.merged).toBe(true);
+  });
+
+  it("falls back to the configured username when the credential is an App installation token", async () => {
+    // `GET /user` 403s for an installation token, which cannot act as a user at
+    // all. The configured name is App-derived (`${appSlug}[bot]`) on that path.
+    const { fetchImpl } = fakeGitHub({ callerUser: { status: 403, body: { message: "Resource not accessible by integration" } } });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { data?: { merged?: boolean }; error?: string };
+    expect(result.error).toBeUndefined();
+    expect(result.data?.merged).toBe(true);
+  });
+
+  it("refuses when the merge credential's identity cannot be verified", async () => {
+    const { fetchImpl } = fakeGitHub({ callerUser: { status: 401, body: { message: "Bad credentials" } } });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("Refusing to merge without a verified caller");
+  });
+
+  it("refuses when the credential resolves to a 200 with no login", async () => {
+    const { fetchImpl } = fakeGitHub({ callerUser: { body: {} } });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("Refusing to merge without a verified caller");
   });
 
   it("refuses when the reviewed head has been overwritten by a later push", async () => {

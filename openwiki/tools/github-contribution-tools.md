@@ -192,8 +192,8 @@ Optional parameters:
 
 - `mergeMethod`: `merge`, `squash`, or `rebase`. Defaults to `squash`.
 - `commitTitle` / `commitBody`: override the generated merge commit message.
-- `expectedHeadSha`: full 40-character SHA the caller believes it reviewed. Mismatch refuses before the gate
-  runs.
+- `expectedHeadSha`: full 40-character SHA the caller believes it reviewed. A mismatch is reported as a
+  `head_sha_mismatch` blocker alongside any others, so one call names every reason the merge was refused.
 - `paperclipIssueId` for activity metadata.
 
 ### The merge gate
@@ -225,6 +225,25 @@ rather than guessing why a visibly-approved PR was refused.
 
 `REQUIRED_NON_AUTHOR_APPROVALS` is a module constant, not a parameter. A caller able to pass
 `requiredApprovals: 0` would turn the gate back into the honor system it exists to replace.
+
+#### Who the gate thinks is calling
+
+`caller_is_author` is only as good as its idea of who is merging, so that identity is never read from
+`githubUsername` alone -- that is operator-editable config, and on the `plugin-secret` / `token-file`
+credential paths nothing binds it to the token actually being used. The tool reads
+`execution.tokenSource`, the `ResolvedCredential.source` plumbed through from `resolveIdentityToken`:
+
+- **`github-app`** -- the token was minted for this agent's own App, and the configured username is
+  app-slug-derived (`${appSlug}[bot]`) rather than typed, so it is used as-is and no probe is made.
+- **anything else** -- the login is resolved from `GET /user` and compared to the author. Any non-2xx
+  response, or a 200 without a usable login, refuses the merge rather than assuming the caller is someone
+  other than the author.
+
+The distinction comes from the credential source rather than from how GitHub answers the probe, because 403
+is not diagnostic: GitHub returns it for an installation token, but equally for a *user* token that has
+exhausted its primary rate limit, tripped abuse detection, or is blocked by SAML SSO. Treating 403 as
+"must be an App" would hand the check back to the editable field on exactly the transient conditions a busy
+fleet hits, so an author-owned token would self-merge depending on time of day.
 
 Two honest limitations, stated so nobody over-trusts the gate:
 

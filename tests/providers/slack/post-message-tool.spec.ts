@@ -299,6 +299,7 @@ describe("slackBotPostMessageToolSpec.perform", () => {
   ): ProviderToolExecution<SlackAgentIdentity, SlackChannelRef> {
     return {
       token,
+      tokenSource: "slack-bot-token",
       identity,
       resourceRef: ref,
       params,

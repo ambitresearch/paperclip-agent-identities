@@ -327,6 +327,11 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
     // record stays visible to whoever is reading; only the aggregate verdict
     // ignores the ones a later run of the same workflow displaced.
     const judgedWorkflowRuns = dropSupersededWorkflowRuns(workflowRunsBody.workflow_runs);
+    // Without this the two disagree silently: a reader sees `success` next to a
+    // listed `cancelled` run and has nothing tying them together, which reads as
+    // a bug in the tool rather than the documented behavior. Surface the count
+    // the same way the truncation path surfaces itself.
+    const supersededWorkflowRunCount = workflowRuns.length - judgedWorkflowRuns.length;
 
     // `statusBody.state` is only the legacy combined *commit status* state. It ignores
     // check runs and workflow runs entirely, so a PR with a failing GitHub Actions job
@@ -361,6 +366,9 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
       content:
         `Pull request #${validated.pullNumber} (${sha.slice(0, 7)}): overall status ${aggregateState}, ` +
         `${checkRuns.length} check run(s), ${workflowRuns.length} workflow run(s)` +
+        (supersededWorkflowRunCount > 0
+          ? `. ${supersededWorkflowRunCount} workflow run(s) listed but excluded from the status as superseded by a later run of the same workflow.`
+          : "") +
         (truncatedReads.length > 0
           ? `. Incomplete read of ${truncatedReads.join(" and ")}; the status shown covers only what was read.`
           : ""),
@@ -368,6 +376,7 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
         sha,
         overallState: aggregateState,
         combinedStatusState: statusBody.state,
+        ...(supersededWorkflowRunCount > 0 ? { supersededWorkflowRuns: supersededWorkflowRunCount } : {}),
         ...(truncatedReads.length > 0 ? { truncated: truncatedReads } : {}),
         checkRuns,
         statusContexts,

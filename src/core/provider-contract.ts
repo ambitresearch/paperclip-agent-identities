@@ -52,6 +52,20 @@ export interface IdentityProviderDefinition {
 export interface ResolvedCredential {
   readonly token: string;
   readonly secrets: readonly string[];
+  // Which of the provider's credential paths produced `token`. Provider-defined;
+  // GitHub uses the `ResolvedIdentityToken["source"]` values ("github-app" |
+  // "plugin-secret" | "token-file").
+  //
+  // A tool that needs to know whether the token is intrinsically bound to the
+  // configured identity must read this rather than infer it from how the remote
+  // API answers a probe. Only a path that mints the token *for this agent's own
+  // identity* — GitHub's `github-app` — ties the credential to the configured
+  // username; a token handed over by an operator is owned by whoever owns it.
+  // Inferring that distinction from an error status is wrong in the unsafe
+  // direction: GitHub answers a rate-limited or SSO-blocked *user* token with
+  // the same 403 it answers an installation token with. See `resolveCallerLogin`
+  // in `providers/github/tools/merge-pull-request.ts`.
+  readonly source: string;
 }
 
 export type ParamsValidation =
@@ -64,6 +78,10 @@ export interface ProviderToolExecution<TIdentity, TRef extends ResourceReference
   // Credentialed tools (create-PR, push-branch) are guaranteed a non-null token
   // by the pipeline and narrow it defensively in `perform`.
   readonly token: string | null;
+  // `ResolvedCredential.source` for `token`; `null` on the same no-credential
+  // path that makes `token` null. A value the tool does not recognize must be
+  // treated as unverified rather than as a trusted path.
+  readonly tokenSource: string | null;
   readonly identity: ResolvedAgentIdentity<TIdentity>;
   readonly resourceRef: TRef | null;
   readonly params: unknown;

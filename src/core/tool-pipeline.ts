@@ -88,6 +88,7 @@ export function createProviderTool<TIdentity, TRef extends ResourceReference>(
       try {
         const result = await toolSpec.perform({
           token: credential?.token ?? null,
+          tokenSource: credential?.source ?? null,
           identity,
           resourceRef,
           params,

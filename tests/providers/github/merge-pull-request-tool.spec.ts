@@ -319,8 +319,9 @@ interface FakeGitHubOptions {
   workflowRunsTotalCount?: number;
   /**
    * `GET /user` response for the merge credential. Defaults to the configured
-   * username, i.e. a token whose real owner matches its config. `403` emulates a
-   * GitHub App installation token, which cannot act as a user.
+   * username, i.e. a token whose real owner matches its config. Only reached on
+   * the operator-supplied credential sources; a `github-app` `tokenSource`
+   * skips the probe entirely.
    */
   callerUser?: { status?: number; body?: unknown };
   mergeResponse?: Response;
@@ -394,10 +395,15 @@ function fakeGitHub(options: FakeGitHubOptions = {}) {
 function execution(
   token: string | null,
   ctx: unknown,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  // Defaults to an operator-supplied credential — the path that has to prove its
+  // login through `GET /user`. Tests wanting the App shortcut opt into it, so no
+  // test can pass by accidentally skipping the probe.
+  tokenSource: string | null = "token-file"
 ): ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef> {
   return {
     token,
+    tokenSource,
     identity,
     resourceRef: repoRef(),
     params: { repository: "acme/widgets", pullNumber: 7, mergeMethod: "squash", ...params },
@@ -574,8 +580,8 @@ describe("githubMergePullRequestToolSpec.perform", () => {
       execution("tok", buildCtx(fetchImpl as never))
     )) as { error: string };
     expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
-    expect(result.error).toContain("more than 1000 reviews");
-    expect(result.error).toContain("Refusing to judge approvals from a partial read");
+    expect(result.error).toContain("at least 1000 reviews");
+    expect(result.error).toContain("Refusing to judge approvals from a possibly partial read");
   });
 
   it("refuses rather than merging when review threads run past the page cap", async () => {
@@ -664,15 +670,53 @@ describe("githubMergePullRequestToolSpec.perform", () => {
     expect(result.data?.merged).toBe(true);
   });
 
-  it("falls back to the configured username when the credential is an App installation token", async () => {
-    // `GET /user` 403s for an installation token, which cannot act as a user at
-    // all. The configured name is App-derived (`${appSlug}[bot]`) on that path.
-    const { fetchImpl } = fakeGitHub({ callerUser: { status: 403, body: { message: "Resource not accessible by integration" } } });
+  it("uses the configured username without probing when the credential is a GitHub App token", async () => {
+    // An installation token cannot act as a user at all, and on this path the
+    // configured name is App-derived (`${appSlug}[bot]`) rather than typed — so
+    // it is trusted, and `GET /user` is never called.
+    const { fetchImpl } = fakeGitHub();
     const result = (await githubMergePullRequestToolSpec.perform(
-      execution("tok", buildCtx(fetchImpl as never))
+      execution("tok", buildCtx(fetchImpl as never), {}, "github-app")
     )) as { data?: { merged?: boolean }; error?: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url) === "https://api.github.com/user")).toBe(false);
     expect(result.error).toBeUndefined();
     expect(result.data?.merged).toBe(true);
+  });
+
+  // The round-1 fix keyed the configured-username fallback on HTTP 403 alone.
+  // GitHub also answers 403 for primary rate limiting, secondary/abuse limits,
+  // and SAML SSO enforcement on a *user* token — so a token owned by the author
+  // stopped being checked the moment it was rate-limited. Each of these reached
+  // `PUT /merge` before the source-keyed fix.
+  for (const [label, body] of [
+    ["a primary rate limit", { message: "API rate limit exceeded for user ID 1234." }],
+    ["a secondary rate limit", { message: "You have exceeded a secondary rate limit." }],
+    ["SAML SSO enforcement", { message: "Resource protected by organization SAML enforcement." }],
+    // Even the installation-token message refuses on a non-App source: an
+    // installation token handed over via `tokenFile` is not this agent's App,
+    // so the configured username says nothing about who it belongs to.
+    ["an installation token supplied as a token file", { message: "Resource not accessible by integration" }]
+  ] as const) {
+    it(`refuses a 403 from ${label} instead of trusting the configured username`, async () => {
+      const { fetchImpl } = fakeGitHub({ callerUser: { status: 403, body } });
+      const result = (await githubMergePullRequestToolSpec.perform(
+        execution("tok", buildCtx(fetchImpl as never))
+      )) as { error: string };
+      expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+      expect(result.error).toContain("Refusing to merge without a verified caller");
+    });
+  }
+
+  it("refuses when a GitHub App credential has no configured username to act as", async () => {
+    const { fetchImpl } = fakeGitHub();
+    const ctx = buildCtx(fetchImpl as never);
+    const exec = execution("tok", ctx, {}, "github-app");
+    const result = (await githubMergePullRequestToolSpec.perform({
+      ...exec,
+      identity: { agentId: "agent-1", identity: { label: "Bot", githubUsername: "  " } }
+    } as never)) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("no githubUsername is configured");
   });
 
   it("refuses when the merge credential's identity cannot be verified", async () => {

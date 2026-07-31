@@ -123,6 +123,7 @@ describe("githubSubmitPullRequestReviewToolSpec.perform", () => {
   ): ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef> {
     return {
       token,
+      tokenSource: "github-app",
       identity,
       resourceRef: repoRef(),
       params: {

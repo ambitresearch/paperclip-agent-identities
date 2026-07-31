@@ -102,6 +102,7 @@ describe("githubSearchRepositoryItemsToolSpec.perform", () => {
   ): ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef> {
     return {
       token,
+      tokenSource: "github-app",
       identity,
       resourceRef: repoRef(),
       params: { repository: "acme/widgets", query: "bug", type: "issue", maxResults: 10, page: 1, ...overrides },

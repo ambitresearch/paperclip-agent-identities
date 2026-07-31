@@ -88,6 +88,7 @@ describe("githubCreatePullRequestToolSpec.perform", () => {
   function execution(token: string | null): ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef> {
     return {
       token,
+      tokenSource: "github-app",
       identity,
       resourceRef: repoRef(),
       params: { repository: "acme/widgets", head: "feature", base: "main", title: "My PR" },

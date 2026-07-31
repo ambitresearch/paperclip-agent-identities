@@ -61,6 +61,7 @@ describe("githubListIssueCommentsToolSpec.perform", () => {
   function execution(token: string | null, overrides: Partial<{ page: number; perPage: number }> = {}): ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef> {
     return {
       token,
+      tokenSource: "github-app",
       identity,
       resourceRef: repoRef(),
       params: { repository: "acme/widgets", issueNumber: 7, ...overrides },

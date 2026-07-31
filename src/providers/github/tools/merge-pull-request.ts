@@ -6,6 +6,7 @@ import type {
   ResourceRefResolverInput
 } from "../../../core/provider-contract.js";
 import type { GitHubAgentIdentity } from "../config.js";
+import type { ResolvedIdentityToken } from "../../../credential-sidecar.js";
 import type { GitHubRepoRef } from "../repo-ref.js";
 import { normalizeGitHubRepoRef } from "../repo-ref.js";
 import { executeGitHubGraphQL, type GitHubGraphQLFailure, type GitHubGraphQLResult } from "../graphql.js";
@@ -35,6 +36,15 @@ export const REQUIRED_NON_AUTHOR_APPROVALS = 2;
  * `blocked` unmet branch protection, `unknown` still-computing) fails closed.
  */
 const MERGEABLE_STATES = new Set(["clean", "has_hooks", "unstable"]);
+
+/**
+ * The one `ResolvedCredential.source` whose token is minted for this agent's own
+ * GitHub App, and therefore the only one where the configured `githubUsername`
+ * is derived (`${appSlug}[bot]`) rather than typed. Typed rather than inlined so
+ * a rename of the union in `credential-sidecar.ts` fails the build here instead
+ * of silently never matching.
+ */
+const GITHUB_APP_CREDENTIAL_SOURCE: ResolvedIdentityToken["source"] = "github-app";
 
 export interface MergePullRequestParams {
   repository: string;
@@ -415,9 +425,15 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
       // Ran out of pages with more still to read. The unread tail is exactly
       // where a blocking CHANGES_REQUESTED would hide, so refuse rather than
       // gate on the prefix — same direction as the truncated CI read.
+      //
+      // "at least", not "more than": a pull request with exactly
+      // MAX_REVIEW_PAGES * REVIEWS_PER_PAGE reviews fills the last page, so the
+      // loop ends here having actually read everything. Refusing is still right
+      // (nothing distinguishes that from a truncated read without another
+      // request), but the message should not assert a count it cannot prove.
       return (
-        `Pull request #${prNumber} has more than ${MAX_REVIEW_PAGES * REVIEWS_PER_PAGE} reviews. ` +
-        `Refusing to judge approvals from a partial read of the review history.`
+        `Pull request #${prNumber} has at least ${MAX_REVIEW_PAGES * REVIEWS_PER_PAGE} reviews. ` +
+        `Refusing to judge approvals from a possibly partial read of the review history.`
       );
     };
 
@@ -535,17 +551,24 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
     // otherwise clear the caller-is-author gate while GitHub performed the merge
     // as the author — the one identity the gate exists to exclude.
     //
-    // `GET /user` resolves a user token to its real login. A GitHub App
-    // installation token cannot act as a user, so GitHub answers it with 403
-    // `Resource not accessible by integration`; only that case falls back to the
-    // configured username, which the App provisioning path derives from the app
-    // slug (`${appSlug}[bot]`) rather than from free-form input. Anything else —
-    // 401 on a bad token, a 5xx, a 200 without a login — leaves the acting
-    // principal unproven, and an unproven principal is refused rather than
-    // assumed to be someone other than the author.
+    // Which path produced the token is read from `execution.tokenSource`, never
+    // inferred from how GitHub answers a probe. GitHub returns 403 for a genuine
+    // installation token (`Resource not accessible by integration`) — but also
+    // for a *user* token that has exhausted its primary rate limit, tripped
+    // abuse detection, or is blocked by SAML SSO. Keying the fallback on the
+    // status alone therefore handed the gate back to the editable field on
+    // exactly the transient conditions a busy fleet hits, so the same
+    // author-self-merge held or failed depending on time of day.
+    //
+    // So: only `github-app` — where the token is minted for this agent's own App
+    // and the configured name is app-slug-derived (`${appSlug}[bot]`) rather than
+    // typed — may skip the probe. Every other source has to prove its login via
+    // `GET /user`, and anything that leaves it unproven (any non-2xx, including
+    // 403; a 200 without a login) refuses rather than assuming the caller is
+    // someone other than the author. That also closes the installation-token-
+    // supplied-via-`tokenFile` case, which the status-keyed version let through.
     const resolveCallerLogin = async (): Promise<{ login: string } | { error: string }> => {
-      const response = await ctx.http.fetch("https://api.github.com/user", { method: "GET", headers });
-      if (response.status === 403) {
+      if (execution.tokenSource === GITHUB_APP_CREDENTIAL_SOURCE) {
         const configured = execution.identity.identity.githubUsername.trim();
         if (!configured) {
           return {
@@ -556,6 +579,7 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
         }
         return { login: configured };
       }
+      const response = await ctx.http.fetch("https://api.github.com/user", { method: "GET", headers });
       if (!response.ok) {
         const details = await readErrorDetails(response);
         return {

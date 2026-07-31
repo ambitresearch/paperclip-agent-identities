@@ -41,9 +41,20 @@ describe("resolveGitHubCredential", () => {
 
     const credential = await resolveGitHubCredential({ identity, ctx: fakeCtx(), runCtx });
 
-    expect(credential).toEqual({ token: "ghs_TOKEN", secrets: ["ghs_TOKEN"] });
+    // `source` is carried through, not dropped: tools that must distinguish a
+    // token bound to this agent's own App from an operator-supplied one have no
+    // other trustworthy signal.
+    expect(credential).toEqual({ token: "ghs_TOKEN", secrets: ["ghs_TOKEN"], source: "token-file" });
     expect(credential.secrets).toHaveLength(1);
     expect(credential.secrets[0]).toBe("ghs_TOKEN");
+  });
+
+  it("reports the github-app source when the sidecar minted an installation token", async () => {
+    resolveIdentityTokenMock.mockResolvedValue({ token: "ghs_APP", source: "github-app" });
+
+    const credential = await resolveGitHubCredential({ identity, ctx: fakeCtx(), runCtx });
+
+    expect(credential.source).toBe("github-app");
   });
 
   it("passes the resolved identity plus ctx-bound secret and fetch resolvers to resolveIdentityToken", async () => {

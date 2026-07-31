@@ -77,6 +77,7 @@ describe("githubAssignToCurrentUserToolSpec.perform", () => {
   ): ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef> {
     return {
       token,
+      tokenSource: "github-app",
       identity: { agentId: "agent-1", identity: identityOverride },
       resourceRef: repoRef(),
       params: { repository: "acme/widgets", issueNumber: 7 },

@@ -15,7 +15,7 @@ function buildFixture(
   overrides: {
     resolveIdentity?: () => Promise<{ agentId: string; identity: { label: string } }>;
     spec?: Partial<ProviderToolSpec<{ label: string }, Ref>>;
-    resolveCredential?: () => Promise<{ token: string; secrets: readonly string[] }>;
+    resolveCredential?: () => Promise<{ token: string; secrets: readonly string[]; source: string }>;
   } = {},
 ) {
   const calls: string[] = [];
@@ -26,7 +26,7 @@ function buildFixture(
     projectPluginConfig: () => ({}),
     resolveCredential: overrides.resolveCredential ?? (async () => {
       calls.push("resolveCredential");
-      return { token: "SECRET-TOKEN", secrets: ["SECRET-TOKEN"] };
+      return { token: "SECRET-TOKEN", secrets: ["SECRET-TOKEN"], source: "test-secret" };
     }),
     tools: [],
     manifestTools: [],
@@ -105,6 +105,34 @@ describe("tool pipeline security ordering", () => {
       "redactSecrets",
     ]);
     expect(result).toEqual({ echoedToken: "[REDACTED]", repo: "ok/repo" });
+  });
+
+  // `tokenSource` is the only trustworthy signal of which credential path
+  // produced the token, and the merge gate keys its author check on it. If the
+  // pipeline dropped it the way it used to, every tool would silently see
+  // `undefined` and fall into its unverified branch.
+  it("hands the credential's source to perform alongside the token", async () => {
+    const { tool } = buildFixture({
+      spec: { perform: async ({ token, tokenSource }) => ({ token, tokenSource }) },
+      resolveCredential: async () => ({ token: "tok", secrets: [], source: "github-app" }),
+    });
+    expect(await tool.handler({ repo: "ok/repo" }, { agentId: "agent-1" } as never)).toEqual({
+      token: "tok",
+      tokenSource: "github-app",
+    });
+  });
+
+  it("reports a null source when no credential was resolved", async () => {
+    const { tool } = buildFixture({
+      spec: {
+        requiresCredential: false,
+        perform: async ({ token, tokenSource }) => ({ token, tokenSource }),
+      },
+    });
+    expect(await tool.handler({ repo: "ok/repo" }, { agentId: "agent-1" } as never)).toEqual({
+      token: null,
+      tokenSource: null,
+    });
   });
 
   it("fails closed when identity resolution throws", async () => {

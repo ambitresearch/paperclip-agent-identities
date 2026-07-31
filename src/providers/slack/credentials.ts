@@ -285,5 +285,7 @@ export async function resolveSlackCredential(
     resolveSecret,
     (token) => verifySlackToken(token, ctx.http.fetch),
   );
-  return { token, secrets };
+  // Every Slack path resolves the same kind of credential — a bot token the
+  // operator supplied — so there is only one source to report.
+  return { token, secrets, source: "slack-bot-token" };
 }

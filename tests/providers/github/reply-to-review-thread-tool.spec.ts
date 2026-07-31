@@ -83,6 +83,7 @@ describe("githubReplyToReviewThreadToolSpec.perform", () => {
   function execution(token: string | null, ctx: unknown, params?: Record<string, unknown>): ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef> {
     return {
       token,
+      tokenSource: "github-app",
       identity,
       resourceRef: repoRef(),
       params: params ?? { repository: "acme/widgets", reviewThreadId: "PRRT_1", body: "Looks good" },

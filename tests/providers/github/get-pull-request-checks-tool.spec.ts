@@ -71,6 +71,7 @@ describe("githubGetPullRequestChecksToolSpec.perform", () => {
   function execution(token: string | null): ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef> {
     return {
       token,
+      tokenSource: "github-app",
       identity,
       resourceRef: repoRef(),
       params: { repository: "acme/widgets", pullNumber: 7 },
@@ -126,6 +127,72 @@ describe("githubGetPullRequestChecksToolSpec.perform", () => {
     expect(result.data.checkRuns).toHaveLength(1);
     expect(result.data.statusContexts).toHaveLength(1);
     expect(result.data.workflowRuns).toHaveLength(1);
+  });
+
+  it("explains why a listed cancelled run did not make the verdict red", async () => {
+    // Without this, a reader sees `success` next to a `cancelled` run in the same
+    // payload with nothing connecting them, which reads as a bug in the tool.
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/pulls/7")) {
+        return new Response(JSON.stringify({ head: { sha: "deadbeef" } }), { status: 200 });
+      }
+      if (url.includes("/check-runs")) {
+        return new Response(JSON.stringify({ total_count: 0, check_runs: [] }), { status: 200 });
+      }
+      if (url.includes("/status")) {
+        return new Response(JSON.stringify({ state: "success", statuses: [] }), { status: 200 });
+      }
+      if (url.includes("/actions/runs")) {
+        return new Response(JSON.stringify({
+          total_count: 2,
+          workflow_runs: [
+            { id: 1, workflow_id: 99, name: "CI", status: "completed", conclusion: "cancelled", html_url: "u1", run_started_at: "t1" },
+            { id: 2, workflow_id: 99, name: "CI", status: "completed", conclusion: "success", html_url: "u2", run_started_at: "t2" }
+          ]
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const exec = execution("tok");
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+    const result = (await githubGetPullRequestChecksToolSpec.perform(exec)) as {
+      content: string;
+      data: { overallState: string; supersededWorkflowRuns?: number; workflowRuns: unknown[] };
+    };
+    expect(result.data.overallState).toBe("success");
+    // The displaced run is still listed — only the verdict ignores it.
+    expect(result.data.workflowRuns).toHaveLength(2);
+    expect(result.data.supersededWorkflowRuns).toBe(1);
+    expect(result.content).toContain("1 workflow run(s) listed but excluded from the status as superseded");
+  });
+
+  it("omits the superseded count entirely when nothing was displaced", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/pulls/7")) {
+        return new Response(JSON.stringify({ head: { sha: "deadbeef" } }), { status: 200 });
+      }
+      if (url.includes("/check-runs")) {
+        return new Response(JSON.stringify({ total_count: 0, check_runs: [] }), { status: 200 });
+      }
+      if (url.includes("/status")) {
+        return new Response(JSON.stringify({ state: "success", statuses: [] }), { status: 200 });
+      }
+      if (url.includes("/actions/runs")) {
+        return new Response(JSON.stringify({
+          total_count: 1,
+          workflow_runs: [{ id: 2, workflow_id: 99, name: "CI", status: "completed", conclusion: "success", html_url: "u2", run_started_at: "t2" }]
+        }), { status: 200 });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const exec = execution("tok");
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+    const result = (await githubGetPullRequestChecksToolSpec.perform(exec)) as {
+      content: string;
+      data: { supersededWorkflowRuns?: number };
+    };
+    expect(result.data.supersededWorkflowRuns).toBeUndefined();
+    expect(result.content).not.toContain("superseded");
   });
 
   it("never reports success from a page that did not carry every check run", async () => {

@@ -95,6 +95,48 @@ const FAILING_CONCLUSIONS = new Set([
 ]);
 
 /**
+ * The subset of failing conclusions GitHub writes when a run was *displaced*
+ * rather than judged. Only these are eligible to be discarded as superseded;
+ * every other failing conclusion records a real verdict and is never dropped.
+ */
+const SUPERSEDING_CONCLUSIONS = new Set(["cancelled", "stale"]);
+
+/**
+ * Drop workflow runs that a later run of the same workflow displaced.
+ *
+ * `/actions/runs?head_sha=` returns *every* run ever created for a commit, and
+ * nothing ever rewrites a `cancelled` record. A workflow that triggers on both
+ * `push` and `pull_request` under a `concurrency: cancel-in-progress` group
+ * therefore leaves a permanent `cancelled` run behind on its first trigger.
+ * Counting that as fatal pins the pull request at "checks not passing" with no
+ * escape but a new commit — which then invalidates every approval, so the two
+ * behaviors compound.
+ *
+ * Only displaced runs are dropped. A `cancelled` run that is still the newest
+ * for its workflow was cancelled deliberately and stays fatal. Run ids increase
+ * monotonically per repository, so the highest id within a workflow is the
+ * newest. A manual cancel followed by "re-run all jobs" is unaffected either
+ * way: that reuses the run id and overwrites the conclusion in place.
+ */
+export function dropSupersededWorkflowRuns<
+  T extends { id?: number; workflow_id?: number; conclusion: string | null }
+>(workflowRuns: T[]): T[] {
+  const newestIdByWorkflow = new Map<number, number>();
+  for (const run of workflowRuns) {
+    if (typeof run.id !== "number" || typeof run.workflow_id !== "number") continue;
+    const newest = newestIdByWorkflow.get(run.workflow_id);
+    if (newest === undefined || run.id > newest) newestIdByWorkflow.set(run.workflow_id, run.id);
+  }
+  return workflowRuns.filter((run) => {
+    if (run.conclusion === null || !SUPERSEDING_CONCLUSIONS.has(run.conclusion)) return true;
+    // Without both ids there is no way to tell displaced from deliberate, so
+    // keep the run and let it block. Fail closed on missing evidence.
+    if (typeof run.id !== "number" || typeof run.workflow_id !== "number") return true;
+    return newestIdByWorkflow.get(run.workflow_id) === run.id;
+  });
+}
+
+/**
  * Roll the legacy combined commit-status state together with check runs and workflow
  * runs into one state. Precedence is failure > pending > success, so a red Actions job
  * can never be masked by green legacy statuses. `success` requires that at least one
@@ -237,6 +279,7 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
       total_count: number;
       workflow_runs: Array<{
         id: number;
+        workflow_id: number;
         name: string | null;
         status: string;
         conclusion: string | null;
@@ -268,6 +311,10 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
       url: run.html_url,
       startedAt: run.run_started_at
     }));
+    // Every run GitHub returned is still reported, so a lingering `cancelled`
+    // record stays visible to whoever is reading; only the aggregate verdict
+    // ignores the ones a later run of the same workflow displaced.
+    const judgedWorkflowRuns = dropSupersededWorkflowRuns(workflowRunsBody.workflow_runs);
 
     // `statusBody.state` is only the legacy combined *commit status* state. It ignores
     // check runs and workflow runs entirely, so a PR with a failing GitHub Actions job
@@ -278,7 +325,7 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
       statusBody.state,
       statusBody.statuses.length,
       checkRuns,
-      workflowRuns
+      judgedWorkflowRuns
     );
 
     // A page that did not carry every run cannot support a green verdict: the one

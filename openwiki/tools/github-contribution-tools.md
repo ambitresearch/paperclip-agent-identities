@@ -236,6 +236,21 @@ Two honest limitations, stated so nobody over-trusts the gate:
   reports `checksState: "none"` rather than `"success"` so the caller is never shown a green light it did not
   earn.
 
+Every read the gate depends on fails closed when it cannot be completed. Reviews and review threads each
+paginate to 1000 entries; exhausting that cap with pages still unread returns an error rather than gating on
+the prefix, because the unread tail is exactly where a blocking `CHANGES_REQUESTED` or an unresolved thread
+would sit. The check-run and workflow-run reads compare GitHub's `total_count` against what arrived and
+refuse the same way. A truncated read is *undecided*, never clean.
+
+One deliberate exception to counting every signal: a `cancelled` or `stale` workflow run that a **later run
+of the same workflow for the same commit** displaced is ignored. `GET /actions/runs?head_sha=` returns every
+run ever created for a SHA and nothing rewrites a cancellation, so a workflow triggered on both `push` and
+`pull_request` under a `concurrency: cancel-in-progress` group leaves a permanent `cancelled` record behind.
+Counting it would pin the pull request at `checks_not_passing` with no escape but a new commit -- which then
+invalidates every approval. A `cancelled` run that is still the newest for its workflow was cancelled
+deliberately and remains fatal, and a `failure` is never dropped regardless. `github_bot_get_pull_request_checks`
+applies the same rule to its aggregate while still listing every run it read.
+
 Runtime behavior:
 
 1. validates parameter types (including that `expectedHeadSha`, when given, is a full 40-character hex SHA);

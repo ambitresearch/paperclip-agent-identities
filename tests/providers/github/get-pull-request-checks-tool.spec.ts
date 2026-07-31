@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   computeAggregateState,
+  dropSupersededWorkflowRuns,
   githubGetPullRequestChecksToolSpec
 } from "../../../src/providers/github/tools/get-pull-request-checks.js";
 import type { GitHubRepoRef } from "../../../src/providers/github/repo-ref.js";
@@ -246,5 +247,55 @@ describe("computeAggregateState", () => {
 
   it("lets a failure outrank a pending run", () => {
     expect(computeAggregateState("success", 1, [running(), done("failure")], [])).toBe("failure");
+  });
+});
+
+describe("dropSupersededWorkflowRuns", () => {
+  const run = (id: number, workflowId: number, conclusion: string | null) => ({
+    id,
+    workflow_id: workflowId,
+    status: "completed",
+    conclusion
+  });
+
+  it("drops a cancelled run that a later run of the same workflow displaced", () => {
+    // The `concurrency: cancel-in-progress` artifact. Nothing ever rewrites
+    // run 1, so keeping it would make the commit permanently un-mergeable.
+    const kept = dropSupersededWorkflowRuns([run(1, 99, "cancelled"), run(2, 99, "success")]);
+    expect(kept.map((r) => r.id)).toEqual([2]);
+  });
+
+  it("keeps a cancelled run that is still the newest for its workflow", () => {
+    const kept = dropSupersededWorkflowRuns([run(1, 99, "success"), run(2, 99, "cancelled")]);
+    expect(kept.map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  it("does not let one workflow's later run excuse another workflow's cancellation", () => {
+    const kept = dropSupersededWorkflowRuns([run(1, 99, "cancelled"), run(2, 42, "success")]);
+    expect(kept.map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  it("never drops a real verdict, only a displaced one", () => {
+    // `failure` is a judgement, not a cancellation — a later run must not bury it.
+    const kept = dropSupersededWorkflowRuns([run(1, 99, "failure"), run(2, 99, "success")]);
+    expect(kept.map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  it("also drops a displaced `stale` run", () => {
+    const kept = dropSupersededWorkflowRuns([run(1, 99, "stale"), run(2, 99, "success")]);
+    expect(kept.map((r) => r.id)).toEqual([2]);
+  });
+
+  it("keeps a cancelled run when ids are missing, since displacement cannot be proven", () => {
+    const kept = dropSupersededWorkflowRuns([
+      { status: "completed", conclusion: "cancelled" },
+      { status: "completed", conclusion: "success" }
+    ]);
+    expect(kept).toHaveLength(2);
+  });
+
+  it("leaves a clean set untouched", () => {
+    const kept = dropSupersededWorkflowRuns([run(1, 99, "success"), run(2, 42, "success")]);
+    expect(kept.map((r) => r.id)).toEqual([1, 2]);
   });
 });

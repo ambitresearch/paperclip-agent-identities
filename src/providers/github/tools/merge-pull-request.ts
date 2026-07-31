@@ -9,7 +9,7 @@ import type { GitHubAgentIdentity } from "../config.js";
 import type { GitHubRepoRef } from "../repo-ref.js";
 import { normalizeGitHubRepoRef } from "../repo-ref.js";
 import { executeGitHubGraphQL, type GitHubGraphQLFailure, type GitHubGraphQLResult } from "../graphql.js";
-import { CHECK_RUNS_PER_PAGE, computeAggregateState, describeTruncatedRead } from "./get-pull-request-checks.js";
+import { CHECK_RUNS_PER_PAGE, computeAggregateState, describeTruncatedRead, dropSupersededWorkflowRuns } from "./get-pull-request-checks.js";
 import {
   githubBotMergePullRequestToolMetadata,
   githubBotMergePullRequestToolName
@@ -410,9 +410,15 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
         for (const review of body) {
           reviews.push({ login: review.user?.login ?? null, state: review.state, commitId: review.commit_id });
         }
-        if (body.length < REVIEWS_PER_PAGE) break;
+        if (body.length < REVIEWS_PER_PAGE) return null;
       }
-      return null;
+      // Ran out of pages with more still to read. The unread tail is exactly
+      // where a blocking CHANGES_REQUESTED would hide, so refuse rather than
+      // gate on the prefix — same direction as the truncated CI read.
+      return (
+        `Pull request #${prNumber} has more than ${MAX_REVIEW_PAGES * REVIEWS_PER_PAGE} reviews. ` +
+        `Refusing to judge approvals from a partial read of the review history.`
+      );
     };
 
     const collectUnresolvedThreads = async (): Promise<{ count: number } | { error: string }> => {
@@ -438,10 +444,17 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
           };
         }
         count += threads.nodes.filter((thread) => !thread.isResolved).length;
-        if (!threads.pageInfo.hasNextPage) break;
+        if (!threads.pageInfo.hasNextPage) return { count };
         after = threads.pageInfo.endCursor;
       }
-      return { count };
+      // Left the loop with `hasNextPage` still true. Returning `count` here
+      // would report the partial tally as authoritative, so an unresolved
+      // thread past the cap would read as a clean pull request.
+      return {
+        error:
+          `Pull request #${prNumber} has more than ${MAX_THREAD_PAGES * THREADS_PER_PAGE} review threads. ` +
+          `Refusing to judge thread resolution from a partial read.`
+      };
     };
 
     const collectChecks = async (): Promise<
@@ -472,7 +485,7 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
       };
       const workflowRunsBody = (await workflowRunsResponse.json()) as {
         total_count?: number;
-        workflow_runs: Array<{ status: string; conclusion: string | null }>;
+        workflow_runs: Array<{ id?: number; workflow_id?: number; status: string; conclusion: string | null }>;
       };
 
       // Fail closed on a partial read. Judging CI from page one would let a
@@ -495,15 +508,22 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
         };
       }
 
+      // A `cancelled` record that a later run of the same workflow displaced is
+      // an artifact of a `concurrency: cancel-in-progress` group, not a verdict.
+      // It never changes, so counting it would pin the pull request at
+      // `checks_not_passing` until someone pushes a new commit — which then
+      // invalidates every approval. Judge on what was not displaced.
+      const judgedWorkflowRuns = dropSupersededWorkflowRuns(workflowRunsBody.workflow_runs);
+
       const state = computeAggregateState(
         statusBody.state,
         statusBody.statuses.length,
         checkRunsBody.check_runs,
-        workflowRunsBody.workflow_runs
+        judgedWorkflowRuns
       );
       return {
         state,
-        signalCount: statusBody.statuses.length + checkRunsBody.check_runs.length + workflowRunsBody.workflow_runs.length
+        signalCount: statusBody.statuses.length + checkRunsBody.check_runs.length + judgedWorkflowRuns.length
       };
     };
 

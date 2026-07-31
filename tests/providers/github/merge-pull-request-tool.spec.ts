@@ -304,10 +304,12 @@ interface FakeGitHubOptions {
   pr?: Record<string, unknown>;
   reviews?: Array<{ user: { login: string } | null; state: string; commit_id: string | null }>;
   threads?: Array<{ isResolved: boolean }>;
+  /** Forces `hasNextPage` on every thread page so the cap can be exhausted. */
+  threadsAlwaysHaveNextPage?: boolean;
   checkRuns?: Array<{ status: string; conclusion: string | null }>;
   /** Overrides `total_count` so a truncated page — GitHub's real failure mode — is representable. */
   checkRunsTotalCount?: number;
-  workflowRuns?: Array<{ status: string; conclusion: string | null }>;
+  workflowRuns?: Array<{ id?: number; workflow_id?: number; status: string; conclusion: string | null }>;
   workflowRunsTotalCount?: number;
   mergeResponse?: Response;
 }
@@ -342,7 +344,13 @@ function fakeGitHub(options: FakeGitHubOptions = {}) {
         data: {
           repository: {
             pullRequest: {
-              reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: threads }
+              reviewThreads: {
+                pageInfo: {
+                  hasNextPage: options.threadsAlwaysHaveNextPage === true,
+                  endCursor: options.threadsAlwaysHaveNextPage === true ? "cursor" : null
+                },
+                nodes: threads
+              }
             }
           }
         }
@@ -488,6 +496,71 @@ describe("githubMergePullRequestToolSpec.perform", () => {
       execution("tok", buildCtx(fetchImpl as never))
     )) as { data: { merged: boolean } };
     expect(result.data.merged).toBe(true);
+  });
+
+  it("refuses rather than merging when the review history runs past the page cap", async () => {
+    // Every page comes back full, so the loop exhausts its cap with reviews
+    // still unread. A blocking CHANGES_REQUESTED could be sitting in the tail.
+    const { fetchImpl } = fakeGitHub({
+      reviews: Array.from({ length: 100 }, () => ({
+        user: { login: "other-bot" },
+        state: "APPROVED",
+        commit_id: HEAD
+      }))
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("more than 1000 reviews");
+    expect(result.error).toContain("Refusing to judge approvals from a partial read");
+  });
+
+  it("refuses rather than merging when review threads run past the page cap", async () => {
+    // Resolved threads on every page, but `hasNextPage` never clears — the
+    // unread tail is exactly where an unresolved thread would hide.
+    const { fetchImpl } = fakeGitHub({
+      threads: [{ isResolved: true }],
+      threadsAlwaysHaveNextPage: true
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("more than 1000 review threads");
+    expect(result.error).toContain("Refusing to judge thread resolution from a partial read");
+  });
+
+  it("merges past a cancelled run that a later run of the same workflow displaced", async () => {
+    // The `concurrency: cancel-in-progress` artifact: run 1 lost the race to
+    // run 2. Nothing ever rewrites it, so treating it as fatal would pin the
+    // pull request at checks_not_passing permanently.
+    const { fetchImpl } = fakeGitHub({
+      workflowRuns: [
+        { id: 1, workflow_id: 99, status: "completed", conclusion: "cancelled" },
+        { id: 2, workflow_id: 99, status: "completed", conclusion: "success" }
+      ]
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never, vi.fn(async () => {})))
+    )) as { data: { merged: boolean; checksState: string } };
+    expect(result.data.merged).toBe(true);
+    expect(result.data.checksState).toBe("success");
+  });
+
+  it("still refuses when the cancelled run is the newest for its workflow", async () => {
+    // Nothing displaced it, so somebody cancelled this deliberately.
+    const { fetchImpl } = fakeGitHub({
+      workflowRuns: [
+        { id: 1, workflow_id: 99, status: "completed", conclusion: "success" },
+        { id: 2, workflow_id: 99, status: "completed", conclusion: "cancelled" }
+      ]
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("Checks are failing");
   });
 
   it("refuses to merge a pull request the caller authored", async () => {

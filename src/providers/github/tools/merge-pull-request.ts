@@ -9,7 +9,7 @@ import type { GitHubAgentIdentity } from "../config.js";
 import type { GitHubRepoRef } from "../repo-ref.js";
 import { normalizeGitHubRepoRef } from "../repo-ref.js";
 import { executeGitHubGraphQL, type GitHubGraphQLFailure, type GitHubGraphQLResult } from "../graphql.js";
-import { computeAggregateState } from "./get-pull-request-checks.js";
+import { CHECK_RUNS_PER_PAGE, computeAggregateState, describeTruncatedRead } from "./get-pull-request-checks.js";
 import {
   githubBotMergePullRequestToolMetadata,
   githubBotMergePullRequestToolName
@@ -448,9 +448,9 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
       { state: "success" | "failure" | "pending"; signalCount: number } | { error: string }
     > => {
       const [checkRunsResponse, statusResponse, workflowRunsResponse] = await Promise.all([
-        ctx.http.fetch(`https://api.github.com/repos/${owner}/${repo}/commits/${headSha}/check-runs`, { method: "GET", headers }),
+        ctx.http.fetch(`https://api.github.com/repos/${owner}/${repo}/commits/${headSha}/check-runs?per_page=${CHECK_RUNS_PER_PAGE}`, { method: "GET", headers }),
         ctx.http.fetch(`https://api.github.com/repos/${owner}/${repo}/commits/${headSha}/status`, { method: "GET", headers }),
-        ctx.http.fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${headSha}`, { method: "GET", headers })
+        ctx.http.fetch(`https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${headSha}&per_page=${CHECK_RUNS_PER_PAGE}`, { method: "GET", headers })
       ]);
       for (const [label, response] of [
         ["check-runs", checkRunsResponse],
@@ -463,6 +463,7 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
         }
       }
       const checkRunsBody = (await checkRunsResponse.json()) as {
+        total_count?: number;
         check_runs: Array<{ status: string; conclusion: string | null }>;
       };
       const statusBody = (await statusResponse.json()) as {
@@ -470,8 +471,30 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
         statuses: Array<unknown>;
       };
       const workflowRunsBody = (await workflowRunsResponse.json()) as {
+        total_count?: number;
         workflow_runs: Array<{ status: string; conclusion: string | null }>;
       };
+
+      // Fail closed on a partial read. Judging CI from page one would let a
+      // single red run sitting past the page boundary pass as green, which is
+      // the one failure mode this gate exists to make impossible. Erroring is
+      // deliberate: an operator seeing "read 100 of 142" knows the gate is
+      // undecided, where a silent `success` reads as an earned green light.
+      // `/commits/{sha}/status` is exempt — GitHub computes its top-level
+      // `state` across every context server-side, so only the `statuses` array
+      // truncates, and that array is used solely as a nonzero signal count.
+      const truncatedReads = [
+        describeTruncatedRead("check runs", checkRunsBody.total_count, checkRunsBody.check_runs.length),
+        describeTruncatedRead("workflow runs", workflowRunsBody.total_count, workflowRunsBody.workflow_runs.length)
+      ].filter((entry): entry is string => entry !== null);
+      if (truncatedReads.length > 0) {
+        return {
+          error:
+            `GitHub returned more checks for commit ${headSha.slice(0, 7)} than one page carries: ` +
+            `${truncatedReads.join(", ")}. Refusing to judge the merge gate from a partial read of CI.`
+        };
+      }
+
       const state = computeAggregateState(
         statusBody.state,
         statusBody.statuses.length,

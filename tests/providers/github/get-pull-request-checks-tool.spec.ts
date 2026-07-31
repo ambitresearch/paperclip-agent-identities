@@ -117,14 +117,71 @@ describe("githubGetPullRequestChecksToolSpec.perform", () => {
       data: { sha: string; overallState: string; checkRuns: unknown[]; statusContexts: unknown[]; workflowRuns: unknown[] };
     };
     expect(calls).toContain("https://api.github.com/repos/acme/widgets/pulls/7");
-    expect(calls).toContain("https://api.github.com/repos/acme/widgets/commits/deadbeef/check-runs");
+    expect(calls).toContain("https://api.github.com/repos/acme/widgets/commits/deadbeef/check-runs?per_page=100");
     expect(calls).toContain("https://api.github.com/repos/acme/widgets/commits/deadbeef/status");
-    expect(calls).toContain("https://api.github.com/repos/acme/widgets/actions/runs?head_sha=deadbeef");
+    expect(calls).toContain("https://api.github.com/repos/acme/widgets/actions/runs?head_sha=deadbeef&per_page=100");
     expect(result.data.sha).toBe("deadbeef");
     expect(result.data.overallState).toBe("success");
     expect(result.data.checkRuns).toHaveLength(1);
     expect(result.data.statusContexts).toHaveLength(1);
     expect(result.data.workflowRuns).toHaveLength(1);
+  });
+
+  it("never reports success from a page that did not carry every check run", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/pulls/7")) {
+        return new Response(JSON.stringify({ head: { sha: "deadbeef" } }), { status: 200 });
+      }
+      if (url.includes("/check-runs")) {
+        return new Response(JSON.stringify({
+          total_count: 142,
+          check_runs: [{ id: 1, name: "build", status: "completed", conclusion: "success", started_at: null, completed_at: null, html_url: "u1" }]
+        }), { status: 200 });
+      }
+      if (url.includes("/status")) {
+        return new Response(JSON.stringify({ state: "success", statuses: [] }), { status: 200 });
+      }
+      if (url.includes("/actions/runs")) {
+        return new Response(JSON.stringify({ total_count: 0, workflow_runs: [] }), { status: 200 });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const exec = execution("tok");
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+    const result = (await githubGetPullRequestChecksToolSpec.perform(exec)) as {
+      content: string;
+      data: { overallState: string; truncated?: string[] };
+    };
+    expect(result.data.overallState).toBe("pending");
+    expect(result.data.truncated).toEqual(["check runs (read 1 of 142)"]);
+    expect(result.content).toContain("Incomplete read of check runs (read 1 of 142)");
+  });
+
+  it("still reports failure from a truncated page — a red run we did read is still red", async () => {
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url.endsWith("/pulls/7")) {
+        return new Response(JSON.stringify({ head: { sha: "deadbeef" } }), { status: 200 });
+      }
+      if (url.includes("/check-runs")) {
+        return new Response(JSON.stringify({
+          total_count: 142,
+          check_runs: [{ id: 1, name: "build", status: "completed", conclusion: "failure", started_at: null, completed_at: null, html_url: "u1" }]
+        }), { status: 200 });
+      }
+      if (url.includes("/status")) {
+        return new Response(JSON.stringify({ state: "success", statuses: [] }), { status: 200 });
+      }
+      if (url.includes("/actions/runs")) {
+        return new Response(JSON.stringify({ total_count: 0, workflow_runs: [] }), { status: 200 });
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+    const exec = execution("tok");
+    (exec as { ctx: unknown }).ctx = buildCtx(fetchImpl as never);
+    const result = (await githubGetPullRequestChecksToolSpec.perform(exec)) as {
+      data: { overallState: string };
+    };
+    expect(result.data.overallState).toBe("failure");
   });
 
   it("surfaces a GitHub API error when the PR lookup fails", async () => {

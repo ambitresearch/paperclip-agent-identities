@@ -60,6 +60,30 @@ const GITHUB_API_HEADERS = (token: string) => ({
   "X-GitHub-Api-Version": "2022-11-28"
 });
 
+/**
+ * GitHub defaults `/check-runs` and `/actions/runs` to 30 items per page and
+ * caps them at 100. Both report the true size in `total_count` alongside the
+ * page, so ask for the maximum and then verify the two agree — a matrix build
+ * passes 30 runs easily, and `filter=latest` dedups by check *name*, not by job.
+ */
+export const CHECK_RUNS_PER_PAGE = 100;
+
+/**
+ * Describe an incomplete read, or `null` when the page carried everything.
+ * A caller that judges CI from a truncated slice can call a red commit green,
+ * so every consumer of these endpoints has to notice the gap rather than
+ * silently treat page one as the whole story.
+ */
+export function describeTruncatedRead(
+  label: string,
+  totalCount: unknown,
+  receivedCount: number
+): string | null {
+  if (typeof totalCount !== "number" || !Number.isFinite(totalCount)) return null;
+  if (totalCount <= receivedCount) return null;
+  return `${label} (read ${receivedCount} of ${totalCount})`;
+}
+
 /** Conclusions that mean "this finished and it did not pass". */
 const FAILING_CONCLUSIONS = new Set([
   "failure",
@@ -156,9 +180,9 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
     const sha = pr.head.sha;
 
     // Step 2: check runs, commit status, and Actions workflow runs for that SHA, in parallel.
-    const checkRunsUrl = `https://api.github.com/repos/${owner}/${repo}/commits/${sha}/check-runs`;
+    const checkRunsUrl = `https://api.github.com/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=${CHECK_RUNS_PER_PAGE}`;
     const statusUrl = `https://api.github.com/repos/${owner}/${repo}/commits/${sha}/status`;
-    const workflowRunsUrl = `https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${sha}`;
+    const workflowRunsUrl = `https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${sha}&per_page=${CHECK_RUNS_PER_PAGE}`;
 
     let checkRunsResponse: Response;
     let statusResponse: Response;
@@ -250,12 +274,24 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
     // reports `success` whenever its legacy contexts pass (and `pending` when there are
     // none at all). Roll all three signals into a single aggregate the caller can trust,
     // and keep the legacy value under its own explicit name.
-    const aggregateState = computeAggregateState(
+    const rawAggregateState = computeAggregateState(
       statusBody.state,
       statusBody.statuses.length,
       checkRuns,
       workflowRuns
     );
+
+    // A page that did not carry every run cannot support a green verdict: the one
+    // failure could be sitting in the part we never read. `failure` survives
+    // truncation (a red run we *did* see is still red); only `success` degrades.
+    // `statusBody.state` needs no such guard — GitHub computes it server-side
+    // across every context, so only the `statuses` array truncates.
+    const truncatedReads = [
+      describeTruncatedRead("check runs", checkRunsBody.total_count, checkRuns.length),
+      describeTruncatedRead("workflow runs", workflowRunsBody.total_count, workflowRuns.length)
+    ].filter((entry): entry is string => entry !== null);
+    const aggregateState =
+      truncatedReads.length > 0 && rawAggregateState === "success" ? "pending" : rawAggregateState;
 
     ctx.logger.info(
       `Fetched checks for pull request #${validated.pullNumber} in ${repository.fullName}: ` +
@@ -265,11 +301,15 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
     return {
       content:
         `Pull request #${validated.pullNumber} (${sha.slice(0, 7)}): overall status ${aggregateState}, ` +
-        `${checkRuns.length} check run(s), ${workflowRuns.length} workflow run(s)`,
+        `${checkRuns.length} check run(s), ${workflowRuns.length} workflow run(s)` +
+        (truncatedReads.length > 0
+          ? `. Incomplete read of ${truncatedReads.join(" and ")}; the status shown covers only what was read.`
+          : ""),
       data: {
         sha,
         overallState: aggregateState,
         combinedStatusState: statusBody.state,
+        ...(truncatedReads.length > 0 ? { truncated: truncatedReads } : {}),
         checkRuns,
         statusContexts,
         workflowRuns

@@ -305,6 +305,10 @@ interface FakeGitHubOptions {
   reviews?: Array<{ user: { login: string } | null; state: string; commit_id: string | null }>;
   threads?: Array<{ isResolved: boolean }>;
   checkRuns?: Array<{ status: string; conclusion: string | null }>;
+  /** Overrides `total_count` so a truncated page — GitHub's real failure mode — is representable. */
+  checkRunsTotalCount?: number;
+  workflowRuns?: Array<{ status: string; conclusion: string | null }>;
+  workflowRunsTotalCount?: number;
   mergeResponse?: Response;
 }
 
@@ -328,6 +332,7 @@ function fakeGitHub(options: FakeGitHubOptions = {}) {
   ];
   const threads = options.threads ?? [{ isResolved: true }];
   const checkRuns = options.checkRuns ?? [{ status: "completed", conclusion: "success" }];
+  const workflowRuns = options.workflowRuns ?? [];
 
   const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
     calls.push({ url, init });
@@ -348,9 +353,13 @@ function fakeGitHub(options: FakeGitHubOptions = {}) {
     }
     if (url.includes("/pulls/7/reviews")) return json(reviews);
     if (url.endsWith("/pulls/7")) return json(pr);
-    if (url.includes("/check-runs")) return json({ total_count: checkRuns.length, check_runs: checkRuns });
+    if (url.includes("/check-runs")) {
+      return json({ total_count: options.checkRunsTotalCount ?? checkRuns.length, check_runs: checkRuns });
+    }
     if (url.includes("/status")) return json({ state: "pending", statuses: [] });
-    if (url.includes("/actions/runs")) return json({ total_count: 0, workflow_runs: [] });
+    if (url.includes("/actions/runs")) {
+      return json({ total_count: options.workflowRunsTotalCount ?? workflowRuns.length, workflow_runs: workflowRuns });
+    }
     throw new Error(`unexpected url ${url}`);
   });
 
@@ -430,6 +439,55 @@ describe("githubMergePullRequestToolSpec.perform", () => {
     expect(result.data.blockers.map((b) => b.code)).toEqual(["unresolved_review_threads"]);
     expect(result.error).toContain("2 review thread(s) are still unresolved");
     expect(activityLog).not.toHaveBeenCalled();
+  });
+
+  it("asks GitHub for the maximum page size on both paginated check endpoints", async () => {
+    const { fetchImpl } = fakeGitHub();
+    await githubMergePullRequestToolSpec.perform(execution("tok", buildCtx(fetchImpl as never)));
+    const urls = fetchImpl.mock.calls.map(([url]) => String(url));
+    expect(urls).toContain(`https://api.github.com/repos/acme/widgets/commits/${HEAD}/check-runs?per_page=100`);
+    expect(urls).toContain(`https://api.github.com/repos/acme/widgets/actions/runs?head_sha=${HEAD}&per_page=100`);
+  });
+
+  it("refuses rather than merging when check runs did not fit on one page", async () => {
+    // 100 green runs read, but GitHub says there are 142. The red one could be
+    // any of the 42 never returned, so the gate must not judge from this slice.
+    const { fetchImpl } = fakeGitHub({
+      checkRuns: Array.from({ length: 100 }, () => ({ status: "completed", conclusion: "success" })),
+      checkRunsTotalCount: 142
+    });
+    const activityLog = vi.fn(async () => {});
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never, activityLog))
+    )) as { error: string };
+
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(activityLog).not.toHaveBeenCalled();
+    expect(result.error).toContain("check runs (read 100 of 142)");
+    expect(result.error).toContain("Refusing to judge the merge gate from a partial read");
+  });
+
+  it("refuses rather than merging when workflow runs did not fit on one page", async () => {
+    const { fetchImpl } = fakeGitHub({
+      workflowRuns: Array.from({ length: 100 }, () => ({ status: "completed", conclusion: "success" })),
+      workflowRunsTotalCount: 101
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("workflow runs (read 100 of 101)");
+  });
+
+  it("merges normally when total_count matches what the page carried", async () => {
+    const { fetchImpl } = fakeGitHub({
+      checkRuns: Array.from({ length: 42 }, () => ({ status: "completed", conclusion: "success" })),
+      checkRunsTotalCount: 42
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { data: { merged: boolean } };
+    expect(result.data.merged).toBe(true);
   });
 
   it("refuses to merge a pull request the caller authored", async () => {

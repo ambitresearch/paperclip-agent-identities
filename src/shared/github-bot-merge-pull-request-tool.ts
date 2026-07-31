@@ -41,7 +41,8 @@ export const githubBotMergePullRequestToolMetadata = {
         type: "string",
         description:
           "Optional full 40-character head commit SHA the caller believes it reviewed. When it does not " +
-          "match the pull request's current head, the merge is refused before any gate check runs.",
+          "match the pull request's current head, the merge is refused and the mismatch is reported " +
+          "alongside every other gate blocker, so one call surfaces everything that needs fixing.",
       },
       paperclipIssueId: {
         type: "string",

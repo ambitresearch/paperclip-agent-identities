@@ -79,6 +79,7 @@ describe("githubAddIssueCommentToolSpec.perform", () => {
   function execution(token: string | null, body = "hi there"): ProviderToolExecution<GitHubAgentIdentity, GitHubRepoRef> {
     return {
       token,
+      tokenSource: "github-app",
       identity,
       resourceRef: repoRef(),
       params: { repository: "acme/widgets", issueNumber: 7, body },

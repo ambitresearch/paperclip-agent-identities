@@ -9,7 +9,10 @@ export async function resolveGitHubCredential(
   const resolveSecret = (secretRef: string) => ctx.secrets.resolve(secretRef);
   const fetchImpl = (url: string, init?: RequestInit) => ctx.http.fetch(url, init);
 
-  const { token } = await resolveIdentityToken(identity, resolveSecret, fetchImpl);
+  // `source` is carried through rather than dropped: it is the only trustworthy
+  // signal of whether this token is bound to the configured bot identity
+  // (`github-app`) or was supplied by an operator and owned by whoever owns it.
+  const { token, source } = await resolveIdentityToken(identity, resolveSecret, fetchImpl);
 
-  return { token, secrets: [token] };
+  return { token, secrets: [token], source };
 }

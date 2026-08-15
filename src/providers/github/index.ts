@@ -13,6 +13,7 @@ import { githubWhoamiToolSpec } from "./tools/whoami.js";
 import { githubCreatePullRequestToolSpec } from "./tools/create-pull-request.js";
 import { githubPushBranchToolSpec } from "./tools/push-branch.js";
 import { githubSubmitPullRequestReviewToolSpec } from "./tools/submit-pull-request-review.js";
+import { githubMergePullRequestToolSpec } from "./tools/merge-pull-request.js";
 import { githubGetPullRequestChecksToolSpec } from "./tools/get-pull-request-checks.js";
 import { githubRequestPullRequestReviewersToolSpec } from "./tools/request-pull-request-reviewers.js";
 import { githubAddIssueCommentToolSpec } from "./tools/add-issue-comment.js";
@@ -85,6 +86,7 @@ export const githubProvider: IdentityProvider<GitHubAgentIdentity, ResourceRefer
     githubCreatePullRequestToolSpec,
     githubPushBranchToolSpec,
     githubSubmitPullRequestReviewToolSpec,
+    githubMergePullRequestToolSpec,
     githubAddIssueCommentToolSpec,
     githubListIssueCommentsToolSpec,
     githubGetIssueToolSpec,

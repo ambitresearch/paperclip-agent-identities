@@ -471,6 +471,7 @@ describe("githubPushBranchToolSpec.perform", () => {
   ): ProviderToolExecution<GitHubAgentIdentity, GitHubPushTarget> {
     return {
       token,
+      tokenSource: "github-app",
       identity,
       resourceRef: ref,
       params: { branch: "feature/x" },

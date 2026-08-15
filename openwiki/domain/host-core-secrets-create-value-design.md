@@ -10,8 +10,7 @@ is reopened in the future. This capability lives in Paperclip host-core
 (`paperclipai/paperclip`, `server/` package — `PluginSecretsClient` / `plugin-capability-validator`
 / `plugin-secrets-handler`), not in this plugin repo. This repo (`paperclip-agent-identities`) has
 no write access to host-core source; this document is the technical spec to hand to whoever owns
-that repo, produced so DRO-1157 (Slack secret auto-provisioning) has a concrete target to build
-against once it ships.
+that repo, should the decision be reopened.
 
 ## Problem recap
 

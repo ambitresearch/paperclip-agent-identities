@@ -13,6 +13,7 @@ function buildExecution(
 ): ProviderToolExecution<SlackAgentIdentity, ResourceReference> {
   return {
     token: null,
+    tokenSource: null,
     identity: { agentId: "agent-1", identity },
     resourceRef: null,
     params: {},

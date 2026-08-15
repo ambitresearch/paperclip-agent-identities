@@ -41,7 +41,7 @@ function makeProvider(
     },
     validateConfig: (raw: unknown) => raw,
     projectPluginConfig: (identities) => identities,
-    resolveCredential: async () => ({ token: "x", secrets: [] }),
+    resolveCredential: async () => ({ token: "x", secrets: [], source: "test-secret" }),
     tools,
     manifestTools: [],
     ...extra

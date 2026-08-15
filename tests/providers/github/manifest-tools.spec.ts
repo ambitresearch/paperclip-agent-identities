@@ -4,6 +4,7 @@ import { githubBotWhoamiToolName } from "../../../src/shared/github-bot-whoami-t
 import { githubBotCreatePullRequestToolName } from "../../../src/shared/github-bot-create-pull-request-tool.js";
 import { GITHUB_BOT_PUSH_BRANCH_TOOL_NAME } from "../../../src/shared/github-bot-push-branch-tool-definition.js";
 import { githubBotSubmitPullRequestReviewToolName } from "../../../src/shared/github-bot-submit-pull-request-review-tool.js";
+import { githubBotMergePullRequestToolName } from "../../../src/shared/github-bot-merge-pull-request-tool.js";
 import { githubBotGetPullRequestChecksToolName } from "../../../src/shared/github-bot-get-pull-request-checks-tool.js";
 import { githubBotRequestPullRequestReviewersToolName } from "../../../src/shared/github-bot-request-pull-request-reviewers-tool.js";
 import { githubBotAddIssueCommentToolName } from "../../../src/shared/github-bot-add-issue-comment-tool.js";
@@ -42,13 +43,14 @@ describe("githubManifestTools", () => {
     );
   });
 
-  it("exposes exactly the 24 required manifest tool fragments: the 21-action parity set plus the 3 non-overlapping identity tools", () => {
+  it("exposes exactly the 25 required manifest tool fragments: the 21-action parity set plus the 4 non-overlapping identity tools", () => {
     const names = githubManifestTools.map((tool) => tool.name);
     const REQUIRED_TOOL_SET = new Set([
       // Plugin-specific identity tools (not in the Github Sync reference app).
       githubBotWhoamiToolName,
       GITHUB_BOT_PUSH_BRANCH_TOOL_NAME,
       githubBotSubmitPullRequestReviewToolName,
+      githubBotMergePullRequestToolName,
       // 21-action Github Sync parity set.
       githubBotAddIssueCommentToolName,
       githubBotReplyToReviewThreadToolName,
@@ -72,9 +74,9 @@ describe("githubManifestTools", () => {
       githubBotCreatePullRequestToolName,
       githubBotUpdatePullRequestToolName,
     ]);
-    expect(REQUIRED_TOOL_SET.size).toBe(24);
+    expect(REQUIRED_TOOL_SET.size).toBe(25);
     expect(new Set(names)).toEqual(REQUIRED_TOOL_SET);
-    expect(names.length).toBe(24);
+    expect(names.length).toBe(25);
   });
 
   it("each fragment carries manifest metadata (displayName + parametersSchema)", () => {

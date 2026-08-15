@@ -70,6 +70,7 @@ describe("githubListOrganizationProjectsToolSpec.perform", () => {
   function execution(token: string | null, ctx: unknown): ProviderToolExecution<GitHubAgentIdentity, GitHubOrgRef> {
     return {
       token,
+      tokenSource: "github-app",
       identity,
       resourceRef: orgRef(),
       params: { organization: "acme" },

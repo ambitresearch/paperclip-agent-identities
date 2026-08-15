@@ -67,7 +67,7 @@ async function resolveExampleCredential(
   input: CredentialResolverInput<ExampleAgentIdentity>
 ): Promise<ResolvedCredential> {
   const token = await input.ctx.secrets.resolve(input.identity.identity.demoTokenSecretId);
-  return { token, secrets: [token] };
+  return { token, secrets: [token], source: "example-secret" };
 }
 
 const exampleWhoamiToolMetadata = {

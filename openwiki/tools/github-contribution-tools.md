@@ -1,6 +1,6 @@
 # GitHub contribution tools
 
-The plugin exposes 24 GitHub-related agent tools. Tool metadata lives in shared definition files so `/src/manifest.ts` and `/src/worker.ts` use consistent names and schemas. Most of these tools mirror direct GitHub REST/GraphQL capabilities one-to-one; three are non-parity, plugin-specific tools with no direct GitHub equivalent: `github_bot_whoami` (identity self-check), `github_bot_push_branch` (mediated git push via the agent identity token), and `github_bot_submit_pull_request_review` (the sanctioned review-submission path for this plugin's policies).
+The plugin exposes 25 GitHub-related agent tools. Tool metadata lives in shared definition files so `/src/manifest.ts` and `/src/worker.ts` use consistent names and schemas. Most of these tools mirror direct GitHub REST/GraphQL capabilities one-to-one; four are non-parity, plugin-specific tools with no direct GitHub equivalent: `github_bot_whoami` (identity self-check), `github_bot_push_branch` (mediated git push via the agent identity token), `github_bot_submit_pull_request_review` (the sanctioned review-submission path for this plugin's policies), and `github_bot_merge_pull_request` (the sanctioned merge path, with the review gate enforced server-side).
 
 ## Common safety pattern
 
@@ -170,6 +170,141 @@ Failure behavior:
 `/tests/providers/github/submit-pull-request-review-tool.spec.ts` covers identity attribution (activity log
 includes `agentId`, never the token), validation, repository-format fail-closed behavior, and GitHub API
 success/failure paths.
+
+## `github_bot_merge_pull_request`
+
+Source:
+
+- metadata: `/src/shared/github-bot-merge-pull-request-tool.ts`
+- implementation: `/src/providers/github/tools/merge-pull-request.ts`
+
+Purpose: merge a pull request using the agent's configured identity, so the agent chain can complete a
+routine PR lifecycle end to end. Company policy assigns review *and* merge to agents, but before this tool
+existed the plugin had no merge verb -- every approved agent PR turned into a board action at the last step,
+or pushed the agent toward raw `gh`/direct API writes the same policy forbids.
+
+Required parameters:
+
+- `repository`: target repository, `owner/repo` (also accepts normalized GitHub URL forms).
+- `pullNumber`: the pull request number to merge.
+
+Optional parameters:
+
+- `mergeMethod`: `merge`, `squash`, or `rebase`. Defaults to `squash`.
+- `commitTitle` / `commitBody`: override the generated merge commit message.
+- `expectedHeadSha`: full 40-character SHA the caller believes it reviewed. A mismatch is reported as a
+  `head_sha_mismatch` blocker alongside any others, so one call names every reason the merge was refused.
+- `paperclipIssueId` for activity metadata.
+
+### The merge gate
+
+Unlike the other write wrappers, this one enforces policy server-side rather than trusting agent
+self-discipline. `evaluateMergeGate` is a pure exported function -- it takes the observed pull request state
+and returns every blocker at once (an agent with three problems learns all three from one call, instead of
+discovering them one round-trip at a time). The merge endpoint is not called at all unless the gate passes.
+
+A merge is refused when any of the following holds:
+
+| Blocker code | Condition |
+| --- | --- |
+| `not_open` | the pull request is closed or already merged |
+| `draft` | the pull request is still a draft |
+| `caller_is_author` | the calling identity authored the pull request |
+| `head_sha_mismatch` | `expectedHeadSha` no longer matches the current head |
+| `not_mergeable` | `mergeable` is false or still being computed, or `mergeable_state` is not one of `clean` / `has_hooks` / `unstable` (so `dirty` conflicts, `behind` branches, and `blocked` branch protection all refuse) |
+| `changes_requested` | a reviewer's latest review is `CHANGES_REQUESTED` |
+| `insufficient_approvals` | fewer than `REQUIRED_NON_AUTHOR_APPROVALS` (2) approving reviews from distinct non-author reviewers, counted **on the current head commit** |
+| `unresolved_review_threads` | any review thread is unresolved |
+| `checks_not_passing` | checks are failing, or still running |
+
+Approval counting deliberately mirrors GitHub's own semantics: only the latest decision per reviewer counts,
+`COMMENT` reviews are ignored, `DISMISSED` clears a prior approval, and the author's self-approval never
+counts toward the requirement. An approval submitted against an earlier commit is reported as *stale* and
+does not count -- the refusal message names the stale approvers so the caller knows to re-request review
+rather than guessing why a visibly-approved PR was refused.
+
+`REQUIRED_NON_AUTHOR_APPROVALS` is a module constant, not a parameter. A caller able to pass
+`requiredApprovals: 0` would turn the gate back into the honor system it exists to replace.
+
+#### Who the gate thinks is calling
+
+`caller_is_author` is only as good as its idea of who is merging, so that identity is never read from
+`githubUsername` alone -- that is operator-editable config, and on the `plugin-secret` / `token-file`
+credential paths nothing binds it to the token actually being used. The tool reads
+`execution.tokenSource`, the `ResolvedCredential.source` plumbed through from `resolveIdentityToken`:
+
+- **`github-app`** -- the token was minted for this agent's own App, and the configured username is
+  app-slug-derived (`${appSlug}[bot]`) rather than typed, so it is used as-is and no probe is made.
+- **anything else** -- the login is resolved from `GET /user` and compared to the author. Any non-2xx
+  response, or a 200 without a usable login, refuses the merge rather than assuming the caller is someone
+  other than the author.
+
+The distinction comes from the credential source rather than from how GitHub answers the probe, because 403
+is not diagnostic: GitHub returns it for an installation token, but equally for a *user* token that has
+exhausted its primary rate limit, tripped abuse detection, or is blocked by SAML SSO. Treating 403 as
+"must be an App" would hand the check back to the editable field on exactly the transient conditions a busy
+fleet hits, so an author-owned token would self-merge depending on time of day.
+
+Two honest limitations, stated so nobody over-trusts the gate:
+
+- **Model diversity is not enforced.** Policy calls for model-diverse approvals; the GitHub API does not
+  expose which model authored a review. The gate verifies *distinct non-author reviewer identities* only.
+  Model diversity remains a convention the reviewing agents must uphold themselves.
+- **A repository with no CI is not blocked.** When GitHub reports zero check runs, workflow runs, and status
+  contexts for the head commit, there is nothing pending to wait for, so the gate proceeds. The result
+  reports `checksState: "none"` rather than `"success"` so the caller is never shown a green light it did not
+  earn.
+
+Every read the gate depends on fails closed when it cannot be completed. Reviews and review threads each
+paginate to 1000 entries; exhausting that cap with pages still unread returns an error rather than gating on
+the prefix, because the unread tail is exactly where a blocking `CHANGES_REQUESTED` or an unresolved thread
+would sit. The check-run and workflow-run reads compare GitHub's `total_count` against what arrived and
+refuse the same way. A truncated read is *undecided*, never clean.
+
+One deliberate exception to counting every signal: a `cancelled` or `stale` workflow run that a **later run
+of the same workflow and event for the same commit** displaced is ignored. `GET /actions/runs?head_sha=` returns every
+run ever created for a SHA and nothing rewrites a cancellation, so a workflow triggered on both `push` and
+`pull_request` under a `concurrency: cancel-in-progress` group leaves a permanent `cancelled` record behind.
+Counting it would pin the pull request at `checks_not_passing` with no escape but a new commit -- which then
+invalidates every approval. The event match matters because `push`, `pull_request`, and `workflow_dispatch`
+runs are independent even when they share a workflow file and head SHA. A `cancelled` run that is still the
+newest for its workflow/event was cancelled deliberately and remains fatal, and a `failure` is never dropped
+regardless. `github_bot_get_pull_request_checks` applies the same rule to its aggregate while still listing
+every run it read.
+
+Runtime behavior:
+
+1. validates parameter types (including that `expectedHeadSha`, when given, is a full 40-character hex SHA);
+2. resolves the agent identity and normalizes `repository` before any credential is resolved;
+3. resolves credentials just in time, minting a fresh per-agent GitHub App installation token;
+4. reads `GET .../pulls/{pullNumber}` for author, state, draft/merged flags, mergeability, and head SHA;
+5. in parallel, reads all reviews (paginated), all review threads (GraphQL, paginated, unresolved count
+   only), and the check/status/workflow-run fan-out for the head SHA -- reusing `computeAggregateState` from
+   `github_bot_get_pull_request_checks` so both tools judge CI identically;
+6. evaluates the gate; on refusal returns an `error` naming every blocker plus a `data` payload with the
+   structured blocker list, approvers, stale approvers, unresolved thread count, and checks state -- and
+   writes **no** activity log, because nothing was mutated;
+7. on success calls `PUT .../pulls/{pullNumber}/merge` with `merge_method` and `sha` **pinned to the head the
+   gate was evaluated against**, so a push that lands mid-gate makes GitHub reject with 409 rather than
+   merging code no reviewer approved;
+8. logs a `pull_request_merge` activity with repository, PR number, merge method, head SHA, merge commit SHA,
+   base ref, approvers, checks state, agent ID, and optional Paperclip issue ID;
+9. returns the merge commit SHA, base ref, approvers, and checks state.
+
+Failure behavior mirrors the other GitHub tools: malformed params and repositories fail before credential
+resolution; network failures return a generic connectivity error without leaking the token; non-OK GitHub
+responses surface GitHub's message when parseable. A 409 additionally explains that the head moved after the
+gate passed.
+
+**Manifest permissions**: merging uses the existing `pull_requests: write` and `contents: write` grants and
+requires no manifest change. The gate's check reads use the same `checks: read` / `statuses: read` /
+`actions: read` permissions documented under `github_bot_get_pull_request_checks`.
+
+`/tests/providers/github/merge-pull-request-tool.spec.ts` covers the pure gate exhaustively (each blocker,
+latest-review-per-reviewer semantics, stale-approval detection, author self-approval exclusion, `[bot]`
+login normalization, multi-blocker reporting) plus the wrapper itself: head-SHA pinning on the merge body,
+proof the merge endpoint is never called when the gate refuses, 409 explanation, activity logging with agent
+attribution and no token leakage, and GitHub API success/failure paths.
 
 ## `github_bot_get_pull_request_checks`
 
@@ -999,6 +1134,7 @@ handling, and activity logging.
 
 - `/tests/create-pull-request.spec.ts`: PR validation, malformed repo before secrets, success path, draft flag, activity logging, canonical API URL, credential/API/fetch error behavior, no token leakage.
 - `/tests/providers/github/submit-pull-request-review-tool.spec.ts`: review event/param validation, malformed inline comments, repository normalization before credentials, fail-closed on missing token, APPROVE/REQUEST_CHANGES/COMMENT success paths, activity logging with agent attribution and no token leakage, network/API failure handling.
+- `/tests/providers/github/merge-pull-request-tool.spec.ts`: the pure merge gate (every blocker code, latest-review-per-reviewer semantics, stale-approval detection, author self-approval exclusion, `[bot]` login normalization, no-CI-signals handling, multi-blocker reporting) and the wrapper (param/merge-method validation, head-SHA pinning on the merge body, proof the merge endpoint is never called when the gate refuses, 409 head-moved explanation, activity logging with agent attribution and no token leakage, GitHub API success/failure paths).
 - `/tests/plugin.spec.ts`: `whoami`, push success and denial paths, dry-run behavior, sidecar integration, redaction on push failure.
 - `/tests/security.spec.ts`: generic redaction, PR helper redaction, push helper token handling and cleanup.
 - `/tests/identity-policy.spec.ts`: identity and credential resolution used by all tools.
@@ -1025,8 +1161,9 @@ handling, and activity logging.
 
 When adding or changing a GitHub tool:
 
-- Add or update a shared metadata file and include it in `/src/manifest.ts`.
-- Register the runtime implementation in `/src/worker.ts`.
+- Add or update a shared metadata file under `/src/shared/` and add its manifest fragment to `/src/providers/github/manifest-tools.ts`.
+- Add the runtime `ProviderToolSpec` under `/src/providers/github/tools/` and register it in the provider's `tools` array in `/src/providers/github/index.ts`. (`/src/worker.ts` and `/src/manifest.ts` are name-agnostic -- they iterate the registry, so neither needs a per-tool edit.)
+- Update the tool-count assertions in `/tests/providers/github/provider.spec.ts` and `/tests/providers/github/manifest-tools.spec.ts`, which pin the exact registered tool set.
 - Reuse `/src/identity-policy.ts` and `/src/credential-sidecar.ts` rather than resolving tokens directly.
 - Keep input validation and repository normalization before credential resolution.
 - Include tests that prove secrets are not resolved for malformed inputs and other pre-credential denial paths.

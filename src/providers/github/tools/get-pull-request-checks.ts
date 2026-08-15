@@ -60,6 +60,42 @@ const GITHUB_API_HEADERS = (token: string) => ({
   "X-GitHub-Api-Version": "2022-11-28"
 });
 
+/**
+ * GitHub defaults `/check-runs` and `/actions/runs` to 30 items per page and
+ * caps them at 100. Both report the true size in `total_count` alongside the
+ * page, so ask for the maximum and then verify the two agree — a matrix build
+ * passes 30 runs easily, and `filter=latest` dedups by check *name*, not by job.
+ */
+export const CHECK_RUNS_PER_PAGE = 100;
+
+/**
+ * Describe a read that cannot be proven complete, or `null` when the page
+ * demonstrably carried everything. A caller that judges CI from a truncated
+ * slice can call a red commit green, so every consumer of these endpoints has
+ * to notice the gap rather than silently treat page one as the whole story.
+ */
+export function describeTruncatedRead(
+  label: string,
+  totalCount: unknown,
+  receivedCount: number
+): string | null {
+  // A page filled exactly to the cap has the same shape whether it is complete
+  // or truncated; only `total_count` tells the two apart. GitHub documents that
+  // field on both endpoints, so an unusable one is not a case the real API
+  // produces — but the cost of guessing wrong is a red commit judged green, and
+  // this module already refuses to act on missing evidence elsewhere
+  // (`dropSupersededWorkflowRuns` keeps a run whose displacement it cannot
+  // prove). So an absent or type-drifted total means "unproven", not "complete":
+  // a short page still carried everything, a full one is treated as suspect.
+  if (typeof totalCount !== "number" || !Number.isFinite(totalCount)) {
+    return receivedCount >= CHECK_RUNS_PER_PAGE
+      ? `${label} (read ${receivedCount}; GitHub reported no usable total)`
+      : null;
+  }
+  if (totalCount <= receivedCount) return null;
+  return `${label} (read ${receivedCount} of ${totalCount})`;
+}
+
 /** Conclusions that mean "this finished and it did not pass". */
 const FAILING_CONCLUSIONS = new Set([
   "failure",
@@ -69,6 +105,61 @@ const FAILING_CONCLUSIONS = new Set([
   "startup_failure",
   "stale"
 ]);
+
+/**
+ * The subset of failing conclusions GitHub writes when a run was *displaced*
+ * rather than judged. Only these are eligible to be discarded as superseded;
+ * every other failing conclusion records a real verdict and is never dropped.
+ */
+const SUPERSEDING_CONCLUSIONS = new Set(["cancelled", "stale"]);
+
+/**
+ * Drop workflow runs that a later run of the same workflow and event displaced.
+ *
+ * `/actions/runs?head_sha=` returns *every* run ever created for a commit, and
+ * nothing ever rewrites a `cancelled` record. A workflow that triggers on both
+ * `push` and `pull_request` under a `concurrency: cancel-in-progress` group
+ * therefore leaves a permanent `cancelled` run behind on its first trigger.
+ * Counting that as fatal pins the pull request at "checks not passing" with no
+ * escape but a new commit — which then invalidates every approval, so the two
+ * behaviors compound.
+ *
+ * Only displaced runs are dropped. `workflow_id` alone is not enough evidence:
+ * one workflow can have independent `push`, `pull_request`, and manually
+ * dispatched runs for the same commit. A `cancelled` run that is still the
+ * newest for its workflow/event was cancelled deliberately and stays fatal.
+ * Run ids increase monotonically per repository, so the highest id within a
+ * workflow/event is the newest. A manual cancel followed by "re-run all jobs"
+ * is unaffected either way: that reuses the run id and overwrites the
+ * conclusion in place.
+ */
+export function dropSupersededWorkflowRuns<
+  T extends { id?: number; workflow_id?: number; event?: string; conclusion: string | null }
+>(workflowRuns: T[]): T[] {
+  const newestIdByWorkflowEvent = new Map<string, number>();
+  for (const run of workflowRuns) {
+    if (
+      typeof run.id !== "number" ||
+      typeof run.workflow_id !== "number" ||
+      typeof run.event !== "string"
+    ) continue;
+    const key = `${run.workflow_id}:${run.event}`;
+    const newest = newestIdByWorkflowEvent.get(key);
+    if (newest === undefined || run.id > newest) newestIdByWorkflowEvent.set(key, run.id);
+  }
+  return workflowRuns.filter((run) => {
+    if (run.conclusion === null || !SUPERSEDING_CONCLUSIONS.has(run.conclusion)) return true;
+    // Without ids and an event there is no way to tell displaced from
+    // deliberate, so keep the run and let it block. Fail closed on missing
+    // evidence.
+    if (
+      typeof run.id !== "number" ||
+      typeof run.workflow_id !== "number" ||
+      typeof run.event !== "string"
+    ) return true;
+    return newestIdByWorkflowEvent.get(`${run.workflow_id}:${run.event}`) === run.id;
+  });
+}
 
 /**
  * Roll the legacy combined commit-status state together with check runs and workflow
@@ -156,9 +247,9 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
     const sha = pr.head.sha;
 
     // Step 2: check runs, commit status, and Actions workflow runs for that SHA, in parallel.
-    const checkRunsUrl = `https://api.github.com/repos/${owner}/${repo}/commits/${sha}/check-runs`;
+    const checkRunsUrl = `https://api.github.com/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=${CHECK_RUNS_PER_PAGE}`;
     const statusUrl = `https://api.github.com/repos/${owner}/${repo}/commits/${sha}/status`;
-    const workflowRunsUrl = `https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${sha}`;
+    const workflowRunsUrl = `https://api.github.com/repos/${owner}/${repo}/actions/runs?head_sha=${sha}&per_page=${CHECK_RUNS_PER_PAGE}`;
 
     let checkRunsResponse: Response;
     let statusResponse: Response;
@@ -213,6 +304,8 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
       total_count: number;
       workflow_runs: Array<{
         id: number;
+        workflow_id: number;
+        event: string;
         name: string | null;
         status: string;
         conclusion: string | null;
@@ -244,18 +337,39 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
       url: run.html_url,
       startedAt: run.run_started_at
     }));
+    // Every run GitHub returned is still reported, so a lingering `cancelled`
+    // record stays visible to whoever is reading; only the aggregate verdict
+    // ignores the ones a later run of the same workflow displaced.
+    const judgedWorkflowRuns = dropSupersededWorkflowRuns(workflowRunsBody.workflow_runs);
+    // Without this the two disagree silently: a reader sees `success` next to a
+    // listed `cancelled` run and has nothing tying them together, which reads as
+    // a bug in the tool rather than the documented behavior. Surface the count
+    // the same way the truncation path surfaces itself.
+    const supersededWorkflowRunCount = workflowRuns.length - judgedWorkflowRuns.length;
 
     // `statusBody.state` is only the legacy combined *commit status* state. It ignores
     // check runs and workflow runs entirely, so a PR with a failing GitHub Actions job
     // reports `success` whenever its legacy contexts pass (and `pending` when there are
     // none at all). Roll all three signals into a single aggregate the caller can trust,
     // and keep the legacy value under its own explicit name.
-    const aggregateState = computeAggregateState(
+    const rawAggregateState = computeAggregateState(
       statusBody.state,
       statusBody.statuses.length,
       checkRuns,
-      workflowRuns
+      judgedWorkflowRuns
     );
+
+    // A page that did not carry every run cannot support a green verdict: the one
+    // failure could be sitting in the part we never read. `failure` survives
+    // truncation (a red run we *did* see is still red); only `success` degrades.
+    // `statusBody.state` needs no such guard — GitHub computes it server-side
+    // across every context, so only the `statuses` array truncates.
+    const truncatedReads = [
+      describeTruncatedRead("check runs", checkRunsBody.total_count, checkRuns.length),
+      describeTruncatedRead("workflow runs", workflowRunsBody.total_count, workflowRuns.length)
+    ].filter((entry): entry is string => entry !== null);
+    const aggregateState =
+      truncatedReads.length > 0 && rawAggregateState === "success" ? "pending" : rawAggregateState;
 
     ctx.logger.info(
       `Fetched checks for pull request #${validated.pullNumber} in ${repository.fullName}: ` +
@@ -265,11 +379,19 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
     return {
       content:
         `Pull request #${validated.pullNumber} (${sha.slice(0, 7)}): overall status ${aggregateState}, ` +
-        `${checkRuns.length} check run(s), ${workflowRuns.length} workflow run(s)`,
+        `${checkRuns.length} check run(s), ${workflowRuns.length} workflow run(s)` +
+        (supersededWorkflowRunCount > 0
+          ? `. ${supersededWorkflowRunCount} workflow run(s) listed but excluded from the status as superseded by a later run of the same workflow.`
+          : "") +
+        (truncatedReads.length > 0
+          ? `. Incomplete read of ${truncatedReads.join(" and ")}; the status shown covers only what was read.`
+          : ""),
       data: {
         sha,
         overallState: aggregateState,
         combinedStatusState: statusBody.state,
+        ...(supersededWorkflowRunCount > 0 ? { supersededWorkflowRuns: supersededWorkflowRunCount } : {}),
+        ...(truncatedReads.length > 0 ? { truncated: truncatedReads } : {}),
         checkRuns,
         statusContexts,
         workflowRuns

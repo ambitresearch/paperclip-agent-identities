@@ -56,13 +56,14 @@ describe("githubProvider", () => {
     expect(names).toContain("github_bot_request_pull_request_reviewers");
   });
 
-  it("registers exactly the 24 required GitHub tools: the 21-action parity set plus the 3 non-overlapping identity tools", () => {
+  it("registers exactly the 25 required GitHub tools: the 21-action parity set plus the 4 non-overlapping identity tools", () => {
     const names = githubProvider.tools.map((tool) => tool.name);
     const REQUIRED_TOOL_SET = new Set([
       // Plugin-specific identity tools (not in the Github Sync reference app).
       "github_bot_whoami",
       "github_bot_push_branch",
       "github_bot_submit_pull_request_review",
+      "github_bot_merge_pull_request",
       // 21-action Github Sync parity set.
       "github_bot_add_issue_comment",
       "github_bot_reply_to_review_thread",
@@ -86,9 +87,9 @@ describe("githubProvider", () => {
       "github_bot_create_pull_request",
       "github_bot_update_pull_request"
     ]);
-    expect(REQUIRED_TOOL_SET.size).toBe(24);
+    expect(REQUIRED_TOOL_SET.size).toBe(25);
     expect(new Set(names)).toEqual(REQUIRED_TOOL_SET);
-    expect(names.length).toBe(24);
+    expect(names.length).toBe(25);
   });
 
   it("exposes a manifest tool fragment for every live tool, plus a contributeActions hook", () => {

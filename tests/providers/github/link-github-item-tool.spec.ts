@@ -65,6 +65,7 @@ describe("githubLinkGithubItemToolSpec.perform", () => {
   function execution(params: Record<string, unknown>, ctx: unknown): ProviderToolExecution<GitHubAgentIdentity, ResourceReference> {
     return {
       token: null,
+      tokenSource: null,
       identity,
       resourceRef: null,
       params,

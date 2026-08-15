@@ -72,6 +72,22 @@ describe("manifest instance config schema", () => {
     expect(manifest.version).toBe(packageJson.version);
   });
 
+  it("ships the automated PR review skill as a managed resource", () => {
+    expect(manifest.capabilities).toContain("skills.managed");
+    expect(manifest.skills).toEqual([
+      expect.objectContaining({
+        skillKey: "automated-pr-review-iteration",
+        displayName: "Automated PR Review Iteration",
+        slug: "automated-pr-review-iteration",
+        markdown: expect.stringContaining("# Automated PR Review Iteration"),
+        files: expect.arrayContaining([
+          expect.objectContaining({ path: "references/github-copilot.md" }),
+          expect.objectContaining({ path: "references/paperclip-bot-approval.md" }),
+        ]),
+      }),
+    ]);
+  });
+
   it("accepts GitHub and strict Slack config for the same agent", () => {
     expect(validate(slackConfig()), JSON.stringify(validate.errors)).toBe(true);
   });

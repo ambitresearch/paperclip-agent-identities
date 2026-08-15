@@ -12,6 +12,7 @@ Primary product capabilities are described in `/README.md` and implemented throu
 - Store public provider identity metadata in Paperclip plugin state, private credential references in a local sidecar file, and GitHub App bindings in the selected agent environment.
 - Mint short-lived GitHub App installation tokens just in time for GitHub provider tools.
 - Expose provider-specific tools for identity self-checks, pull request creation, and mediated branch pushes.
+- Ship specialized managed skills that teach agents how to use identity-backed tools in complete workflows.
 
 Treat `/README.md` plus current source as the canonical documentation baseline.
 
@@ -26,6 +27,7 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
 | Change PR or push tools | [GitHub contribution tools](tools/github-contribution-tools.md) | `/src/providers/github/tools/create-pull-request.ts`, `/src/providers/github/tools/push-branch.ts` |
 | Run validation or understand test coverage | [Testing and operations](operations/testing-and-release.md) | `/tests/*.spec.ts`, `/package.json` |
 | Register a provider's runtime tools/actions | [Plugin runtime architecture](architecture/plugin-runtime.md) | `/src/providers/<id>/`, `/src/providers/index.ts` |
+| Add or update a specialized managed skill | [Plugin runtime architecture](architecture/plugin-runtime.md) | `/skills/<skill>/`, `/src/manifest.ts` |
 | Add provider settings persistence/UI | [Agent identity domain](domain/agent-identities.md) | `/src/core/identity-config.ts`, `/src/credential-sidecar.ts`, `/src/worker.ts`, `/src/ui/SettingsPage.tsx` |
 | Implement the Slack provider | [Slack provider MVP and threat model](domain/slack-provider-design.md) | `/src/providers/slack/` plus the settings-persistence files above |
 
@@ -46,6 +48,7 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
   ui/SettingsPage.tsx                 Operator settings UI and GitHub App setup flow
   lib/*.ts                            Redaction and lower-level PR/push helper utilities
 /tests/*.spec.ts                      Vitest coverage for plugin, tools, repo normalization, credentials, security
+/skills/*/SKILL.md                    Plugin-managed agent workflows and supporting references
 /esbuild.config.mjs                   Main build path using Paperclip SDK bundler presets
 /rollup.config.mjs                    Alternate Rollup build config
 /package.json                         Scripts, package metadata, Paperclip entrypoint metadata
@@ -79,11 +82,12 @@ paperclipai plugin install . --local
 ## Runtime model in one page
 
 1. Paperclip reads the plugin package metadata in `/package.json`, then loads the built manifest, worker, and UI from `dist`.
-2. `/src/manifest.ts` declares plugin ID `ambitresearch.paperclip-agent-identities`, version `0.3.2`, required capabilities, 30 tools, and two UI slots.
+2. `/src/manifest.ts` declares plugin ID `ambitresearch.paperclip-agent-identities`, version `0.4.0`, required capabilities, 30 tools, one managed skill, and two UI slots.
 3. `/src/worker.ts` calls `definePlugin()` and registers:
    - data loaders: `health`, `bot-identity-config`, `paperclip-agents`
    - actions: `ping`, identity save/delete, GitHub/Slack manifest setup, Slack metadata discovery, and the released-sidecar Slack rebind action
    - tools: 25 GitHub tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`, `github_bot_submit_pull_request_review`, `github_bot_merge_pull_request`, and 20 others covering issues, pull requests, review threads, Projects v2, search, and Paperclip-side linking — see `/openwiki/tools/github-contribution-tools.md`) plus five Slack tools (`slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, `slack_bot_remove_reaction`, and `slack_bot_lookup_channel`) — both GitHub and Slack are now fully `enabled` providers (`registry.enabled()`), with Slack's tool surface also registered via `toolsStatus: "enabled"`/`registry.liveTools()`.
+   - the managed `automated-pr-review-iteration` skill, which mirrors Copilot-style review loops and uses the sanctioned Paperclip bot-review tool instead of exposing credentials
     - an `issue.created` event observer that marks issues as seen in plugin state
     - Slack's provider-owned `slack-turn-drain` self-event, which drains one durable queued turn under fresh company scope
 4. `/src/ui/index.tsx` exports a dashboard widget summarizing identity coverage and re-exports the settings page.

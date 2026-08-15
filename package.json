@@ -1,12 +1,13 @@
 {
   "name": "@ambitresearch/paperclip-agent-identities",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "packageManager": "pnpm@10.17.1",
   "type": "module",
   "private": false,
   "description": "Per-agent identity providers and contribution tools for Paperclip",
   "files": [
     "dist",
+    "skills",
     "README.md",
     "LICENSE",
     "pnpm-lock.yaml"

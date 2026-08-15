@@ -1,5 +1,13 @@
 # Plugin runtime architecture
 
+## Plugin-managed skills
+
+The manifest may bundle specialized agent workflows alongside provider tools by declaring `skills` and the `skills.managed` capability. Each declaration has a stable `skillKey`, display metadata, the main `SKILL.md` markdown, and optional supporting files such as references. Paperclip reconciles these declarations into company skills under the plugin-owned key `plugin/<plugin-id>/<skill-key>`; operators can then attach them to selected agents through the normal desired-skill flow.
+
+Agent Identities ships `automated-pr-review-iteration` as its first managed skill. It turns the GitHub review tools into a complete Copilot-style loop: inspect the current-head review state, fix findings with TDD, reply to and resolve threads, request a fresh automated review through the supported reviewer mechanism, and use `github_bot_submit_pull_request_review` for an independent Paperclip bot approval without exposing credentials.
+
+Managed skill source lives under `/skills/<skill>/`. The manifest imports the markdown and reference files so the built manifest is self-contained, while `package.json` also includes `/skills` in the npm artifact for auditability. Adding a skill therefore requires updating the manifest declaration, capability coverage tests, and this OpenWiki runtime inventory.
+
 ## Build and package entrypoints
 
 This is a Paperclip plugin package. `/package.json` declares the package as ESM, exposes the built plugin artifacts through the `paperclipPlugin` field, and provides the main scripts:

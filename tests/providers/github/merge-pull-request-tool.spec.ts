@@ -80,6 +80,20 @@ describe("evaluateMergeGate", () => {
     expect(result.blockers.map((b) => b.code)).toContain("insufficient_approvals");
   });
 
+  it("does not let an App approval overwrite a human's changes request", () => {
+    const result = evaluateMergeGate(passingGate({
+      reviews: [
+        { login: "voss", state: "CHANGES_REQUESTED", commitId: HEAD },
+        { login: "voss[bot]", state: "APPROVED", commitId: HEAD },
+        { login: "kiln", state: "APPROVED", commitId: HEAD }
+      ]
+    }));
+
+    expect(result.ok).toBe(false);
+    expect(result.changesRequestedBy).toEqual(["voss"]);
+    expect(result.blockers.map((blocker) => blocker.code)).toContain("changes_requested");
+  });
+
   it("discards an approval superseded by that reviewer's later CHANGES_REQUESTED", () => {
     const result = evaluateMergeGate(
       passingGate({
@@ -315,7 +329,13 @@ interface FakeGitHubOptions {
    * — can be handed to the gate.
    */
   checkRunsBodyOverride?: Record<string, unknown>;
-  workflowRuns?: Array<{ id?: number; workflow_id?: number; status: string; conclusion: string | null }>;
+  workflowRuns?: Array<{
+    id?: number;
+    workflow_id?: number;
+    event?: string;
+    status: string;
+    conclusion: string | null;
+  }>;
   workflowRunsTotalCount?: number;
   /**
    * `GET /user` response for the merge credential. Defaults to the configured
@@ -605,8 +625,8 @@ describe("githubMergePullRequestToolSpec.perform", () => {
     // pull request at checks_not_passing permanently.
     const { fetchImpl } = fakeGitHub({
       workflowRuns: [
-        { id: 1, workflow_id: 99, status: "completed", conclusion: "cancelled" },
-        { id: 2, workflow_id: 99, status: "completed", conclusion: "success" }
+        { id: 1, workflow_id: 99, event: "pull_request", status: "completed", conclusion: "cancelled" },
+        { id: 2, workflow_id: 99, event: "pull_request", status: "completed", conclusion: "success" }
       ]
     });
     const result = (await githubMergePullRequestToolSpec.perform(
@@ -614,6 +634,21 @@ describe("githubMergePullRequestToolSpec.perform", () => {
     )) as { data: { merged: boolean; checksState: string } };
     expect(result.data.merged).toBe(true);
     expect(result.data.checksState).toBe("success");
+  });
+
+  it("refuses when a later run from another event does not prove supersession", async () => {
+    const { fetchImpl } = fakeGitHub({
+      workflowRuns: [
+        { id: 100, workflow_id: 99, event: "pull_request", status: "completed", conclusion: "cancelled" },
+        { id: 200, workflow_id: 99, event: "workflow_dispatch", status: "completed", conclusion: "success" }
+      ]
+    });
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never))
+    )) as { error: string };
+
+    expect(fetchImpl.mock.calls.some(([url]) => String(url).includes("/merge"))).toBe(false);
+    expect(result.error).toContain("Checks are failing");
   });
 
   it("still refuses when the cancelled run is the newest for its workflow", async () => {
@@ -756,6 +791,23 @@ describe("githubMergePullRequestToolSpec.perform", () => {
     expect(result.error).toContain("409");
     expect(result.error).toContain("Head branch was modified");
     expect(result.error).toContain("moved after the merge gate passed");
+  });
+
+  it("does not report or log success when GitHub returns merged false", async () => {
+    const { fetchImpl } = fakeGitHub({
+      mergeResponse: new Response(
+        JSON.stringify({ merged: false, message: "Base branch was modified" }),
+        { status: 200 }
+      )
+    });
+    const activityLog = vi.fn(async () => {});
+    const result = (await githubMergePullRequestToolSpec.perform(
+      execution("tok", buildCtx(fetchImpl as never, activityLog))
+    )) as { error: string; data: { merged: boolean } };
+
+    expect(result.error).toContain("Base branch was modified");
+    expect(result.data.merged).toBe(false);
+    expect(activityLog).not.toHaveBeenCalled();
   });
 
   it("logs activity metadata without ever including the token", async () => {

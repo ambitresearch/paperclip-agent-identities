@@ -262,13 +262,15 @@ would sit. The check-run and workflow-run reads compare GitHub's `total_count` a
 refuse the same way. A truncated read is *undecided*, never clean.
 
 One deliberate exception to counting every signal: a `cancelled` or `stale` workflow run that a **later run
-of the same workflow for the same commit** displaced is ignored. `GET /actions/runs?head_sha=` returns every
+of the same workflow and event for the same commit** displaced is ignored. `GET /actions/runs?head_sha=` returns every
 run ever created for a SHA and nothing rewrites a cancellation, so a workflow triggered on both `push` and
 `pull_request` under a `concurrency: cancel-in-progress` group leaves a permanent `cancelled` record behind.
 Counting it would pin the pull request at `checks_not_passing` with no escape but a new commit -- which then
-invalidates every approval. A `cancelled` run that is still the newest for its workflow was cancelled
-deliberately and remains fatal, and a `failure` is never dropped regardless. `github_bot_get_pull_request_checks`
-applies the same rule to its aggregate while still listing every run it read.
+invalidates every approval. The event match matters because `push`, `pull_request`, and `workflow_dispatch`
+runs are independent even when they share a workflow file and head SHA. A `cancelled` run that is still the
+newest for its workflow/event was cancelled deliberately and remains fatal, and a `failure` is never dropped
+regardless. `github_bot_get_pull_request_checks` applies the same rule to its aggregate while still listing
+every run it read.
 
 Runtime behavior:
 

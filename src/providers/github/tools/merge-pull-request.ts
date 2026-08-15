@@ -222,7 +222,11 @@ export function evaluateMergeGate(input: MergeGateInput): MergeGateResult {
     if (state !== "APPROVED" && state !== "CHANGES_REQUESTED" && state !== "DISMISSED") {
       continue;
     }
-    const key = normalizeLogin(review.login);
+    // Reviews in this one GitHub payload already use canonical account logins.
+    // Keep human `foo` distinct from App `foo[bot]`; suffix normalization is
+    // only for comparisons across payloads that represent App identities
+    // inconsistently (such as caller versus PR author).
+    const key = review.login?.trim().toLowerCase() ?? "";
     if (!key) continue;
     latestByReviewer.set(key, { ...review, state });
   }
@@ -501,7 +505,13 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
       };
       const workflowRunsBody = (await workflowRunsResponse.json()) as {
         total_count?: number;
-        workflow_runs: Array<{ id?: number; workflow_id?: number; status: string; conclusion: string | null }>;
+        workflow_runs: Array<{
+          id?: number;
+          workflow_id?: number;
+          event?: string;
+          status: string;
+          conclusion: string | null;
+        }>;
       };
 
       // Fail closed on a partial read. Judging CI from page one would let a
@@ -524,8 +534,9 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
         };
       }
 
-      // A `cancelled` record that a later run of the same workflow displaced is
-      // an artifact of a `concurrency: cancel-in-progress` group, not a verdict.
+      // A `cancelled` record that a later run of the same workflow and event
+      // displaced is an artifact of a `concurrency: cancel-in-progress` group,
+      // not a verdict. Different events are independent and cannot prove this.
       // It never changes, so counting it would pin the pull request at
       // `checks_not_passing` until someone pushes a new commit — which then
       // invalidates every approval. Judge on what was not displaced.
@@ -692,7 +703,20 @@ export const githubMergePullRequestToolSpec: ProviderToolSpec<GitHubAgentIdentit
       };
     }
 
-    const merged = (await mergeResponse.json()) as { sha: string; merged: boolean; message: string };
+    const merged = (await mergeResponse.json()) as {
+      sha?: unknown;
+      merged?: unknown;
+      message?: unknown;
+    };
+    if (merged.merged !== true || typeof merged.sha !== "string" || merged.sha.length === 0) {
+      const details = typeof merged.message === "string" && merged.message.trim()
+        ? merged.message.trim()
+        : "GitHub did not confirm that the pull request was merged.";
+      return {
+        error: `GitHub API did not merge pull request #${prNumber}. ${details}`,
+        data: { merged: false, headSha, checksState: checksLabel }
+      };
+    }
 
     await ctx.activity.log({
       companyId: runCtx.companyId,

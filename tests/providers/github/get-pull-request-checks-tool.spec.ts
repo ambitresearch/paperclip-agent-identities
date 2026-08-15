@@ -146,8 +146,8 @@ describe("githubGetPullRequestChecksToolSpec.perform", () => {
         return new Response(JSON.stringify({
           total_count: 2,
           workflow_runs: [
-            { id: 1, workflow_id: 99, name: "CI", status: "completed", conclusion: "cancelled", html_url: "u1", run_started_at: "t1" },
-            { id: 2, workflow_id: 99, name: "CI", status: "completed", conclusion: "success", html_url: "u2", run_started_at: "t2" }
+            { id: 1, workflow_id: 99, event: "pull_request", name: "CI", status: "completed", conclusion: "cancelled", html_url: "u1", run_started_at: "t1" },
+            { id: 2, workflow_id: 99, event: "pull_request", name: "CI", status: "completed", conclusion: "success", html_url: "u2", run_started_at: "t2" }
           ]
         }), { status: 200 });
       }
@@ -350,9 +350,10 @@ describe("computeAggregateState", () => {
 });
 
 describe("dropSupersededWorkflowRuns", () => {
-  const run = (id: number, workflowId: number, conclusion: string | null) => ({
+  const run = (id: number, workflowId: number, conclusion: string | null, event = "pull_request") => ({
     id,
     workflow_id: workflowId,
+    event,
     status: "completed",
     conclusion
   });
@@ -372,6 +373,14 @@ describe("dropSupersededWorkflowRuns", () => {
   it("does not let one workflow's later run excuse another workflow's cancellation", () => {
     const kept = dropSupersededWorkflowRuns([run(1, 99, "cancelled"), run(2, 42, "success")]);
     expect(kept.map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  it("does not let a later run from another event excuse a cancellation", () => {
+    const kept = dropSupersededWorkflowRuns([
+      run(100, 99, "cancelled", "pull_request"),
+      run(200, 99, "success", "workflow_dispatch")
+    ]);
+    expect(kept.map((r) => r.id)).toEqual([100, 200]);
   });
 
   it("never drops a real verdict, only a displaced one", () => {

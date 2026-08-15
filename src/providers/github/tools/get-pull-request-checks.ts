@@ -114,7 +114,7 @@ const FAILING_CONCLUSIONS = new Set([
 const SUPERSEDING_CONCLUSIONS = new Set(["cancelled", "stale"]);
 
 /**
- * Drop workflow runs that a later run of the same workflow displaced.
+ * Drop workflow runs that a later run of the same workflow and event displaced.
  *
  * `/actions/runs?head_sha=` returns *every* run ever created for a commit, and
  * nothing ever rewrites a `cancelled` record. A workflow that triggers on both
@@ -124,27 +124,40 @@ const SUPERSEDING_CONCLUSIONS = new Set(["cancelled", "stale"]);
  * escape but a new commit — which then invalidates every approval, so the two
  * behaviors compound.
  *
- * Only displaced runs are dropped. A `cancelled` run that is still the newest
- * for its workflow was cancelled deliberately and stays fatal. Run ids increase
- * monotonically per repository, so the highest id within a workflow is the
- * newest. A manual cancel followed by "re-run all jobs" is unaffected either
- * way: that reuses the run id and overwrites the conclusion in place.
+ * Only displaced runs are dropped. `workflow_id` alone is not enough evidence:
+ * one workflow can have independent `push`, `pull_request`, and manually
+ * dispatched runs for the same commit. A `cancelled` run that is still the
+ * newest for its workflow/event was cancelled deliberately and stays fatal.
+ * Run ids increase monotonically per repository, so the highest id within a
+ * workflow/event is the newest. A manual cancel followed by "re-run all jobs"
+ * is unaffected either way: that reuses the run id and overwrites the
+ * conclusion in place.
  */
 export function dropSupersededWorkflowRuns<
-  T extends { id?: number; workflow_id?: number; conclusion: string | null }
+  T extends { id?: number; workflow_id?: number; event?: string; conclusion: string | null }
 >(workflowRuns: T[]): T[] {
-  const newestIdByWorkflow = new Map<number, number>();
+  const newestIdByWorkflowEvent = new Map<string, number>();
   for (const run of workflowRuns) {
-    if (typeof run.id !== "number" || typeof run.workflow_id !== "number") continue;
-    const newest = newestIdByWorkflow.get(run.workflow_id);
-    if (newest === undefined || run.id > newest) newestIdByWorkflow.set(run.workflow_id, run.id);
+    if (
+      typeof run.id !== "number" ||
+      typeof run.workflow_id !== "number" ||
+      typeof run.event !== "string"
+    ) continue;
+    const key = `${run.workflow_id}:${run.event}`;
+    const newest = newestIdByWorkflowEvent.get(key);
+    if (newest === undefined || run.id > newest) newestIdByWorkflowEvent.set(key, run.id);
   }
   return workflowRuns.filter((run) => {
     if (run.conclusion === null || !SUPERSEDING_CONCLUSIONS.has(run.conclusion)) return true;
-    // Without both ids there is no way to tell displaced from deliberate, so
-    // keep the run and let it block. Fail closed on missing evidence.
-    if (typeof run.id !== "number" || typeof run.workflow_id !== "number") return true;
-    return newestIdByWorkflow.get(run.workflow_id) === run.id;
+    // Without ids and an event there is no way to tell displaced from
+    // deliberate, so keep the run and let it block. Fail closed on missing
+    // evidence.
+    if (
+      typeof run.id !== "number" ||
+      typeof run.workflow_id !== "number" ||
+      typeof run.event !== "string"
+    ) return true;
+    return newestIdByWorkflowEvent.get(`${run.workflow_id}:${run.event}`) === run.id;
   });
 }
 
@@ -292,6 +305,7 @@ export const githubGetPullRequestChecksToolSpec: ProviderToolSpec<GitHubAgentIde
       workflow_runs: Array<{
         id: number;
         workflow_id: number;
+        event: string;
         name: string | null;
         status: string;
         conclusion: string | null;

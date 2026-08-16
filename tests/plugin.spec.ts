@@ -247,6 +247,9 @@ describe("plugin scaffold", () => {
       capabilities: [...manifest.capabilities],
       config: pushToolConfig()
     });
+    harness.ctx.secrets.resolve = async (
+      secretRef: string | { type: "secret_ref"; secretId: string; version?: "latest" },
+    ) => `resolved:${typeof secretRef === "string" ? secretRef : secretRef.secretId}`;
     await plugin.definition.setup(harness.ctx);
 
     const commands: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];

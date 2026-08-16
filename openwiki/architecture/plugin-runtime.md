@@ -4,7 +4,7 @@
 
 The manifest may bundle specialized agent workflows alongside provider tools by declaring `skills` and the `skills.managed` capability. Each declaration has a stable `skillKey`, display metadata, the main `SKILL.md` markdown, and optional supporting files such as references. Paperclip reconciles these declarations into company skills under the plugin-owned key `plugin/<plugin-id>/<skill-key>`; operators can then attach them to selected agents through the normal desired-skill flow.
 
-Agent Identities ships `copilot-review` as its first managed skill. It invokes GitHub Copilot CLI's built-in local `/review` agent with medium reasoning, denies write access, and reports findings as an independent second opinion without changing files or posting GitHub comments. This mirrors the local Copilot review workflow agents can use before opening or merging a pull request; it is intentionally distinct from hosted Copilot's asynchronous PR review.
+Agent Identities ships `code-review` as its first managed skill. It runs a provider-neutral pull request review workflow using the current agent runtime first, then optional local reviewers such as Codex, Claude Code, or Copilot CLI when they are already installed and authenticated. Copilot CLI is never a prerequisite: minimal Paperclip and Coder runtimes can still complete the default review path, while absent optional CLIs are reported as unavailable reviewers.
 
 Managed skill source lives under `/skills/<skill>/`. The manifest build treats Markdown as text and embeds it in `dist/manifest.js`, so dist-only deployments have no sibling-file dependency. `package.json` also includes `/skills` in the npm artifact for auditability. Adding a skill therefore requires updating the manifest declaration, bundler coverage, capability tests, and this OpenWiki runtime inventory.
 
@@ -45,7 +45,7 @@ Important capabilities include:
 - `secrets.bind-ref` for binding existing Paperclip secret references into company plugin config
 - `secrets.read-ref` for Paperclip secret resolution
 - `activity.log.write` for PR/push audit events
-- `skills.managed` for reconciling the plugin-managed `copilot-review` company skill
+- `skills.managed` for reconciling the plugin-managed `code-review` company skill
 - `issues.read` and `execution.workspaces.read` for resolving a push against the invoking run's execution workspace
 - `project.workspaces.read` for the mediated push fallback to the project's primary workspace
 

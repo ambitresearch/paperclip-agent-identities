@@ -12,7 +12,7 @@ Primary product capabilities are described in `/README.md` and implemented throu
 - Store public provider identity metadata in Paperclip plugin state, private credential references in a local sidecar file, and GitHub App bindings in the selected agent environment.
 - Mint short-lived GitHub App installation tokens just in time for GitHub provider tools.
 - Expose provider-specific tools for identity self-checks, pull request creation, and mediated branch pushes.
-- Ship specialized managed skills, beginning with a read-only local Copilot CLI code-review workflow.
+- Ship specialized managed skills, beginning with a provider-neutral local code-review workflow.
 
 Treat `/README.md` plus current source as the canonical documentation baseline.
 
@@ -82,7 +82,7 @@ paperclipai plugin install . --local
 ## Runtime model in one page
 
 1. Paperclip reads the plugin package metadata in `/package.json`, then loads the built manifest, worker, and UI from `dist`.
-2. `/src/manifest.ts` declares plugin ID `ambitresearch.paperclip-agent-identities`, version `0.4.0`, required capabilities, 30 tools, one managed skill, and two UI slots.
+2. `/src/manifest.ts` declares plugin ID `ambitresearch.paperclip-agent-identities`, version `0.4.0`, required capabilities, 30 tools, one managed `code-review` skill, and two UI slots.
 3. `/src/worker.ts` calls `definePlugin()` and registers:
    - data loaders: `health`, `bot-identity-config`, `paperclip-agents`
    - actions: `ping`, identity save/delete, GitHub/Slack manifest setup, Slack metadata discovery, and the released-sidecar Slack rebind action

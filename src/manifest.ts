@@ -1,5 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import copilotReviewSkillMarkdown from "../skills/copilot-review/SKILL.md?raw";
+import codeReviewSkillMarkdown from "../skills/code-review/SKILL.md?raw";
 import { createProviderRegistry } from "./providers/index.js";
 import {
   REBIND_LEGACY_SLACK_CREDENTIALS_ACTION,
@@ -209,11 +209,11 @@ const manifest: PaperclipPluginManifestV1 = {
     "skills.managed" as PaperclipPluginManifestV1["capabilities"][number]
   ],
   skills: [{
-    skillKey: "copilot-review",
-    displayName: "Copilot Review",
-    slug: "copilot-review",
-    description: "Runs Copilot CLI's local review agent as an independent second opinion.",
-    markdown: copilotReviewSkillMarkdown,
+    skillKey: "code-review",
+    displayName: "Code Review",
+    slug: "code-review",
+    description: "Reviews pull requests with available local agent reviewers.",
+    markdown: codeReviewSkillMarkdown,
     files: [],
   }] as PaperclipPluginManifestV1["skills"],
   jobs: [{

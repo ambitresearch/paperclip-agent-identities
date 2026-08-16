@@ -6,7 +6,7 @@ The manifest may bundle specialized agent workflows alongside provider tools by 
 
 Agent Identities ships `copilot-review` as its first managed skill. It invokes GitHub Copilot CLI's built-in local `/review` agent with medium reasoning, denies write access, and reports findings as an independent second opinion without changing files or posting GitHub comments. This mirrors the local Copilot review workflow agents can use before opening or merging a pull request; it is intentionally distinct from hosted Copilot's asynchronous PR review.
 
-Managed skill source lives under `/skills/<skill>/`. The manifest imports the markdown and reference files so the built manifest is self-contained, while `package.json` also includes `/skills` in the npm artifact for auditability. Adding a skill therefore requires updating the manifest declaration, capability coverage tests, and this OpenWiki runtime inventory.
+Managed skill source lives under `/skills/<skill>/`. The manifest build treats Markdown as text and embeds it in `dist/manifest.js`, so dist-only deployments have no sibling-file dependency. `package.json` also includes `/skills` in the npm artifact for auditability. Adding a skill therefore requires updating the manifest declaration, bundler coverage, capability tests, and this OpenWiki runtime inventory.
 
 ## Build and package entrypoints
 

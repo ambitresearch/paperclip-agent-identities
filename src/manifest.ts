@@ -1,5 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
-import { readFileSync } from "node:fs";
+import copilotReviewSkillMarkdown from "../skills/copilot-review/SKILL.md?raw";
 import { createProviderRegistry } from "./providers/index.js";
 import {
   REBIND_LEGACY_SLACK_CREDENTIALS_ACTION,
@@ -7,12 +7,6 @@ import {
 } from "./shared/types.js";
 import { EVENTS_REQUEST_URL_PATTERN } from "./shared/events-request-url.js";
 import { AGENT_IDENTITIES_PLUGIN_ID } from "./shared/webhook-endpoints.js";
-
-function readManagedSkillFile(relativePath: string): string {
-  return readFileSync(new URL(`../skills/copilot-review/${relativePath}`, import.meta.url), "utf8");
-}
-
-const copilotReviewSkillMarkdown = readManagedSkillFile("SKILL.md");
 
 const registry = createProviderRegistry();
 

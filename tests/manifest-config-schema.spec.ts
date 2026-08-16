@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import manifest from "../src/manifest.js";
 import { AGENT_IDENTITIES_PLUGIN_ID } from "../src/shared/webhook-endpoints.js";
 import packageJson from "../package.json" with { type: "json" };
+import copilotReviewSource from "../skills/copilot-review/SKILL.md?raw";
 
 const BOT_TOKEN_SECRET_ID = "00000000-0000-4000-8000-000000000001";
 const SIGNING_SECRET_ID = "00000000-0000-4000-8000-000000000002";
@@ -83,6 +84,7 @@ describe("manifest instance config schema", () => {
         files: [],
       }),
     ]);
+    expect(manifest.skills?.[0]?.markdown).toBe(copilotReviewSource);
   });
 
   it("accepts GitHub and strict Slack config for the same agent", () => {

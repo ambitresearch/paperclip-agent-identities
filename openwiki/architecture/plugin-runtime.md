@@ -27,7 +27,7 @@ Do not edit generated `/dist` files directly; change `/src` and rebuild.
 
 - plugin ID: `ambitresearch.paperclip-agent-identities`
 - display name: `Agent Identities`
-- version: `0.2.7`
+- version: `0.4.0`
 - category: `connector`
 - entrypoints: `./dist/worker.js` and `./dist/ui`
 
@@ -45,6 +45,7 @@ Important capabilities include:
 - `secrets.bind-ref` for binding existing Paperclip secret references into company plugin config
 - `secrets.read-ref` for Paperclip secret resolution
 - `activity.log.write` for PR/push audit events
+- `skills.managed` for reconciling the plugin-managed `copilot-review` company skill
 - `issues.read` and `execution.workspaces.read` for resolving a push against the invoking run's execution workspace
 - `project.workspaces.read` for the mediated push fallback to the project's primary workspace
 

@@ -12,7 +12,7 @@ Primary product capabilities are described in `/README.md` and implemented throu
 - Store public provider identity metadata in Paperclip plugin state, private credential references in a local sidecar file, and GitHub App bindings in the selected agent environment.
 - Mint short-lived GitHub App installation tokens just in time for GitHub provider tools.
 - Expose provider-specific tools for identity self-checks, pull request creation, and mediated branch pushes.
-- Ship specialized managed skills that teach agents how to use identity-backed tools in complete workflows.
+- Ship specialized managed skills, beginning with a read-only local Copilot CLI code-review workflow.
 
 Treat `/README.md` plus current source as the canonical documentation baseline.
 
@@ -87,7 +87,6 @@ paperclipai plugin install . --local
    - data loaders: `health`, `bot-identity-config`, `paperclip-agents`
    - actions: `ping`, identity save/delete, GitHub/Slack manifest setup, Slack metadata discovery, and the released-sidecar Slack rebind action
    - tools: 25 GitHub tools (`github_bot_whoami`, `github_bot_create_pull_request`, `github_bot_push_branch`, `github_bot_submit_pull_request_review`, `github_bot_merge_pull_request`, and 20 others covering issues, pull requests, review threads, Projects v2, search, and Paperclip-side linking — see `/openwiki/tools/github-contribution-tools.md`) plus five Slack tools (`slack_bot_whoami`, `slack_bot_post_message`, `slack_bot_add_reaction`, `slack_bot_remove_reaction`, and `slack_bot_lookup_channel`) — both GitHub and Slack are now fully `enabled` providers (`registry.enabled()`), with Slack's tool surface also registered via `toolsStatus: "enabled"`/`registry.liveTools()`.
-   - the managed `copilot-review` skill, which runs Copilot CLI's local `/review` agent as a read-only independent second opinion
     - an `issue.created` event observer that marks issues as seen in plugin state
     - Slack's provider-owned `slack-turn-drain` self-event, which drains one durable queued turn under fresh company scope
 4. `/src/ui/index.tsx` exports a dashboard widget summarizing identity coverage and re-exports the settings page.

@@ -9,12 +9,10 @@ import { EVENTS_REQUEST_URL_PATTERN } from "./shared/events-request-url.js";
 import { AGENT_IDENTITIES_PLUGIN_ID } from "./shared/webhook-endpoints.js";
 
 function readManagedSkillFile(relativePath: string): string {
-  return readFileSync(new URL(`../skills/automated-pr-review-iteration/${relativePath}`, import.meta.url), "utf8");
+  return readFileSync(new URL(`../skills/copilot-review/${relativePath}`, import.meta.url), "utf8");
 }
 
-const automatedPrReviewSkillMarkdown = readManagedSkillFile("SKILL.md");
-const githubCopilotReference = readManagedSkillFile("references/github-copilot.md");
-const paperclipBotApprovalReference = readManagedSkillFile("references/paperclip-bot-approval.md");
+const copilotReviewSkillMarkdown = readManagedSkillFile("SKILL.md");
 
 const registry = createProviderRegistry();
 
@@ -217,15 +215,12 @@ const manifest: PaperclipPluginManifestV1 = {
     "skills.managed" as PaperclipPluginManifestV1["capabilities"][number]
   ],
   skills: [{
-    skillKey: "automated-pr-review-iteration",
-    displayName: "Automated PR Review Iteration",
-    slug: "automated-pr-review-iteration",
-    description: "Iterates automated PR review rounds until the current head is clean.",
-    markdown: automatedPrReviewSkillMarkdown,
-    files: [
-      { path: "references/github-copilot.md", content: githubCopilotReference },
-      { path: "references/paperclip-bot-approval.md", content: paperclipBotApprovalReference },
-    ],
+    skillKey: "copilot-review",
+    displayName: "Copilot Review",
+    slug: "copilot-review",
+    description: "Runs Copilot CLI's local review agent as an independent second opinion.",
+    markdown: copilotReviewSkillMarkdown,
+    files: [],
   }] as PaperclipPluginManifestV1["skills"],
   jobs: [{
     jobKey: "slack-queue-recovery",

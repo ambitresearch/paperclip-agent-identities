@@ -34,7 +34,7 @@ Do not use this skill to modify files, push changes, or post GitHub comments. It
 3. Require a clean working tree. If `git status --porcelain` is non-empty, stop and ask the caller to commit or stash the candidate. A disposable clone cannot faithfully preserve every untracked, ignored, or partially staged state.
 4. Resolve and verify the candidate base ref. Prefer the pull request's actual base branch; otherwise require the caller to supply it. Refuse an unknown or missing base instead of guessing.
 5. Create a temporary directory outside the repository and clone the current repository into it with `git clone --no-hardlinks --no-local`. Check out the exact source `HEAD` in detached mode and verify the disposable checkout's `HEAD` matches it. Register cleanup before invoking Copilot.
-6. In the disposable clone, materialize the committed `base...HEAD` candidate as working-tree changes without altering the source repository: run `git reset --mixed <base-ref>`. Verify `git diff --quiet` is false and `git diff --name-only` matches `git diff --name-only <base-ref>...<source-head>`. If the candidate diff is empty, report that there is nothing to review.
+6. In the disposable clone, resolve `merge-base = git merge-base <base-ref> <source-head>` and materialize the committed pull-request candidate as working-tree changes with `git reset --mixed <merge-base>`. Do **not** reset to the current base tip: when the base advanced after the branch split, that would introduce reverse changes unrelated to the PR. Verify `git diff --quiet` is false and `git diff --name-only` matches `git diff --name-only <base-ref>...<source-head>`. If the candidate diff is empty, report that there is nothing to review.
 7. Run Copilot's built-in review agent from the **disposable checkout**, never the source repository:
 
 ```bash
@@ -58,6 +58,7 @@ Use the execution tool's working-directory option. Allow up to ten minutes. Keep
 - Tool denial alone is not a write boundary: permitted `git diff`, `git log`, and `git show` options can write output files. Always use the disposable checkout.
 - Do not use `git worktree` for isolation; it shares repository metadata with the source checkout.
 - `/review` inspects working-tree changes. A clean detached checkout produces a false clean result; always materialize the base-to-head diff in the disposable clone first.
+- Materialize from the merge base, not the current base tip, so base-branch advances do not appear as reversed candidate changes.
 - Coder and other minimal Paperclip images may not contain Copilot CLI or its authentication. That is an explicit unavailable-reviewer result, not permission to install dependencies at runtime.
 - Do not treat a clean review as proof that the change is correct.
 - Do not post the findings to GitHub unless the user separately asks.

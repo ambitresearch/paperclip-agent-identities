@@ -94,6 +94,7 @@ describe("manifest instance config schema", () => {
     expect(manifest.skills?.[0]?.markdown).toContain("materialize the captured merge-base-to-head candidate");
     expect(manifest.skills?.[0]?.markdown).toContain("already submitted a GitHub review on the same pull request head SHA");
     expect(manifest.skills?.[0]?.markdown).toContain("do not re-review or repost all findings");
+    expect(manifest.skills?.[0]?.markdown).toContain("without treating harness-owned untracked paths as candidate changes");
   });
 
   it("accepts GitHub and strict Slack config for the same agent", () => {

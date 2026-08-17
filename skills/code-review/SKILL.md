@@ -109,7 +109,7 @@ Copilot CLI, when available, must remain optional. Run it only in an isolated di
 Before finishing, confirm:
 
 - The exact base and head were recorded.
-- The working tree was clean or the review stopped before proceeding.
+- For PR reviews, the committed `base...head` range was reviewed without treating harness-owned untracked paths as candidate changes; for working-copy reviews, the relevant candidate tree was clean or the review stopped before proceeding.
 - Each reported finding was verified against actual code or command output.
 - Optional reviewer availability was disclosed.
 - Missing Codex, Claude, or Copilot CLIs did not block the default review.

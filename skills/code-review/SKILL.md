@@ -20,7 +20,7 @@ Use when asked for a PR review, local review, Copilot-style review, Codex review
 
 When running inside Paperclip with GitHub identity tools available, publish the completed review to GitHub as a pull request review. Do **not** put the review body or findings in Paperclip issue comments as the primary deliverable; Paperclip comments are only for operational blockers that prevent reaching GitHub.
 
-Do not modify files or push branches. Do not approve unless the caller explicitly asks for an approval-capable review; default to a COMMENT review when findings are informational or no defects are found, and REQUEST_CHANGES only when the verified findings should block merge.
+Do not modify files or push branches. For normal PR review requests, submit a decisive GitHub review: use `APPROVE` when the PR has no verified merge-blocking concerns, use `REQUEST_CHANGES` when verified findings should block merge, and use `COMMENT` only when the caller explicitly asks for a non-decisive review or the evidence is insufficient to approve/request changes.
 
 ## Prerequisites
 
@@ -61,8 +61,9 @@ Missing optional CLIs are normal in Paperclip and Coder workspaces. Report them 
 10. Compose a GitHub pull request review:
    - Use inline review comments for findings with precise changed-file line anchors.
    - Include a concise top-level review body with reviewer availability, verification evidence, and any non-inlineable findings.
-   - Use `COMMENT` when there are no blocking findings or when the caller only asked for a review.
-   - Use `REQUEST_CHANGES` only for verified merge-blocking defects.
+   - Use `APPROVE` when no verified merge-blocking concerns remain.
+   - Use `REQUEST_CHANGES` when verified findings should block merge.
+   - Use `COMMENT` only when the caller explicitly asks for a non-decisive review or the evidence is insufficient to approve/request changes.
 11. Publish the review to GitHub with `github_bot_submit_pull_request_review` when that tool is available. Include `repository`, `pullNumber`, `event`, `body`, and `comments`.
 12. If `github_bot_submit_pull_request_review` is unavailable but another authenticated GitHub review path is explicitly available, use that path and disclose it. If no GitHub review path is available, stop with an operational blocker and do not substitute a Paperclip issue comment for the review.
 
@@ -91,7 +92,7 @@ Copilot CLI, when available, must remain optional. Run it only in an isolated di
 
 - Publish the result as a GitHub pull request review, not as a Paperclip issue comment.
 - Use the agent identity review tool (`github_bot_submit_pull_request_review`) when available so the review appears in GitHub's review timeline with inline comments.
-- Do not approve unless explicitly authorized; use COMMENT by default and REQUEST_CHANGES only for verified merge blockers.
+- Do not leave a non-decisive COMMENT review by default. Approve clean PRs and request changes for verified blockers; reserve COMMENT for explicitly non-decisive or inconclusive reviews.
 - If GitHub review submission fails, report the operational blocker in Paperclip instead of pretending the review was delivered.
 - Do not make Copilot CLI a prerequisite. Paperclip and Coder runtimes often lack it.
 - Do not install CLIs, use `npx`, or authenticate tools during review.

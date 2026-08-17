@@ -88,6 +88,8 @@ describe("manifest instance config schema", () => {
     expect(manifest.skills?.[0]?.markdown).toContain("Do not make Copilot CLI a prerequisite");
     expect(manifest.skills?.[0]?.markdown).toContain("github_bot_submit_pull_request_review");
     expect(manifest.skills?.[0]?.markdown).toContain("not as a Paperclip issue comment");
+    expect(manifest.skills?.[0]?.markdown).toContain("use `APPROVE` when the PR has no verified merge-blocking concerns");
+    expect(manifest.skills?.[0]?.markdown).toContain("use `REQUEST_CHANGES` when verified findings should block merge");
   });
 
   it("accepts GitHub and strict Slack config for the same agent", () => {

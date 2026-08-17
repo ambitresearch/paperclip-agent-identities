@@ -12,7 +12,7 @@ Primary product capabilities are described in `/README.md` and implemented throu
 - Store public provider identity metadata in Paperclip plugin state, private credential references in a local sidecar file, and GitHub App bindings in the selected agent environment.
 - Mint short-lived GitHub App installation tokens just in time for GitHub provider tools.
 - Expose provider-specific tools for identity self-checks, pull request creation, and mediated branch pushes.
-- Ship specialized managed skills, beginning with a provider-neutral local code-review workflow.
+- Ship specialized managed skills, beginning with a provider-neutral local code-review workflow that approves clean PRs, requests changes for blockers, and suppresses duplicate same-head reviews by the same agent identity.
 
 Treat `/README.md` plus current source as the canonical documentation baseline.
 

@@ -89,6 +89,7 @@ describe("plugin scaffold", () => {
     expect(manifest.capabilities).toContain("execution.workspaces.read");
     expect(manifest.capabilities).toContain("instance.settings.register");
     expect(manifest.capabilities).toContain("secrets.bind-ref");
+    expect(manifest.capabilities).toContain("skills.managed");
   });
 
   it("registers data + actions and handles events", async () => {
@@ -246,6 +247,9 @@ describe("plugin scaffold", () => {
       capabilities: [...manifest.capabilities],
       config: pushToolConfig()
     });
+    harness.ctx.secrets.resolve = async (
+      secretRef: string | { type: "secret_ref"; secretId: string; version?: "latest" },
+    ) => `resolved:${typeof secretRef === "string" ? secretRef : secretRef.secretId}`;
     await plugin.definition.setup(harness.ctx);
 
     const commands: Array<{ args: string[]; env?: NodeJS.ProcessEnv }> = [];

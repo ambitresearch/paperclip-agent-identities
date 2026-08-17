@@ -13,9 +13,11 @@ vi.mock("../src/credential-sidecar.js", () => ({
 
 import { resolveGitHubCredential } from "../src/providers/github/credentials.js";
 
-function fakeCtx(): PluginContext {
+function fakeCtx(resolveSecret = vi.fn(async (ref: string | { secretId: string }) => (
+  `secret:${typeof ref === "string" ? ref : ref.secretId}`
+))): PluginContext {
   return {
-    secrets: { resolve: async (ref: string) => `secret:${ref}` },
+    secrets: { resolve: resolveSecret },
     http: { fetch: async () => new Response("{}") },
   } as unknown as PluginContext;
 }
@@ -59,7 +61,10 @@ describe("resolveGitHubCredential", () => {
 
   it("passes the resolved identity plus ctx-bound secret and fetch resolvers to resolveIdentityToken", async () => {
     resolveIdentityTokenMock.mockResolvedValue({ token: "ghs_ABC", source: "plugin-secret" });
-    const ctx = fakeCtx();
+    const resolveSecret = vi.fn(async (ref: string | { secretId: string }) => (
+      `secret:${typeof ref === "string" ? ref : ref.secretId}`
+    ));
+    const ctx = fakeCtx(resolveSecret);
 
     await resolveGitHubCredential({ identity, ctx, runCtx });
 
@@ -69,6 +74,11 @@ describe("resolveGitHubCredential", () => {
     expect(typeof passedResolveSecret).toBe("function");
     expect(typeof passedFetch).toBe("function");
 
-    await expect(passedResolveSecret("ref-1")).resolves.toBe("secret:ref-1");
+    await expect(passedResolveSecret("00000000-0000-4000-8000-000000000001")).resolves.toBe("secret:00000000-0000-4000-8000-000000000001");
+    expect(resolveSecret).toHaveBeenCalledWith({
+      type: "secret_ref",
+      secretId: "00000000-0000-4000-8000-000000000001",
+      version: "latest",
+    });
   });
 });

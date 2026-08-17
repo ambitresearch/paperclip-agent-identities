@@ -12,6 +12,7 @@ Primary product capabilities are described in `/README.md` and implemented throu
 - Store public provider identity metadata in Paperclip plugin state, private credential references in a local sidecar file, and GitHub App bindings in the selected agent environment.
 - Mint short-lived GitHub App installation tokens just in time for GitHub provider tools.
 - Expose provider-specific tools for identity self-checks, pull request creation, and mediated branch pushes.
+- Ship specialized managed skills, beginning with a provider-neutral local code-review workflow that approves clean PRs, requests changes for blockers, and suppresses duplicate same-head reviews by the same agent identity.
 
 Treat `/README.md` plus current source as the canonical documentation baseline.
 
@@ -26,6 +27,7 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
 | Change PR or push tools | [GitHub contribution tools](tools/github-contribution-tools.md) | `/src/providers/github/tools/create-pull-request.ts`, `/src/providers/github/tools/push-branch.ts` |
 | Run validation or understand test coverage | [Testing and operations](operations/testing-and-release.md) | `/tests/*.spec.ts`, `/package.json` |
 | Register a provider's runtime tools/actions | [Plugin runtime architecture](architecture/plugin-runtime.md) | `/src/providers/<id>/`, `/src/providers/index.ts` |
+| Add or update a specialized managed skill | [Plugin runtime architecture](architecture/plugin-runtime.md) | `/skills/<skill>/`, `/src/manifest.ts` |
 | Add provider settings persistence/UI | [Agent identity domain](domain/agent-identities.md) | `/src/core/identity-config.ts`, `/src/credential-sidecar.ts`, `/src/worker.ts`, `/src/ui/SettingsPage.tsx` |
 | Implement the Slack provider | [Slack provider MVP and threat model](domain/slack-provider-design.md) | `/src/providers/slack/` plus the settings-persistence files above |
 
@@ -46,6 +48,7 @@ Treat `/README.md` plus current source as the canonical documentation baseline.
   ui/SettingsPage.tsx                 Operator settings UI and GitHub App setup flow
   lib/*.ts                            Redaction and lower-level PR/push helper utilities
 /tests/*.spec.ts                      Vitest coverage for plugin, tools, repo normalization, credentials, security
+/skills/*/SKILL.md                    Plugin-managed agent workflows and supporting references
 /esbuild.config.mjs                   Main build path using Paperclip SDK bundler presets
 /rollup.config.mjs                    Alternate Rollup build config
 /package.json                         Scripts, package metadata, Paperclip entrypoint metadata
@@ -79,7 +82,7 @@ paperclipai plugin install . --local
 ## Runtime model in one page
 
 1. Paperclip reads the plugin package metadata in `/package.json`, then loads the built manifest, worker, and UI from `dist`.
-2. `/src/manifest.ts` declares plugin ID `ambitresearch.paperclip-agent-identities`, version `0.3.2`, required capabilities, 30 tools, and two UI slots.
+2. `/src/manifest.ts` declares plugin ID `ambitresearch.paperclip-agent-identities`, version `0.4.0`, required capabilities, 30 tools, one managed `code-review` skill, and two UI slots.
 3. `/src/worker.ts` calls `definePlugin()` and registers:
    - data loaders: `health`, `bot-identity-config`, `paperclip-agents`
    - actions: `ping`, identity save/delete, GitHub/Slack manifest setup, Slack metadata discovery, and the released-sidecar Slack rebind action

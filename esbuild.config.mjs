@@ -4,6 +4,13 @@ import { createPluginBundlerPresets } from "@paperclipai/plugin-sdk/bundlers";
 const presets = createPluginBundlerPresets({ uiEntry: "src/ui/index.tsx" });
 const watch = process.argv.includes("--watch");
 
+// Managed skill markdown is a manifest payload, not a runtime filesystem
+// dependency. Embed it so deployments that install only dist remain valid.
+presets.esbuild.manifest.loader = {
+  ...(presets.esbuild.manifest.loader ?? {}),
+  ".md": "text",
+};
+
 const workerCtx = await esbuild.context(presets.esbuild.worker);
 const manifestCtx = await esbuild.context(presets.esbuild.manifest);
 const uiCtx = await esbuild.context(presets.esbuild.ui);

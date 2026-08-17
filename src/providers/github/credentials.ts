@@ -6,7 +6,11 @@ export async function resolveGitHubCredential(
   input: CredentialResolverInput<GitHubAgentIdentity>
 ): Promise<ResolvedCredential> {
   const { identity, ctx } = input;
-  const resolveSecret = (secretRef: string) => ctx.secrets.resolve(secretRef);
+  const resolveSecret = (secretRef: string) => ctx.secrets.resolve({
+    type: "secret_ref",
+    secretId: secretRef,
+    version: "latest",
+  });
   const fetchImpl = (url: string, init?: RequestInit) => ctx.http.fetch(url, init);
 
   // `source` is carried through rather than dropped: it is the only trustworthy

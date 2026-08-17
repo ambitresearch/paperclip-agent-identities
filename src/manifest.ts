@@ -1,4 +1,5 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import codeReviewSkillMarkdown from "../skills/code-review/SKILL.md?raw";
 import { createProviderRegistry } from "./providers/index.js";
 import {
   REBIND_LEGACY_SLACK_CREDENTIALS_ACTION,
@@ -132,7 +133,7 @@ const manifest: PaperclipPluginManifestV1 = {
   // every derived Slack Events URL if the id ever changed.
   id: AGENT_IDENTITIES_PLUGIN_ID,
   apiVersion: 1,
-  version: "0.3.2",
+  version: "0.4.0",
   displayName: "Agent Identities",
   description: "Per-agent identity providers and contribution tools for Paperclip",
   author: "Roshan Gautam",
@@ -204,8 +205,17 @@ const manifest: PaperclipPluginManifestV1 = {
     "secrets.bind-ref" as PaperclipPluginManifestV1["capabilities"][number],
     "secrets.read-ref",
     "activity.log.write",
-    "webhooks.receive"
+    "webhooks.receive",
+    "skills.managed" as PaperclipPluginManifestV1["capabilities"][number]
   ],
+  skills: [{
+    skillKey: "code-review",
+    displayName: "Code Review",
+    slug: "code-review",
+    description: "Reviews pull requests with available local agent reviewers.",
+    markdown: codeReviewSkillMarkdown,
+    files: [],
+  }] as PaperclipPluginManifestV1["skills"],
   jobs: [{
     jobKey: "slack-queue-recovery",
     displayName: "Slack queue recovery scan",
